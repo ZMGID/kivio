@@ -86,10 +86,17 @@ impl ModelError {
 
     pub fn from_provider_stream(code: Option<&str>, diagnostic: String) -> Self {
         let mut error = Self::from_provider_payload(code, diagnostic);
+        // Plan admission errors require account or request changes, or a later user retry.
+        if code.is_some_and(|code| {
+            code.starts_with("subscription_sharing_") || code.starts_with("chatpass_")
+        }) {
+            return error;
+        }
         let lower = provider_signal(&error.message, code).to_ascii_lowercase();
         error.retryable_stream = !is_permanent_provider_error(&lower)
             && (is_missing_stream_terminal_error(&lower)
                 || [
+                    "server_is_overloaded",
                     "overloaded_error",
                     "server_error",
                     "rate_limit_error",
@@ -222,7 +229,11 @@ fn classify_provider(status: Option<u16>, body: &str, code: Option<&str>) -> Mod
             ModelErrorKind::RateLimited
         }
         Some(
-            "overloaded_error" | "server_error" | "service_unavailable" | "internal_server_error",
+            "server_is_overloaded"
+            | "overloaded_error"
+            | "server_error"
+            | "service_unavailable"
+            | "internal_server_error",
         ) => ModelErrorKind::ProviderUnavailable,
         Some("upstream_stream_read_error") => ModelErrorKind::Transport,
         _ => ModelErrorKind::Other,

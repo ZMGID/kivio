@@ -20,25 +20,7 @@ pub(crate) async fn send(
     if status.is_success() {
         return Ok(response);
     }
-    let retry_after = response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            value
-                .parse::<u64>()
-                .ok()
-                .map(std::time::Duration::from_secs)
-                .or_else(|| {
-                    chrono::DateTime::parse_from_rfc2822(value)
-                        .ok()
-                        .map(|date| {
-                            (date.with_timezone(&chrono::Utc) - chrono::Utc::now())
-                                .to_std()
-                                .unwrap_or_default()
-                        })
-                })
-        });
+    let retry_after = retry_after_header(response.headers());
     let request_id = response
         .headers()
         .get("x-request-id")
@@ -60,4 +42,35 @@ pub(crate) async fn send(
     .with_request_id(request_id.as_deref());
     error.retry_after = retry_after;
     Err(error)
+}
+
+pub(super) fn retry_after_header(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<std::time::Duration> {
+    parse_retry_after(
+        headers.get("retry-after-ms").and_then(|v| v.to_str().ok()),
+        headers
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+    )
+}
+
+pub(super) fn parse_retry_after(
+    milliseconds: Option<&str>,
+    seconds_or_date: Option<&str>,
+) -> Option<std::time::Duration> {
+    use std::time::Duration;
+    if let Some(ms) = milliseconds.and_then(|value| value.parse().ok()) {
+        return Some(Duration::from_millis(ms));
+    }
+    let value = seconds_or_date?;
+    value.parse().ok().map(Duration::from_secs).or_else(|| {
+        chrono::DateTime::parse_from_rfc2822(value)
+            .ok()
+            .map(|date| {
+                (date.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                    .to_std()
+                    .unwrap_or_default()
+            })
+    })
 }

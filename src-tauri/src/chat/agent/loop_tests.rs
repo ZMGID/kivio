@@ -1717,6 +1717,7 @@ async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_resul
     let fallback = tool_planning_failed_fallback_response("zh-CN");
     assert_eq!(result.stream_outcome, "error");
     assert_eq!(result.content, fallback);
+    assert_eq!(result.degraded.as_ref().unwrap().text, fallback);
     assert_eq!(result.tool_records.len(), 1);
     assert_eq!(result.tool_records[0].id, "call_read");
     assert!(matches!(
@@ -1818,23 +1819,44 @@ async fn stream_request_none_reaches_provider_wire() {
 async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
     use crate::chat::agent::provider_runtime::{ModelCall, ModelDelivery, ModelRuntime};
     use crate::chat::model::{GenerateOptions, RequestMetadata};
-    for recover in [true, false] {
-        let final_response = if recover {
-            MockResponse::Sse(sse_from_completion_json(
-                r#"{"choices":[{"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}]}"#,
-            ))
+    let overload = r#"{"type":"error","code":"server_is_overloaded","message":"Try again later","headers":{"retry-after-ms":"2100"}}"#;
+    for (format, recover) in [
+        ("openai_chat", true),
+        ("openai_chat", false),
+        ("openai_responses", true),
+        ("openai_responses", false),
+    ] {
+        let (interrupted, success, failure) = if format == "openai_responses" {
+            (
+                MockResponse::Sse(vec![
+                    r#"{"type":"response.output_text.delta","delta":"partial"}"#.into(),
+                    overload.into(),
+                ]),
+                MockResponse::Sse(vec![
+                    r#"{"type":"response.output_text.delta","delta":"recovered"}"#.into(),
+                    r#"{"type":"response.completed","response":{"status":"completed"}}"#.into(),
+                ]),
+                MockResponse::Sse(vec![overload.into()]),
+            )
         } else {
-            MockResponse::Status(503, "unavailable".into())
+            (
+                MockResponse::SseInterrupt(vec![
+                    serde_json::json!({"choices":[{"delta":{"content":"partial 🌱", "reasoning_content":"discarded thought"}}]}).to_string(),
+                ]),
+                MockResponse::Sse(sse_from_completion_json(
+                    r#"{"choices":[{"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}]}"#,
+                )),
+                MockResponse::Status(503, "unavailable".into()),
+            )
         };
         let server = MockModelServer::start(vec![
             MockResponse::Status(503, "unavailable".into()),
-            MockResponse::SseInterrupt(vec![
-                serde_json::json!({"choices":[{"delta":{"content":"partial 🌱", "reasoning_content":"discarded thought"}}]}).to_string(),
-            ]),
-            final_response,
+            interrupted,
+            if recover { success } else { failure },
         ]);
         let state = test_app_state();
-        let provider = test_provider(&server.base_url);
+        let mut provider = test_provider(&server.base_url);
+        provider.api_format = format.into();
         let runtime = crate::chat::model::agent_runtime::AppAgentModel::new(&state, &provider, 3);
         let mut sink = ProviderTestSink::default();
         let result = runtime
@@ -1865,6 +1887,13 @@ async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
             )
             .await;
         assert_eq!(result.is_ok(), recover);
+        if format == "openai_responses" {
+            assert_eq!(sink.retries.last().unwrap().reason, "Server overloaded");
+            if let Err(error) = &result {
+                assert_eq!(error.provider_code.as_deref(), Some("server_is_overloaded"));
+                assert_eq!(error.retry_after, Some(Duration::from_millis(2100)));
+            }
+        }
         if let Ok(output) = result {
             assert_eq!(output.text, "recovered");
             assert!(output.reasoning.is_none());
@@ -2286,12 +2315,10 @@ async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback(
         .expect("synthesis failure after tool records must not bubble Err");
 
     // 框架恢复:合成被拒(400)后不再吐静态"失败"文案,而是用已收集的工具结果兜底。
-    let recovered = crate::chat::recovery_policy::assemble_results_from_tool_records(
-        &result.raw_tool_records,
-        "zh-CN",
-        crate::chat::recovery_policy::FailureKind::InvalidRequest,
-    );
-    assert!(recovered.contains("result:read"));
+    let card = result.degraded.as_ref().expect("terminal failure card");
+    assert_eq!(card.kind, "invalid_request");
+    let recovered = card.text.clone();
+    assert!(!recovered.contains("result:read"));
     assert_eq!(result.stream_outcome, "recovered");
     assert_eq!(result.content, recovered);
     assert_eq!(result.tool_records.len(), 1);
@@ -2310,15 +2337,10 @@ async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback(
         Some(recovered.as_str())
     );
 
-    let fallback_delta = host
+    assert!(!host
         .recorded_deltas()
-        .into_iter()
-        .find(|delta| delta.delta == recovered)
-        .expect("recovered delta emitted");
-    assert_eq!(fallback_delta.reasoning_delta, None);
-    let segment = fallback_delta.segment.expect("fallback delta has segment");
-    assert_eq!(segment.kind, ChatMessageSegmentKind::Text);
-    assert_eq!(segment.phase, ChatMessageSegmentPhase::Synthesis);
+        .iter()
+        .any(|delta| delta.delta == recovered));
 
     // 错误卡片要拿到**供应商的原话**，而不是只有"模型调用失败"这句分类话术。
     let degraded = result
@@ -3424,18 +3446,14 @@ async fn recovery_followed_by_success_drops_stale_degraded_card() {
     assert_eq!(result.content, "final answer");
     assert!(result.degraded.is_none());
     assert_eq!(server.captured_bodies().len(), 3);
-    assert!(
-        result.api_messages.iter().any(|message| {
-            message["role"] == "assistant"
-                && crate::chat::model::openai_message_text_content(message)
-                    .is_some_and(|text| text.contains("工具调用") || text.contains("tool call"))
-        }),
-        "the recovered candidate must remain in API history"
-    );
-    assert!(!result.segments.iter().any(|s| s
-        .text
-        .as_deref()
-        .is_some_and(|t| t.contains("temporary failure"))));
+    let recovery_note = result.api_messages.iter()
+        .filter(|message| message["role"] == "assistant")
+        .filter_map(crate::chat::model::openai_message_text_content)
+        .find(|text| text.contains("请求被拒绝"))
+        .expect("recovery reason is available to the next model step");
+    assert!(!recovery_note.contains("result:read"));
+    assert!(!result.segments.iter().any(|segment| segment.text.as_deref() == Some(recovery_note.as_str())));
+    assert!(!host.recorded_deltas().iter().any(|delta| delta.delta == recovery_note));
     assert!(result.tool_records.iter().any(|r| r.id == "call_read"));
 }
 
@@ -4185,13 +4203,11 @@ async fn run_loop_stream_synthesis_empty_output_uses_fallback_and_completes() {
         .await
         .expect("empty synthesis with tool records must not bubble Err");
 
-    let recovered = crate::chat::recovery_policy::assemble_results_from_tool_records(
-        &result.raw_tool_records,
-        "zh-CN",
-        crate::chat::recovery_policy::FailureKind::Empty,
-    );
-    assert!(recovered.contains("result:read"));
-    assert_eq!(result.stream_outcome, "completed");
+    let card = result.degraded.as_ref().expect("terminal failure card");
+    assert_eq!(card.kind, "empty_response");
+    let recovered = card.text.clone();
+    assert!(!recovered.contains("result:read"));
+    assert_eq!(result.stream_outcome, "recovered");
     assert_eq!(result.content, recovered);
     assert_eq!(result.tool_records.len(), 1);
     assert!(matches!(
@@ -4231,12 +4247,10 @@ async fn run_loop_nonstream_synthesis_failure_preserves_tool_records_with_fallba
         .await
         .expect("non-stream synthesis failure after tool records must not bubble Err");
 
-    let recovered = crate::chat::recovery_policy::assemble_results_from_tool_records(
-        &result.raw_tool_records,
-        "zh-CN",
-        crate::chat::recovery_policy::FailureKind::InvalidRequest,
-    );
-    assert!(recovered.contains("result:read"));
+    let card = result.degraded.as_ref().expect("terminal failure card");
+    assert_eq!(card.kind, "invalid_request");
+    let recovered = card.text.clone();
+    assert!(!recovered.contains("result:read"));
     assert_eq!(result.stream_outcome, "recovered");
     assert_eq!(result.content, recovered);
     assert_eq!(result.tool_records.len(), 1);
@@ -4244,7 +4258,7 @@ async fn run_loop_nonstream_synthesis_failure_preserves_tool_records_with_fallba
         result.tool_records[0].status,
         ToolCallStatus::Success
     ));
-    assert!(host
+    assert!(!host
         .recorded_deltas()
         .iter()
         .any(|delta| delta.delta == recovered));
@@ -4447,12 +4461,10 @@ async fn run_loop_overflow_recovery_retries_once_then_degrades() {
         .await
         .expect("overflow recovery exhaustion must not bubble Err");
 
-    let recovered = crate::chat::recovery_policy::assemble_results_from_tool_records(
-        &result.raw_tool_records,
-        "zh-CN",
-        crate::chat::recovery_policy::FailureKind::ContextOverflow,
-    );
-    assert!(recovered.contains("result:read"));
+    let card = result.degraded.as_ref().expect("terminal failure card");
+    assert_eq!(card.kind, "context_overflow");
+    let recovered = card.text.clone();
+    assert!(!recovered.contains("result:read"));
     assert_eq!(result.content, recovered);
     assert_eq!(result.stream_outcome, "recovered");
     // Single-attempt guard: planning + failed synthesis + ONE retry = 3 calls,
@@ -4490,13 +4502,11 @@ async fn run_loop_nonstream_synthesis_empty_output_uses_fallback() {
         .await
         .expect("non-stream empty synthesis with tool records must not bubble Err");
 
-    let recovered = crate::chat::recovery_policy::assemble_results_from_tool_records(
-        &result.raw_tool_records,
-        "zh-CN",
-        crate::chat::recovery_policy::FailureKind::Empty,
-    );
-    assert!(recovered.contains("result:read"));
-    assert_eq!(result.stream_outcome, "completed");
+    let card = result.degraded.as_ref().expect("terminal failure card");
+    assert_eq!(card.kind, "empty_response");
+    let recovered = card.text.clone();
+    assert!(!recovered.contains("result:read"));
+    assert_eq!(result.stream_outcome, "recovered");
     assert_eq!(result.content, recovered);
     assert_eq!(result.reasoning.as_deref(), Some("synthesis reasoning"));
     assert_eq!(result.tool_records.len(), 1);
@@ -6876,7 +6886,7 @@ async fn permanent_request_errors_preserve_tools_without_another_model_call() {
         assert_eq!(server.captured_bodies().len(), 2, "permanent errors must stop model requests");
         assert_eq!(result.tool_records.len(), 1);
         assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
-        assert!(result.content.contains("result:read"));
+        assert!(!result.content.contains("result:read"));
         assert!(result.degraded.is_some());
     }
 }
@@ -7314,7 +7324,6 @@ struct PresentedRunResult {
     pub compaction_summary: Option<crate::chat::types::ConversationContextSummary>,
     pub degraded: Option<crate::chat::recovery_policy::DegradedAnswer>,
     pub images: Vec<crate::chat::model::GeneratedImageData>,
-    raw_tool_records: Vec<AgentToolCall>,
 }
 fn present_result(result: AgentRunResult) -> PresentedRunResult {
     let (tool_records, segments) = crate::chat::agent_presentation::project_snapshot(
@@ -7323,7 +7332,6 @@ fn present_result(result: AgentRunResult) -> PresentedRunResult {
         Some("run"),
     );
     PresentedRunResult {
-        raw_tool_records: result.tool_records,
         content: result.content,
         reasoning: result.reasoning,
         tool_records,
@@ -7685,9 +7693,7 @@ async fn sdk04_recovery_request_uses_formatted_bounded_tool_summary() {
     .unwrap();
     assert_eq!(server.captured_bodies().len(), 3);
     assert_eq!(result.stream_outcome, "recovered");
-    assert!(result.degraded.unwrap().tool_summaries[0]
-        .preview
-        .starts_with("答: Readable answer"));
+    assert_eq!(result.degraded.unwrap().kind, "moderation");
 }
 
 #[tokio::test]

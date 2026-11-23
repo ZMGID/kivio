@@ -7,27 +7,21 @@ function makeDegraded(overrides: Partial<DegradedAnswer> = {}): DegradedAnswer {
   return {
     kind: 'rate_limited',
     reason: '模型调用被限流或配额耗尽，多次退避重试后仍失败。',
-    toolSummaries: [
-      { name: 'mixer_generate_image', preview: 'Generated 1 image.' },
-      { name: 'present_artifacts', preview: 'Displayed 1 file in the response.' },
-    ],
     text: '⚠️ ...纯文本版本...',
     ...overrides,
   }
 }
 
 describe('DegradedAnswerCard', () => {
-  it('显示失败原因与工具调用计数（不复述工具列表）', () => {
-    render(<DegradedAnswerCard degraded={makeDegraded()} />)
-    expect(screen.getByText(/限流或配额耗尽/)).toBeTruthy()
-    expect(screen.getByText(/最近 2 个工具结果/)).toBeTruthy()
-    // 工具结果在上方的工具卡片里，卡片里再列一遍就是噪音
-    expect(screen.queryByText('mixer_generate_image')).toBeNull()
-  })
-
-  it('显示完整调用数而不是截断后的摘要数', () => {
-    render(<DegradedAnswerCard degraded={makeDegraded({ totalToolCalls: 646 })} />)
-    expect(screen.getByText(/本轮共 646 个工具调用/)).toBeTruthy()
+  it('shows the failure without repeating tool activity from older replies', () => {
+    const oldReply = {
+      ...makeDegraded(),
+      totalToolCalls: 9,
+      toolSummaries: [{ name: 'bash', preview: 'exit_code: 0' }],
+    }
+    render(<DegradedAnswerCard degraded={oldReply} />)
+    expect(screen.getByText(/限流或配额耗尽/)).toBeVisible()
+    expect(screen.queryByText(/工具调用|工具结果|exit_code/)).toBeNull()
   })
 
   it('有 detail 时显示供应商原始报错', () => {
@@ -60,18 +54,6 @@ describe('DegradedAnswerCard', () => {
   it('未知 kind 回落到通用标签而非崩溃', () => {
     render(<DegradedAnswerCard degraded={makeDegraded({ kind: 'something_new' })} />)
     expect(screen.getByText('调用失败')).toBeTruthy()
-  })
-
-  it('没有工具摘要时不渲染摘要区', () => {
-    render(<DegradedAnswerCard degraded={makeDegraded({ toolSummaries: [] })} />)
-    expect(screen.queryByText(/本轮共|最近 .* 个工具结果/)).toBeNull()
-    // 原因仍要显示
-    expect(screen.getByText(/限流或配额耗尽/)).toBeTruthy()
-  })
-
-  it('toolSummaries 缺省（旧数据）不崩溃', () => {
-    render(<DegradedAnswerCard degraded={makeDegraded({ toolSummaries: undefined })} />)
-    expect(screen.getByText(/限流或配额耗尽/)).toBeTruthy()
   })
 
   it('kind 暴露到 DOM 供样式/排查定位', () => {

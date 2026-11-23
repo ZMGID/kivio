@@ -1,4 +1,4 @@
-use super::content::ContentKind;
+use super::content::{ContentBlock, ContentKind};
 use super::error::AgentFailure;
 use super::history::RuntimeMessage;
 use crate::model::{
@@ -16,7 +16,15 @@ use super::stop::{
 use super::stream::WebSearchCardTracker;
 use super::types::{AgentPhase, AgentRunConfig, AgentRunResult, AgentStreamPolicy};
 
+pub(crate) enum SynthesisOutcome {
+    Completed,
+    Recovered,
+    /// Policy text enters the transcript only if this candidate ends the run.
+    Fallback(ContentBlock),
+}
+
 pub(crate) struct SynthesisCompleted {
+    pub(crate) outcome: SynthesisOutcome,
     pub(crate) replay: Option<crate::model::ModelMessage>,
     pub(crate) response: String,
     pub(crate) reasoning: Option<String>,
@@ -36,7 +44,6 @@ pub(crate) async fn synthesis_step(
     session: &mut dyn SessionPolicy,
 ) -> Result<SynthesisFlow, AgentFailure> {
     let config = env.config;
-    let host = env.host;
     state.step_number = state.step_number.saturating_add(1);
     let step_number = state.step_number;
     let phase = if state.tool_records.is_empty() && !state.provider_tools_unsupported {
@@ -56,9 +63,8 @@ pub(crate) async fn synthesis_step(
             None,
         );
         return Ok(SynthesisFlow::Early(
-            RunResultBuilder::new(host, content)
+            RunResultBuilder::new(content)
                 .segment(&segment)
-                .emit_done("done")
                 .outcome(super::types::AgentRunStatus::CompactionBlocked)
                 .finish(
                     std::mem::take(&mut state.segment_builder),
@@ -130,25 +136,14 @@ pub(crate) async fn synthesis_step(
         Err(AgentFailure::Model { source: err, .. }) if !state.tool_records.is_empty() => {
             eprintln!("Chat synthesis stream failed after tool records; recovering: {err}");
             let recovered = recover_synthesis(env, state, &err, session).await?;
-            let replay = recovered.replay;
-            let content = if recovered.text.trim().is_empty() {
-                session.fallback(FallbackReason::FailedSynthesis)
-            } else {
-                recovered.text
-            };
-            return Ok(SynthesisFlow::Early(
-                RunResultBuilder::new(host, content)
-                    .segment(&response_segment)
-                    .emit_done("done")
-                    .outcome(super::types::AgentRunStatus::Recovered)
-                    .replay(replay.clone())
-                    .finish(
-                        std::mem::take(&mut state.segment_builder),
-                        &state.planning_reasoning_parts,
-                        std::mem::take(&mut state.tool_records),
-                        std::mem::take(&mut state.generated_api_messages),
-                    ),
-            ));
+            return Ok(SynthesisFlow::Completed(recovered.into_candidate(
+                env,
+                state,
+                response_segment,
+                None,
+                FallbackReason::FailedSynthesis,
+                session,
+            )));
         }
         Err(err) => return Err(err),
     };
@@ -175,7 +170,7 @@ pub(crate) async fn synthesis_step(
         }
         let replay = stream.replay_message();
         return Ok(SynthesisFlow::Early(
-            RunResultBuilder::new(host, partial)
+            RunResultBuilder::new(partial)
                 .segment(&response_segment)
                 .api_reasoning(stream.reasoning.clone())
                 .reasoning_tail(stream.reasoning)
@@ -196,52 +191,6 @@ pub(crate) async fn synthesis_step(
         true,
     );
     state.generated_images.append(&mut stream.images);
-    let final_reasoning_for_api = stream.reasoning.clone();
-    let reasoning = merge_reasoning(&state.planning_reasoning_parts, stream.reasoning.clone());
-    let response = sanitize_assistant_text_response(&stream.text);
-    let replay;
-    let generated_message;
-    let (response, reasoning, response_reasoning) = if response.trim().is_empty() {
-        if !state.tool_records.is_empty() {
-            log_empty_synthesis_output(config, phase, &stream, state.tool_records.len());
-            let recovered = recover_synthesis(
-                env,
-                state,
-                &ModelError::with_kind("", ModelErrorKind::EmptyResponse),
-                session,
-            )
-            .await?;
-            replay = recovered.replay;
-            let content = if recovered.text.trim().is_empty() {
-                session.fallback(FallbackReason::EmptySynthesis)
-            } else {
-                recovered.text
-            };
-            host.content(&content, None, Some(&response_segment));
-            generated_message = (!state.generated_api_messages.is_empty()).then(|| {
-                RuntimeMessage::model(replay.clone().unwrap_or_else(|| {
-                    super::stop::final_assistant_message(
-                        &content,
-                        final_reasoning_for_api.as_deref(),
-                    )
-                }))
-            });
-            (content, reasoning, final_reasoning_for_api)
-        } else {
-            return Err(AgentFailure::InvalidOutput(empty_assistant_response_error(
-                "Chat stream",
-            )));
-        }
-    } else {
-        let message = stream.replay_message();
-        generated_message = (!state.generated_api_messages.is_empty()
-            || stream.canonical_message.is_some()
-            || !stream.reasoning_items.is_empty())
-        .then(|| RuntimeMessage::model(message.clone()));
-        replay = Some(message);
-        (response, reasoning, final_reasoning_for_api)
-    };
-
     // 内置搜索：实时卡追踪器边流边合成（take_card 落 Success 终态卡）。
     if let Some(tracker) = synth_web_search_tracker.as_ref() {
         if let Some(segment) = tracker.take_card() {
@@ -251,30 +200,103 @@ pub(crate) async fn synthesis_step(
         }
     }
 
+    if let Some(reasoning) = stream.reasoning.as_deref() {
+        state
+            .segment_builder
+            .append_text_from_template(&response_reasoning_segment, reasoning.trim());
+    }
+    let response = sanitize_assistant_text_response(&stream.text);
+    if response.trim().is_empty() {
+        if state.tool_records.is_empty() {
+            return Err(AgentFailure::InvalidOutput(empty_assistant_response_error(
+                "Chat stream",
+            )));
+        }
+        log_empty_synthesis_output(config, phase, &stream, state.tool_records.len());
+        let recovered = recover_synthesis(
+            env,
+            state,
+            &ModelError::with_kind("", ModelErrorKind::EmptyResponse),
+            session,
+        )
+        .await?;
+        return Ok(SynthesisFlow::Completed(recovered.into_candidate(
+            env,
+            state,
+            response_segment,
+            stream.reasoning,
+            FallbackReason::EmptySynthesis,
+            session,
+        )));
+    }
+
     state
         .segment_builder
         .append_text_from_template(&response_segment, response.clone());
-    if let Some(reasoning_part) = response_reasoning.as_deref() {
-        state
-            .segment_builder
-            .append_text_from_template(&response_reasoning_segment, reasoning_part.trim());
-    }
-
+    let message = stream.replay_message();
+    let generated_message = (!state.generated_api_messages.is_empty()
+        || stream.canonical_message.is_some()
+        || !stream.reasoning_items.is_empty())
+    .then(|| RuntimeMessage::model(message.clone()));
     Ok(SynthesisFlow::Completed(SynthesisCompleted {
-        replay,
+        outcome: SynthesisOutcome::Completed,
+        replay: Some(message),
         response,
-        reasoning,
-        response_reasoning,
+        reasoning: merge_reasoning(&state.planning_reasoning_parts, stream.reasoning.clone()),
+        response_reasoning: stream.reasoning,
         generated_message,
     }))
 }
 
 pub(crate) struct RecoveredAnswer {
-    pub text: String,
-    pub replay: Option<ModelMessage>,
+    pub(crate) text: String,
+    replay: Option<ModelMessage>,
 }
 
 impl RecoveredAnswer {
+    pub(crate) fn into_candidate(
+        self,
+        env: &LoopEnv<'_>,
+        state: &mut RunState,
+        segment: ContentBlock,
+        reasoning: Option<String>,
+        reason: FallbackReason,
+        session: &dyn SessionPolicy,
+    ) -> SynthesisCompleted {
+        let response = if self.text.trim().is_empty() {
+            session.fallback(reason)
+        } else {
+            self.text
+        };
+        let outcome = if self.replay.is_some() {
+            env.host.content(&response, None, Some(&segment));
+            state
+                .segment_builder
+                .append_text_from_template(&segment, response.clone());
+            match reason {
+                FallbackReason::EmptySynthesis => SynthesisOutcome::Completed,
+                FallbackReason::FailedSynthesis | FallbackReason::FailedPlanning => {
+                    SynthesisOutcome::Recovered
+                }
+            }
+        } else {
+            SynthesisOutcome::Fallback(segment)
+        };
+        let generated_message = (!state.generated_api_messages.is_empty()).then(|| {
+            RuntimeMessage::model(self.replay.clone().unwrap_or_else(|| {
+                super::stop::final_assistant_message(&response, reasoning.as_deref())
+            }))
+        });
+        SynthesisCompleted {
+            outcome,
+            replay: self.replay,
+            response,
+            reasoning: merge_reasoning(&state.planning_reasoning_parts, reasoning.clone()),
+            response_reasoning: reasoning,
+            generated_message,
+        }
+    }
+
     fn fallback(text: String) -> Self {
         Self { text, replay: None }
     }

@@ -6,9 +6,9 @@ use kivio_agent_sdk::{
     agent::{
         content::ContentKind,
         control::AgentRunHandle,
-        events::{AgentEvent, EventDelivery},
+        events::{AgentEvent, AgentEventKind, EventDelivery},
         provider_runtime::{ModelCall, ModelOutputSink, ModelRuntime, ProviderFuture},
-        recovery::{RecoveryDecision, RecoverySnapshot},
+        recovery::{RecoveryDecision, RecoveryInput, RecoverySnapshot},
         run_agent_loop,
         session::{NoSessionPolicy, PolicyFuture, RunSnapshot, SessionPolicy, TurnDecision},
         types::{AgentRunResult, AgentRunStatus},
@@ -71,28 +71,46 @@ fn tool() -> GenerateOutput {
     output
 }
 async fn run(model: &Model, policy: &mut dyn SessionPolicy) -> AgentRunResult {
+    run_observed(model, policy).await.0
+}
+async fn run_observed(
+    model: &Model,
+    policy: &mut dyn SessionPolicy,
+) -> (AgentRunResult, Vec<String>) {
+    let deltas = Mutex::new(Vec::new());
     let control = Arc::new(support::Control::default());
-    run_agent_loop(
+    let result = run_agent_loop(
         support::config(model, support::initial_history()),
         &support::Host,
         Arc::new(support::EchoTool::new(true)),
         policy,
         &mut InjectionSources::new(),
-        &|_: &AgentEvent<'_>| EventDelivery::Accepted,
+        &|event: &AgentEvent<'_>| {
+            if let AgentEventKind::Content { delta, .. } = &event.kind {
+                deltas.lock().unwrap().push((*delta).into());
+            }
+            EventDelivery::Accepted
+        },
         support::handle(&control),
     )
     .await
-    .unwrap()
+    .unwrap();
+    (result, deltas.into_inner().unwrap())
 }
 #[derive(Default)]
 struct Recovery {
     continue_after: bool,
+    retry: bool,
     errors: Vec<ModelError>,
 }
 impl SessionPolicy for Recovery {
-    fn recover(&mut self, _: RecoverySnapshot<'_>, error: &ModelError) -> RecoveryDecision {
+    fn recover(&mut self, run: RecoverySnapshot<'_>, error: &ModelError) -> RecoveryDecision {
         self.errors.push(error.clone());
-        RecoveryDecision::Complete("temporary failure notice".into())
+        if self.retry {
+            RecoveryDecision::Retry(RecoveryInput::Reduced(run.history.to_vec()))
+        } else {
+            RecoveryDecision::Complete("temporary failure notice".into())
+        }
     }
     fn finish_turn<'a>(
         &'a mut self,
@@ -159,7 +177,8 @@ async fn consecutive_empty_planning_uses_existing_recovery_with_diagnostics() {
     });
     let model = Model::new(vec![Ok(tool()), Ok(empty.clone()), Ok(empty)]);
     let mut policy = Recovery::default();
-    let result = run(&model, &mut policy).await;
+    let (result, deltas) = run_observed(&model, &mut policy).await;
+    assert!(!deltas.contains(&result.content));
     assert_eq!(model.calls.load(Ordering::SeqCst), 3);
     assert_eq!(result.status, AgentRunStatus::Recovered);
     assert_eq!(result.content, "temporary failure notice");
@@ -206,7 +225,7 @@ async fn valid_tool_response_resets_empty_retry_streak() {
 
 #[tokio::test]
 async fn recovered_answer_continuation_keeps_facts_but_discards_notice_segments() {
-    for synthesis in [false, true] {
+    for (synthesis, empty) in [(false, false), (true, false), (true, true)] {
         let mut outputs = vec![Ok(tool())];
         if synthesis {
             outputs.push(Err(ModelError::with_kind(
@@ -215,14 +234,18 @@ async fn recovered_answer_continuation_keeps_facts_but_discards_notice_segments(
             )));
         }
         outputs.extend([
-            Err(ModelError::with_kind(
-                "failure",
-                ModelErrorKind::EmptyResponse,
-            )),
+            if empty {
+                Ok(text(""))
+            } else {
+                Err(ModelError::with_kind(
+                    "failure",
+                    ModelErrorKind::EmptyResponse,
+                ))
+            },
             Ok(text("final answer")),
         ]);
         let model = Model::new(outputs);
-        let result = run(
+        let (result, deltas) = run_observed(
             &model,
             &mut Recovery {
                 continue_after: true,
@@ -230,6 +253,9 @@ async fn recovered_answer_continuation_keeps_facts_but_discards_notice_segments(
             },
         )
         .await;
+        assert!(!deltas
+            .iter()
+            .any(|delta| delta == "temporary failure notice"));
         assert_eq!(result.status, AgentRunStatus::Completed);
         assert_eq!(result.content, "final answer");
         assert_eq!(result.tool_records.len(), 1);
@@ -242,15 +268,54 @@ async fn recovered_answer_continuation_keeps_facts_but_discards_notice_segments(
             .segments
             .iter()
             .any(|s| s.text.as_deref() == Some("temporary failure notice")));
-        assert!(result
-            .generated_history
-            .iter()
-            .any(|m| m.text_content() == "temporary failure notice"));
+        assert_eq!(
+            result
+                .generated_history
+                .iter()
+                .filter(|m| m.text_content() == "temporary failure notice")
+                .count(),
+            1
+        );
         assert!(result
             .generated_history
             .iter()
             .any(|m| m.text_content().contains("partial work")));
     }
+}
+
+#[tokio::test]
+async fn model_written_recovery_survives_continuation_even_when_it_matches_policy_text() {
+    let model = Model::new(vec![
+        Ok(tool()),
+        Err(ModelError::with_kind(
+            "failure",
+            ModelErrorKind::EmptyResponse,
+        )),
+        Ok(text("temporary failure notice")),
+        Ok(text("final answer")),
+    ]);
+    let (result, deltas) = run_observed(
+        &model,
+        &mut Recovery {
+            continue_after: true,
+            retry: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(result.content, "final answer");
+    assert_eq!(result.tool_records.len(), 1);
+    assert_eq!(
+        deltas
+            .iter()
+            .filter(|delta| delta.as_str() == "temporary failure notice")
+            .count(),
+        1
+    );
+    assert!(result
+        .segments
+        .iter()
+        .any(|s| s.text.as_deref() == Some("temporary failure notice")));
 }
 
 #[tokio::test]

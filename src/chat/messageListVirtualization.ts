@@ -127,7 +127,6 @@ function readingBodyRevision(message: ChatMessage): string {
       contentRevision(degraded.reason),
       contentRevision(degraded.detail),
       contentRevision(degraded.text),
-      degraded.toolSummaries?.map((summary) => `${summary.name}:${contentRevision(summary.preview)}`).join('|') ?? '',
     ].join(':') : '',
   ].join('::')
   readingBodyRevisionByMessage.set(message, revision)

@@ -8,54 +8,35 @@ use super::stop::{
     final_assistant_message, final_response_from_planning_message_with_images, merge_reasoning,
 };
 use super::stream::ToolCallDraftTracker;
-use super::synthesis::SynthesisCompleted;
+use super::synthesis::{SynthesisCompleted, SynthesisOutcome};
 use super::types::{AgentPhase, AgentRunResult};
 
-/// Converges the repeated "emit fallback + push api message + build AgentRunResult"
-/// blocks in the agent loop. Emit order is fixed: stream delta (with optional
-/// segment) -> stream done -> api message push (guarded or always) -> segment
-/// append -> result construction.
-pub(crate) struct RunResultBuilder<'a> {
-    host: &'a super::context::AgentContext<'a>,
+/// Builds a terminal run result from the gathered facts.
+pub(crate) struct RunResultBuilder {
     content: String,
     api_reasoning: Option<String>,
     replay: Option<ModelMessage>,
     reasoning_tail: Option<String>,
-    emit_segment: Option<ContentBlock>,
     append_template: Option<ContentBlock>,
-    emit_done_reason: Option<&'static str>,
     push_api_always: bool,
     outcome: super::types::AgentRunStatus,
 }
 
-impl<'a> RunResultBuilder<'a> {
-    pub(crate) fn new(host: &'a super::context::AgentContext<'a>, content: String) -> Self {
+impl RunResultBuilder {
+    pub(crate) fn new(content: String) -> Self {
         Self {
-            host,
             content,
             api_reasoning: None,
             replay: None,
             reasoning_tail: None,
-            emit_segment: None,
             append_template: None,
-            emit_done_reason: None,
             push_api_always: false,
             outcome: super::types::AgentRunStatus::Completed,
         }
     }
 
-    /// Use `template` both as the segment attached to the emitted delta and as
-    /// the template appended to the segment builder during `finish`.
     pub(crate) fn segment(mut self, template: &ContentBlock) -> Self {
-        self.emit_segment = Some(template.clone());
         self.append_template = Some(template.clone());
-        self
-    }
-
-    /// Attach an already-appended segment to the emitted delta without
-    /// re-appending it during `finish`.
-    pub(crate) fn emit_segment_opt(mut self, segment: Option<ContentBlock>) -> Self {
-        self.emit_segment = segment;
         self
     }
 
@@ -74,11 +55,6 @@ impl<'a> RunResultBuilder<'a> {
         self
     }
 
-    pub(crate) fn emit_done(mut self, reason: &'static str) -> Self {
-        self.emit_done_reason = Some(reason);
-        self
-    }
-
     pub(crate) fn push_api_always(mut self) -> Self {
         self.push_api_always = true;
         self
@@ -87,15 +63,6 @@ impl<'a> RunResultBuilder<'a> {
     pub(crate) fn outcome(mut self, outcome: super::types::AgentRunStatus) -> Self {
         self.outcome = outcome;
         self
-    }
-
-    /// 挂上降级兜底的结构化描述，让前端渲染成独立错误卡片。
-
-    fn emit(&self) {
-        if self.emit_done_reason.is_some() {
-            self.host
-                .content(&self.content, None, self.emit_segment.as_ref());
-        }
     }
 
     fn push_api_message(&self, generated_api_messages: &mut Vec<RuntimeMessage>) {
@@ -112,8 +79,6 @@ impl<'a> RunResultBuilder<'a> {
         }
     }
 
-    /// Emit + api push + segment append + AgentRunResult construction, for
-    /// fallbacks that end the run immediately.
     pub(crate) fn finish(
         self,
         mut segment_builder: SegmentBuilder,
@@ -121,7 +86,6 @@ impl<'a> RunResultBuilder<'a> {
         tool_records: Vec<AgentToolCall>,
         mut generated_api_messages: Vec<RuntimeMessage>,
     ) -> AgentRunResult {
-        self.emit();
         self.push_api_message(&mut generated_api_messages);
         if let Some(template) = &self.append_template {
             segment_builder.append_text_from_template(template, self.content.clone());
@@ -237,10 +201,6 @@ impl SegmentBuilder {
         segments
     }
 
-    pub(crate) fn remove_segment(&mut self, id: u32) {
-        self.segments.retain(|segment| segment.id != id);
-    }
-
     pub(crate) fn next_order(&self) -> u32 {
         self.next_order
     }
@@ -318,12 +278,23 @@ pub(crate) fn finalize_completed(
     completed: SynthesisCompleted,
 ) -> AgentRunResult {
     let SynthesisCompleted {
+        outcome,
         replay,
         response,
         reasoning,
         generated_message,
         ..
     } = completed;
+    let status = match outcome {
+        SynthesisOutcome::Completed => super::types::AgentRunStatus::Completed,
+        SynthesisOutcome::Recovered => super::types::AgentRunStatus::Recovered,
+        SynthesisOutcome::Fallback(segment) => {
+            state
+                .segment_builder
+                .append_text_from_template(&segment, response.clone());
+            super::types::AgentRunStatus::Recovered
+        }
+    };
     state.generated_api_messages.extend(generated_message);
 
     AgentRunResult {
@@ -333,7 +304,7 @@ pub(crate) fn finalize_completed(
         tool_records: std::mem::take(&mut state.tool_records),
         segments: std::mem::take(&mut state.segment_builder).all(),
         generated_history: std::mem::take(&mut state.generated_api_messages),
-        status: super::types::AgentRunStatus::Completed,
+        status,
         usage: None,
         cache_pairs: None,
         last_step_usage: None,
@@ -364,12 +335,8 @@ pub(crate) fn tool_planning_failed_run_result(
     let mut final_segment = planning_text_segment;
     final_segment.phase = ContentPhase::Synthesis;
     final_segment.round = None;
-    let appended_segment =
-        segment_builder.append_text_from_template(&final_segment, content.clone());
-
-    RunResultBuilder::new(host, content)
-        .emit_segment_opt(appended_segment)
-        .emit_done("done")
+    RunResultBuilder::new(content)
+        .segment(&final_segment)
         .push_api_always()
         .outcome(super::types::AgentRunStatus::Failed(error))
         .finish(
@@ -422,21 +389,6 @@ pub(crate) fn cancelled_run_result_from_state(state: &mut RunState) -> AgentRunR
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn removing_a_candidate_segment_preserves_its_reserved_order() {
-        let mut builder = super::SegmentBuilder::new();
-        let notice = builder.reserve(
-            super::ContentKind::Text,
-            super::ContentPhase::Synthesis,
-            None,
-            None,
-        );
-        builder.append_text_from_template(&notice, "temporary failure");
-        builder.remove_segment(notice.id);
-        assert!(builder.segments().is_empty());
-        assert!(builder.next_order() > notice.id);
-    }
-
     use super::*;
     use crate::agent::content::{AgentToolStatus, InputKind};
     use crate::agent::context::AgentContext;
@@ -600,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_planning_failed_run_result_marks_drafts_error_and_emits_fallback() {
+    fn tool_planning_failed_run_result_marks_drafts_error_and_returns_fallback() {
         let host = TestHost::default();
 
         let mut segment_builder = SegmentBuilder::new();
@@ -692,7 +644,7 @@ mod tests {
         assert_eq!(fallback_segment.round, None);
         assert_eq!(fallback_segment.text.as_deref(), Some(fallback));
 
-        assert!(host
+        assert!(!host
             .deltas
             .lock()
             .unwrap()

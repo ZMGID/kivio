@@ -42,10 +42,9 @@ pub(crate) enum PlanningStepOutcome {
     ToolsUnsupported,
     /// Tool-call argument drafting failed mid-stream; the run ends immediately.
     DraftFailed(AgentRunResult),
-    /// A later-round planning call hard-failed but tool results already exist;
-    /// the run ends with those gathered results instead of bubbling an error
-    /// (统一恢复:不空手而归).
-    Recovered(AgentRunResult),
+    /// A later-round planning error produced a candidate answer through recovery.
+    Recovered(super::synthesis::SynthesisCompleted),
+    CompactionBlocked(AgentRunResult),
     /// Streaming was cancelled after partial plain-text output (no tool drafts
     /// started); the run ends immediately preserving the generated text. The
     /// stream layer already emitted the single done("cancelled") event.
@@ -87,10 +86,9 @@ pub(crate) async fn planning_step(
             Some(step_number),
             Some(round),
         );
-        return Ok(PlanningStepOutcome::Recovered(
-            RunResultBuilder::new(host, content)
+        return Ok(PlanningStepOutcome::CompactionBlocked(
+            RunResultBuilder::new(content)
                 .segment(&degrade_segment)
-                .emit_done("done")
                 .outcome(super::types::AgentRunStatus::CompactionBlocked)
                 .finish(
                     std::mem::take(&mut state.segment_builder),
@@ -210,7 +208,7 @@ pub(crate) async fn planning_step(
                     let mut segment = planning_text_segment.clone();
                     segment.phase = ContentPhase::Plain;
                     return Ok(PlanningStepOutcome::Cancelled(
-                        RunResultBuilder::new(host, partial)
+                        RunResultBuilder::new(partial)
                             .segment(&segment)
                             .api_reasoning(stream.reasoning.clone())
                             .reasoning_tail(stream.reasoning)
@@ -294,7 +292,7 @@ pub(crate) async fn planning_step(
                         planning_tool_drafts,
                         &state.planning_reasoning_parts,
                         std::mem::take(&mut state.generated_api_messages),
-                        AgentFailure::model("planning", err),
+                        AgentFailure::model("tool_draft", err),
                     ),
                 ));
             }
@@ -337,28 +335,17 @@ pub(crate) async fn planning_step(
             if !state.tool_records.is_empty() {
                 let recovered =
                     super::synthesis::recover_synthesis(env, state, &err, session).await?;
-                let replay = recovered.replay;
-                let content = recovered.text;
-                if !content.trim().is_empty() {
-                    eprintln!("Chat planning call failed mid-run; recovered: {err}");
-                    // 降级文案是本轮的**正文**，段 phase 必须是 Synthesis（不能留 ToolLoop）：
-                    // content_from_segments 只认 Plain|Synthesis，留 ToolLoop 会让
-                    // normalize_assistant_segments 以为正文没落段而再补一条，正文渲染两遍。
-                    let mut segment = planning_text_segment.clone();
+                if !recovered.text.trim().is_empty() {
+                    let mut segment = planning_text_segment;
                     segment.phase = ContentPhase::Synthesis;
-                    return Ok(PlanningStepOutcome::Recovered(
-                        RunResultBuilder::new(host, content)
-                            .segment(&segment)
-                            .emit_done("done")
-                            .outcome(super::types::AgentRunStatus::Recovered)
-                            .replay(replay)
-                            .finish(
-                                std::mem::take(&mut state.segment_builder),
-                                &state.planning_reasoning_parts,
-                                std::mem::take(&mut state.tool_records),
-                                std::mem::take(&mut state.generated_api_messages),
-                            ),
-                    ));
+                    return Ok(PlanningStepOutcome::Recovered(recovered.into_candidate(
+                        env,
+                        state,
+                        segment,
+                        None,
+                        super::recovery::FallbackReason::FailedPlanning,
+                        session,
+                    )));
                 }
             }
             return Err(AgentFailure::model("planning", err));

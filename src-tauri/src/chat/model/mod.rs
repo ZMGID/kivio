@@ -400,6 +400,13 @@ mod anonymous_http_tests {
             ),
             ("200 OK", delta),
             (
+                "200 OK",
+                event(json!({"type":"response.failed","response":{"error":{
+                    "code":"server_is_overloaded","type":"service_unavailable_error","param":null,
+                    "headers":{"retry-after":"358","retry-after-ms":"358000"},
+                    "message":"Our servers are currently overloaded. Please try again later."}}})),
+            ),
+            (
                 "403 Forbidden",
                 json!({"detail":"region unavailable"}).to_string(),
             ),
@@ -474,6 +481,17 @@ mod anonymous_http_tests {
             .await
             .unwrap_err()
             .is_retryable_stream_error());
+        let overload = adapter.generate(request.clone()).await.unwrap_err();
+        assert!(overload.is_retryable_stream_error(), "{overload}");
+        assert_eq!(overload.kind, ModelErrorKind::ProviderUnavailable);
+        assert_eq!(
+            overload.provider_code.as_deref(),
+            Some("server_is_overloaded")
+        );
+        assert_eq!(
+            overload.retry_after,
+            Some(std::time::Duration::from_secs(358))
+        );
         let admission = adapter.generate(request).await.unwrap_err();
         assert_eq!(admission.status, Some(403));
         assert!(admission.message.contains("region unavailable"));

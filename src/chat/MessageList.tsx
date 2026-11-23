@@ -1083,7 +1083,13 @@ function MessageListBase({
   const errorItem = useMemo<RenderItem | null>(() => {
     const last = tail.at(-1)
     const retryMessageId = last?.role === 'user' ? last.id : null
-    if (error) return { kind: 'error', key: 'error', degraded: streamErrorDegraded(error, i18n[lang]), retryMessageId }
+    if (error) {
+      const saved = last?.role === 'assistant' && last.stream_outcome === 'error' ? last.degraded : null
+      const degraded = saved && (saved.detail === error || saved.reason === error)
+        ? saved
+        : streamErrorDegraded(error, i18n[lang])
+      return { kind: 'error', key: 'error', degraded, retryMessageId }
+    }
     // 只显示本轮最近的失败，下一条用户消息自然结束它的展示。
     for (let i = tail.length - 1; i >= 0 && tail[i].role === 'assistant'; i--) {
       const degraded = tail[i].degraded

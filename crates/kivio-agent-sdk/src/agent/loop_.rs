@@ -17,7 +17,7 @@ use super::rounds::{run_tool_round, ToolRoundOutcome};
 use super::steering::{
     follow_up_pending, inject_follow_up_messages, inject_steering_messages, steering_pending,
 };
-use super::synthesis::{synthesis_step, SynthesisCompleted, SynthesisFlow};
+use super::synthesis::{synthesis_step, SynthesisCompleted, SynthesisFlow, SynthesisOutcome};
 use super::types::{AgentRunConfig, AgentRunResult};
 
 /// Immutable per-run environment shared by every loop phase.
@@ -356,21 +356,12 @@ fn timeout_result(
 enum Answer {
     Planning(crate::model::GenerateOutput),
     Synthesis(SynthesisCompleted),
-    Recovered(AgentRunResult),
 }
 
 impl Answer {
     fn message(&self) -> RuntimeMessage {
         match self {
             Self::Planning(output) => RuntimeMessage::model(output.replay_message()),
-            Self::Recovered(result) => {
-                RuntimeMessage::model(result.final_message.clone().unwrap_or_else(|| {
-                    super::stop::final_assistant_message(
-                        &result.content,
-                        result.reasoning.as_deref(),
-                    )
-                }))
-            }
             Self::Synthesis(completed) => {
                 completed.generated_message.clone().unwrap_or_else(|| {
                     RuntimeMessage::model(completed.replay.clone().unwrap_or_else(|| {
@@ -386,21 +377,6 @@ impl Answer {
 
     fn absorb(self, state: &mut RunState) {
         let message = match self {
-            Self::Recovered(result) => {
-                // Recovery builders append the candidate notice last; keep its ordinal consumed.
-                if let Some(notice) = result.segments.last().filter(|segment| {
-                    segment.kind == super::content::ContentKind::Text
-                        && segment.text.as_deref() == Some(result.content.as_str())
-                }) {
-                    state.segment_builder.remove_segment(notice.id);
-                }
-                RuntimeMessage::model(result.final_message.unwrap_or_else(|| {
-                    super::stop::final_assistant_message(
-                        &result.content,
-                        result.reasoning.as_deref(),
-                    )
-                }))
-            }
             Self::Planning(output) => RuntimeMessage::model(output.replay_message()),
             Self::Synthesis(completed) => {
                 if let Some(reasoning) = completed.response_reasoning.as_deref() {
@@ -429,24 +405,24 @@ impl Answer {
                 finalize_planning_final(state, output).map_err(AgentFailure::InvalidOutput)
             }
             Self::Synthesis(completed) => Ok(finalize_completed(state, completed)),
-            Self::Recovered(result) => Ok(result),
         }
     }
 
     fn cancel(self, state: &mut RunState) -> Result<AgentRunResult, AgentFailure> {
+        if let Self::Synthesis(SynthesisCompleted {
+            outcome: SynthesisOutcome::Fallback(_),
+            reasoning,
+            ..
+        }) = &self
+        {
+            let mut result = cancelled_run_result_from_state(state);
+            result.reasoning = reasoning.clone();
+            return Ok(result);
+        }
         let mut result = self.finish(state)?;
         result.status = super::types::AgentRunStatus::Cancelled;
         Ok(record_final_message(result, state))
     }
-}
-
-// Early recovery builders own the accumulated facts; restore them before scheduling another turn.
-fn restore_completed_result(state: &mut RunState, result: &AgentRunResult) {
-    state.tool_records = result.tool_records.clone();
-    state.generated_api_messages = result.generated_history.clone();
-    state
-        .segment_builder
-        .append_existing_segments(result.segments.clone());
 }
 
 enum AnswerBoundary {
@@ -804,18 +780,6 @@ async fn answer_boundary(
     })
 }
 
-/// A completed recovery is a candidate answer; any other early result ends the run as it is.
-fn recovered_answer(
-    state: &mut RunState,
-    result: AgentRunResult,
-) -> Result<Answer, AgentRunResult> {
-    if result.status != super::types::AgentRunStatus::Recovered {
-        return Err(record_final_message(result, state));
-    }
-    restore_completed_result(state, &result);
-    Ok(Answer::Recovered(result))
-}
-
 /// The run stops offering tools: checkpoint the facts and apply the plain-answer prompt.
 async fn enter_plain_answers(env: &LoopEnv<'_>, state: &mut RunState) -> Result<(), AgentFailure> {
     env.host
@@ -985,15 +949,10 @@ async fn run_agent_loop_inner(
                         result.tool_records = records;
                         return Ok(record_final_message(result, &mut state));
                     }
-                    PlanningStepOutcome::Cancelled(result) => {
+                    PlanningStepOutcome::Cancelled(result) | PlanningStepOutcome::CompactionBlocked(result) => {
                         return Ok(record_final_message(result, &mut state));
                     }
-                    PlanningStepOutcome::Recovered(result) => {
-                        match recovered_answer(&mut state, result) {
-                            Ok(answer) => answer,
-                            Err(result) => return Ok(result),
-                        }
-                    }
+                    PlanningStepOutcome::Recovered(completed) => Answer::Synthesis(completed),
                 }
             } else {
                 match synthesis_step(&env, &mut state, session).await? {
@@ -1001,10 +960,7 @@ async fn run_agent_loop_inner(
                     SynthesisFlow::CancelledState => {
                         return Ok(cancelled_run_result_from_state(&mut state));
                     }
-                    SynthesisFlow::Early(result) => match recovered_answer(&mut state, result) {
-                        Ok(answer) => answer,
-                        Err(result) => return Ok(result),
-                    },
+                    SynthesisFlow::Early(result) => return Ok(record_final_message(result, &mut state)),
                 }
             };
 

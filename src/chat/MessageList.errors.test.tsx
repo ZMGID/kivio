@@ -42,6 +42,19 @@ it('shows a single current error even when the conversation also records a failu
   expect(screen.getByText('HTTP 429: Too Many Requests')).toBeVisible()
 })
 
+it('shows the saved provider failure when the send also reports it', () => {
+  const detail = 'Our servers are currently overloaded.'
+  act(() => setCoarse({ streamError: detail }))
+  const failed = { ...failedReply, stream_outcome: 'error', degraded: {
+    kind: 'provider_unavailable', reason: '模型服务暂时不可用，请稍后重试。', detail, text: '',
+  } }
+  render(<MessageList conversationId="exhausted-retries" messages={[failed]} />)
+  const card = screen.getByRole('status')
+  expect(card).toHaveAttribute('data-degraded-kind', 'provider_unavailable')
+  expect(card).toHaveTextContent(detail)
+  expect(screen.getAllByText(detail)).toHaveLength(1)
+})
+
 it('keeps the partial answer and removes its failure card on the next send', () => {
   const partial = { ...failedReply, content: '已经生成的回答', segments: [
     { id: 'partial', kind: 'text' as const, phase: 'partial_answer' as const, order: 0, text: '已经生成的回答' },

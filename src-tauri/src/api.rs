@@ -269,7 +269,7 @@ impl RetryBudget {
 
     pub(crate) fn schedule(
         &self,
-        retry_after: Option<u64>,
+        retry_after: Option<Duration>,
         reason: &str,
         immediate: bool,
     ) -> Option<(crate::chat::protocol::ChatRetryStatusPayload, u64)> {
@@ -382,12 +382,13 @@ impl ThinkingChoice {
     }
 }
 
-/// 从响应头中解析 Retry-After 值（秒），转换为毫秒延迟
-fn parse_retry_after(headers: &HeaderMap) -> Option<u64> {
+/// 从响应头解析以秒为单位的 Retry-After。
+fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
     headers
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
 }
 
 fn is_retryable_error(error: &reqwest::Error) -> bool {
@@ -439,12 +440,13 @@ pub fn format_reqwest_error(error: &reqwest::Error) -> String {
 /// 指数退避与 Retry-After 取较大值，避免服务端的小值导致快速耗尽重试。
 /// Retry-After 同样受 `RETRY_MAX_DELAY_MS` 封顶：上游（或中转）偶尔返回
 /// `Retry-After: 86400` 之类的巨值，照睡会把整次请求挂死一天（只能靠取消轮询打断）。
-fn retry_delay_ms(attempt: usize, retry_after: Option<u64>) -> u64 {
+fn retry_delay_ms(attempt: usize, retry_after: Option<Duration>) -> u64 {
     let backoff =
         RETRY_BASE_DELAY_MS.saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1) as u32));
-    backoff
-        .max(retry_after.unwrap_or(0).saturating_mul(1000))
-        .min(RETRY_MAX_DELAY_MS)
+    Duration::from_millis(backoff)
+        .max(retry_after.unwrap_or_default())
+        .min(Duration::from_millis(RETRY_MAX_DELAY_MS))
+        .as_millis() as u64
 }
 
 pub use crate::chat::model::extract_status_code;
@@ -1548,12 +1550,21 @@ mod tests {
     fn retry_after_is_capped_at_max_delay() {
         // 上游/中转返回的巨值 Retry-After 不得被照单全收：否则单次重试会挂死数小时，
         // 只能靠取消轮询打断（B2）。
-        assert_eq!(retry_delay_ms(1, Some(86_400)), RETRY_MAX_DELAY_MS);
-        assert_eq!(retry_delay_ms(1, Some(u64::MAX)), RETRY_MAX_DELAY_MS);
+        assert_eq!(
+            retry_delay_ms(1, Some(Duration::from_secs(86_400))),
+            RETRY_MAX_DELAY_MS
+        );
+        assert_eq!(
+            retry_delay_ms(1, Some(Duration::from_secs(u64::MAX))),
+            RETRY_MAX_DELAY_MS
+        );
         // 合理值仍原样生效（未被 clamp 抹平）。
         let small = 2u64;
         assert!(small * 1000 < RETRY_MAX_DELAY_MS, "测试前提：2s 应小于上限");
-        assert_eq!(retry_delay_ms(1, Some(small)), small * 1000);
+        assert_eq!(
+            retry_delay_ms(1, Some(Duration::from_secs(small))),
+            small * 1000
+        );
         // 无 Retry-After → 指数退避，同样受上限约束。
         assert!(retry_delay_ms(99, None) <= RETRY_MAX_DELAY_MS);
     }
@@ -1749,15 +1760,15 @@ mod tests {
     #[test]
     fn retry_delay_uses_retry_after_as_a_minimum() {
         // Small Retry-After values cannot burn the budget faster than backoff.
-        assert_eq!(retry_delay_ms(1, Some(7)), 7_000);
-        assert_eq!(retry_delay_ms(5, Some(2)), 16_000);
+        assert_eq!(retry_delay_ms(1, Some(Duration::from_secs(7))), 7_000);
+        assert_eq!(retry_delay_ms(5, Some(Duration::from_secs(2))), 16_000);
     }
 
     #[test]
     fn parse_retry_after_reads_seconds_header() {
         let mut headers = HeaderMap::new();
         headers.insert("retry-after", "12".parse().unwrap());
-        assert_eq!(parse_retry_after(&headers), Some(12));
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(12)));
 
         let empty = HeaderMap::new();
         assert_eq!(parse_retry_after(&empty), None);

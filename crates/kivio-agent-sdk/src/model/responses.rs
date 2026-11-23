@@ -437,6 +437,7 @@ async fn decode_stream(
     model: &str,
     chatgpt_plan: bool,
 ) -> Result<GenerateOutput, ModelError> {
+    let retry_after = super::transport::retry_after_header(response.headers());
     let request_id = response
         .headers()
         .get("x-request-id")
@@ -460,9 +461,10 @@ async fn decode_stream(
             .push(&chunk)
             .map_err(|e| e.with_request_id(request_id.as_deref()))?
         {
-            if let Some(error) = process_sse_data(&data, &mut state, sink)
+            if let Some(mut error) = process_sse_data(&data, &mut state, sink)
                 .map_err(|e| e.with_request_id(request_id.as_deref()))?
             {
+                error.retry_after = error.retry_after.or(retry_after);
                 return Err(error.with_request_id(request_id.as_deref()));
             }
             if state.finish_reason.is_some() {
@@ -1690,21 +1692,21 @@ fn handle_responses_stream_event(
             )));
         }
         "response.failed" | "error" => {
-            let code = responses_error_payload(value)
+            let nested = responses_error_payload(value);
+            let code = nested
                 .and_then(provider_error_code)
                 .or_else(|| value["code"].as_str().map(str::to_string));
-            let error = if state.chatgpt_plan {
-                let payload = responses_error_payload(value).unwrap_or(value);
-                ModelError::from_provider_payload(
-                    code.as_deref(),
-                    format!("ChatGPT Responses error: {payload}"),
-                )
+            let payload = nested.unwrap_or(value);
+            let diagnostic = if state.chatgpt_plan {
+                format!("ChatGPT Responses error: {payload}")
             } else {
-                ModelError::from_provider_stream(
-                    code.as_deref(),
-                    responses_stream_error_text(value),
-                )
+                responses_stream_error_text(value)
             };
+            let mut error = ModelError::from_provider_stream(code.as_deref(), diagnostic);
+            error.retry_after = super::transport::parse_retry_after(
+                payload["headers"]["retry-after-ms"].as_str(),
+                payload["headers"]["retry-after"].as_str(),
+            );
             return Ok(Some(error));
         }
         _ => {}

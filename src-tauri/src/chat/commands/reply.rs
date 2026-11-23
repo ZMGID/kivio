@@ -1177,7 +1177,12 @@ fn finish_prepared_reply<'a, 'state: 'a>(
         let (mut result, run_error) = match result {
             Ok(result) => (result, None),
             Err(crate::chat::session_policy::ApplicationRunError::Failed { cause, partial }) => {
-                (*partial, Some(cause.to_string()))
+                let error = partial
+                    .degraded
+                    .as_ref()
+                    .and_then(|card| card.detail.clone())
+                    .unwrap_or_else(|| cause.to_string());
+                (*partial, Some(error))
             }
             Err(error) => {
                 return finish_reply_failure(
@@ -1200,8 +1205,6 @@ fn finish_prepared_reply<'a, 'state: 'a>(
                     kind: "unknown".into(),
                     reason: error.clone(),
                     detail: None,
-                    tool_summaries: Vec::new(),
-                    total_tool_calls: Some(result.tool_records.len()),
                     text: error.clone(),
                 });
         }
@@ -1330,9 +1333,13 @@ fn finish_prepared_reply<'a, 'state: 'a>(
             .goal_state
             .as_ref()
             .filter(|g| g.active_run_id.as_deref() == Some(run_id.as_str()))
-            .map(|g| g.id.clone());
-        let terminal_content = if goal_run.is_some() {
-            result.content.clone()
+            .map(|g| (g.id.clone(), result.content.clone()));
+        let terminal_content = if result
+            .degraded
+            .as_ref()
+            .is_some_and(|card| card.text == result.content)
+        {
+            String::new()
         } else {
             crate::chat::protocol::terminal_content(&result.content).to_owned()
         };
@@ -1362,14 +1369,14 @@ fn finish_prepared_reply<'a, 'state: 'a>(
             Some(history_commit),
         )
         .await?;
-        if let Some(goal_id) = goal_run {
+        if let Some((goal_id, content)) = goal_run {
             *conversation = crate::chat::goal::record_run(
                 app,
                 &conversation.id,
                 &goal_id,
                 &run_id,
                 &goal_assistant_message_id,
-                &terminal_content,
+                &content,
                 goal_usage.as_ref(),
                 last_user_api_content.is_none(),
             )

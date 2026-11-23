@@ -15,6 +15,7 @@ const KIND_META: Record<
   string,
   { Icon: typeof AlertTriangle; label: keyof I18n; tone: string }
 > = {
+  provider_unavailable: { Icon: PlugZap, label: 'chatDegradedProviderUnavailable', tone: 'amber' },
   rate_limited: { Icon: Gauge, label: 'chatDegradedRateLimited', tone: 'amber' },
   context_overflow: { Icon: Scissors, label: 'chatDegradedContextOverflow', tone: 'amber' },
   timeout: { Icon: PlugZap, label: 'chatDegradedTimeout', tone: 'amber' },
@@ -45,7 +46,6 @@ export function DegradedAnswerCard({ degraded }: { degraded: DegradedAnswer }) {
   const meta = KIND_META[degraded.kind] ?? KIND_META.unknown
   const tone = TONE_CLASS[meta.tone] ?? TONE_CLASS.red
   const { Icon } = meta
-  const summaries = degraded.toolSummaries ?? []
   const detail = degraded.detail?.trim()
 
   return (
@@ -66,15 +66,6 @@ export function DegradedAnswerCard({ degraded }: { degraded: DegradedAnswer }) {
             <pre className="custom-scrollbar mt-2 max-h-40 min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-neutral-900/[0.04] px-2.5 py-1.5 font-mono text-[12px] leading-relaxed text-neutral-600">
               {detail}
             </pre>
-          )}
-
-          {/* 工具结果本身已在上方的工具卡片里，这里只给一句计数指路，不再复述一遍列表。 */}
-          {(Boolean(degraded.totalToolCalls) || summaries.length > 0) && (
-            <div className="mt-2 text-[12px] text-neutral-500 dark:text-neutral-500">
-              {degraded.totalToolCalls
-                ? t.chatDegradedToolCallsTotal.replace('{n}', String(degraded.totalToolCalls))
-                : t.chatDegradedRecentToolResults.replace('{n}', String(summaries.length))}
-            </div>
           )}
         </div>
       </div>

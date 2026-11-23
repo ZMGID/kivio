@@ -167,6 +167,7 @@ export type ChatMessageSegmentPhase = ChatSegmentPhase
 export interface DegradedAnswer {
   /** 稳定标识，前端据此选图标/措辞，不解析文案。 */
   kind:
+    | 'provider_unavailable'
     | 'rate_limited'
     | 'context_overflow'
     | 'timeout'
@@ -180,10 +181,6 @@ export interface DegradedAnswer {
   reason: string
   /** 供应商返回的原始报错（已剥壳裁剪）——真正能排查的那一句。 */
   detail?: string | null
-  /** 本轮已完成的工具调用摘要。 */
-  toolSummaries?: { name: string; preview: string }[]
-  /** 本轮全部工具调用数（包括失败调用）；旧消息可能缺省。 */
-  totalToolCalls?: number | null
   /** 纯文本版本，供不渲染卡片的场景回落。 */
   text: string
 }

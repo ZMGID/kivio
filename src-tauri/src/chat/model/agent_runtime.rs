@@ -82,7 +82,11 @@ impl ModelRuntime for AppAgentModel<'_> {
                     };
                     match result {
                         Err(error) if error.is_retryable_stream_error() => {
-                            let Some((retry, delay_ms)) = budget.schedule(None, "Stream interrupted", false) else {
+                            let reason = match error.provider_code.as_deref() {
+                                Some("server_is_overloaded" | "overloaded_error") => "Server overloaded",
+                                _ => "Stream interrupted",
+                            };
+                            let Some((retry, delay_ms)) = budget.schedule(error.retry_after, reason, false) else {
                                 return Err(error);
                             };
                             sink.reset_attempt();

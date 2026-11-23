@@ -295,14 +295,14 @@ impl SessionPolicy for AppSessionPolicy<'_> {
 
     fn recovery_failed(
         &mut self,
-        run: RecoverySnapshot<'_>,
+        _run: RecoverySnapshot<'_>,
         failure: RecoveryFailure<'_>,
     ) -> String {
-        self.recovery.recovery_failed(run, failure)
+        self.recovery.recovery_failed(failure)
     }
 
-    fn context_blocked(&mut self, run: RecoverySnapshot<'_>) -> String {
-        self.recovery.context_blocked(run)
+    fn context_blocked(&mut self, _run: RecoverySnapshot<'_>) -> String {
+        self.recovery.context_blocked()
     }
 
     fn fallback(&self, reason: FallbackReason) -> String {
@@ -544,10 +544,21 @@ fn application_result(
     use crate::chat::agent::history::export_history;
     let (compaction_boundary, compaction_summary) =
         policy.context.finish_run(result.history.context());
-    let degraded = policy
-        .recovery
-        .take_degraded()
-        .filter(|_| result.status == crate::chat::agent::types::AgentRunStatus::Recovered);
+    use crate::chat::agent::types::AgentRunStatus;
+    let degraded = match &result.status {
+        AgentRunStatus::Recovered | AgentRunStatus::CompactionBlocked => {
+            policy.recovery.take_degraded()
+        }
+        AgentRunStatus::Failed(kivio_agent_sdk::agent::AgentFailure::Model { stage, source }) => {
+            let mut card = policy.recovery.model_failure_card(source);
+            if *stage == "tool_draft" {
+                card.text.clone_from(&result.content);
+                card.reason.clone_from(&result.content);
+            }
+            Some(card)
+        }
+        _ => None,
+    };
     ApplicationRunResult {
         content: result.content,
         reasoning: result.reasoning,

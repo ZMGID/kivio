@@ -1,4 +1,4 @@
-use crate::chat::agent::content::{AgentToolCall, AgentToolStatus};
+use crate::chat::agent::content::AgentToolStatus;
 use crate::chat::agent::{
     history::RuntimeMessage,
     recovery::{
@@ -57,10 +57,11 @@ impl RecoveryPolicy {
             kind = FailureKind::ContextOverflow;
         }
         self.pending = None;
+        self.degraded = None;
         match decide(kind, !run.tool_records.is_empty(), false, false) {
             RecoveryAction::Surface => RecoveryDecision::Surface,
             RecoveryAction::DegradeToGathered => {
-                RecoveryDecision::Complete(self.degrade(run, kind, Some(&error.message)))
+                RecoveryDecision::Complete(self.degrade(kind, Some(&error.message)))
             }
             RecoveryAction::CompactAndRetry => {
                 self.pending = Some(PendingRecovery::Overflow);
@@ -79,52 +80,38 @@ impl RecoveryPolicy {
         }
     }
 
-    pub(crate) fn recovery_failed(
-        &mut self,
-        run: RecoverySnapshot<'_>,
-        failure: RecoveryFailure<'_>,
-    ) -> String {
+    pub(crate) fn recovery_failed(&mut self, failure: RecoveryFailure<'_>) -> String {
         match self.pending.take() {
             Some(PendingRecovery::Overflow) => match failure {
-                RecoveryFailure::Blocked => assemble_results_from_tool_records(
-                    run.tool_records,
-                    &self.language,
-                    FailureKind::ContextOverflow,
-                ),
-                RecoveryFailure::Error(error) => {
-                    self.degrade(run, FailureKind::ContextOverflow, Some(&error.message))
+                RecoveryFailure::Blocked | RecoveryFailure::Empty => {
+                    self.degrade(FailureKind::ContextOverflow, None)
                 }
-                RecoveryFailure::Empty => self.degrade(run, FailureKind::ContextOverflow, None),
+                RecoveryFailure::Error(error) => {
+                    self.degrade(FailureKind::ContextOverflow, Some(&error.message))
+                }
             },
-            Some(PendingRecovery::Reduced { kind, error }) => self.degrade(run, kind, Some(&error)),
+            Some(PendingRecovery::Reduced { kind, error }) => self.degrade(kind, Some(&error)),
             None => String::new(),
         }
     }
 
-    fn degrade(
-        &mut self,
-        run: RecoverySnapshot<'_>,
-        kind: FailureKind,
-        error: Option<&str>,
-    ) -> String {
-        self.degraded = assemble_degraded_answer(run.tool_records, &self.language, kind, error);
-        self.degraded
-            .as_ref()
-            .map(|answer| answer.text.clone())
-            .unwrap_or_default()
+    fn degrade(&mut self, kind: FailureKind, error: Option<&str>) -> String {
+        let card = DegradedAnswer::new(kind, &self.language, error);
+        let text = card.text.clone();
+        self.degraded = Some(card);
+        text
     }
 
-    pub(crate) fn context_blocked(&self, run: RecoverySnapshot<'_>) -> String {
-        let text = assemble_results_from_tool_records(
-            run.tool_records,
+    pub(crate) fn context_blocked(&mut self) -> String {
+        self.degrade(FailureKind::ContextOverflow, None)
+    }
+
+    pub(crate) fn model_failure_card(&self, error: &ModelError) -> DegradedAnswer {
+        DegradedAnswer::new(
+            failure_kind(error.kind),
             &self.language,
-            FailureKind::ContextOverflow,
-        );
-        if text.trim().is_empty() {
-            overflow_static_message(&self.language)
-        } else {
-            text
-        }
+            Some(&error.message),
+        )
     }
 
     pub(crate) fn fallback(&self, reason: FallbackReason) -> String {
@@ -198,21 +185,20 @@ pub struct DegradedAnswer {
     /// 供应商返回的原始报错（已剥壳裁剪）。`reason` 只是分类话术，真正能排查的是这个。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// 本轮已完成的工具调用摘要（名称 + 结果首行），让用户知道哪些工作没白做。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_summaries: Vec<DegradedToolSummary>,
-    /// All attempted tool calls, including failed calls; summaries only show successful previews.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub total_tool_calls: Option<usize>,
-    /// 与 `tool_summaries` 同源的纯文本版本；旧前端 / 外部 CLI 直接显示这个。
+    /// Plain-text fallback, also used to identify the notice in older transcripts.
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DegradedToolSummary {
-    pub name: String,
-    pub preview: String,
+impl DegradedAnswer {
+    fn new(kind: FailureKind, language: &str, error: Option<&str>) -> Self {
+        let reason = failure_reason_line(kind, language.starts_with("zh"));
+        Self {
+            kind: kind.wire_kind().into(),
+            reason: reason.into(),
+            detail: error.and_then(extract_error_detail),
+            text: reason.into(),
+        }
+    }
 }
 
 impl FailureKind {
@@ -223,6 +209,7 @@ impl FailureKind {
             FailureKind::ContextOverflow => "context_overflow",
             FailureKind::Empty => "empty_response",
             FailureKind::Exhausted => "rate_limited",
+            FailureKind::ProviderUnavailable => "provider_unavailable",
             FailureKind::Timeout => "timeout",
             FailureKind::InvalidImage => "invalid_image",
             FailureKind::InvalidRequest => "invalid_request",
@@ -240,8 +227,9 @@ pub(crate) enum FailureKind {
     ContextOverflow,
     /// 模型调用成功但产出为空。
     Empty,
-    /// 限流 / 鉴权 / 5xx / 网络等——底层 api.rs 已重试或换 key,升到这层即已耗尽。
+    /// Rate limits reported after the provider request returns.
     Exhausted,
+    ProviderUnavailable,
     /// 传输层超时 / 连接中断 / 流断包——**没有** HTTP 状态码,供应商压根没答完。
     /// 典型:大上下文经第三方中转,SSE 跑到一半被截断,重试再超时。
     Timeout,
@@ -309,7 +297,8 @@ pub(crate) fn failure_kind(kind: ModelErrorKind) -> FailureKind {
         ModelErrorKind::InvalidRequest
         | ModelErrorKind::Auth
         | ModelErrorKind::ToolsUnsupported => FailureKind::InvalidRequest,
-        ModelErrorKind::RateLimited | ModelErrorKind::ProviderUnavailable => FailureKind::Exhausted,
+        ModelErrorKind::RateLimited => FailureKind::Exhausted,
+        ModelErrorKind::ProviderUnavailable => FailureKind::ProviderUnavailable,
         ModelErrorKind::Timeout | ModelErrorKind::Transport => FailureKind::Timeout,
         ModelErrorKind::EmptyResponse => FailureKind::Empty,
         _ => FailureKind::Other,
@@ -349,6 +338,7 @@ pub(crate) fn decide(
         // Only explicit content moderation permits the existing one-shot summary recovery.
         // Unknown errors and deterministic input failures must not trigger another call.
         FailureKind::ContentModeration => RecoveryAction::Remediate,
+        FailureKind::ProviderUnavailable => RecoveryAction::Surface,
         // 空响应 / 限流耗尽:重做无意义(同样的输入只会再失败),直接用已收集结果兜底。
         // 超时同理,而且更甚:去敏重做还要再排队等一次 3 分钟超时,纯粹浪费用户时间。
         FailureKind::Empty
@@ -358,22 +348,6 @@ pub(crate) fn decide(
         | FailureKind::InvalidRequest
         | FailureKind::Other => RecoveryAction::DegradeToGathered,
     }
-}
-
-/// 不变式实现:合成失败后,确定性拼出一条**简短**的降级消息(不经模型,不会被审核)。
-///
-/// 形态:一行真实原因(由 `kind` 决定,例如限流 vs 上下文超长——不再笼统甩"可能上下文过长"
-/// 误导用户)+ 已完成工具的**裁剪后**摘要(每条仅首行、限条数)。完整结果已在上方以工具卡片
-/// 呈现,这里再 dump 全文只会刷出几百行,故只留指针式短摘要。没有任何成功 preview → 返回空串
-/// (调用方据此退回静态文案)。
-pub(crate) fn assemble_results_from_tool_records(
-    records: &[AgentToolCall],
-    language: &str,
-    kind: FailureKind,
-) -> String {
-    assemble_degraded_answer(records, language, kind, None)
-        .map(|d| d.text)
-        .unwrap_or_default()
 }
 
 /// 把错误串压成**一句能看**的原始报错，给卡片当证据用。
@@ -394,7 +368,10 @@ pub(crate) fn extract_error_detail(raw: &str) -> Option<String> {
     if let Some(at) = detail.find(" Error: ") {
         detail = detail[at + " Error: ".len()..].trim_start();
     }
-    let mut detail = detail.to_string();
+    let mut detail = detail
+        .strip_prefix("ChatGPT Responses error: ")
+        .unwrap_or(detail)
+        .to_string();
     // {"error":{"message":"真话"}} → 真话
     if let (Some(start), Some(end)) = (detail.find('{'), detail.rfind('}')) {
         if start < end {
@@ -424,160 +401,71 @@ pub(crate) fn extract_error_detail(raw: &str) -> Option<String> {
     })
 }
 
-/// 结构化版本：同一套裁剪规则，但把「原因 / 工具摘要 / 纯文本」分开返回，
-/// 让前端能渲染成独立卡片而不是把故障混进 assistant 正文。
-/// 没有任何成功 preview → None（调用方退回静态文案，与文本版语义一致）。
-pub(crate) fn assemble_degraded_answer(
-    records: &[AgentToolCall],
-    language: &str,
-    kind: FailureKind,
-    raw_error: Option<&str>,
-) -> Option<DegradedAnswer> {
-    /// 摘要里最多列几条工具结果(其余折叠为计数)。
-    const MAX_BLOCKS: usize = 8;
-    /// 每条工具结果保留的最大字符数(只取首行)。
-    const MAX_PREVIEW_CHARS: usize = 200;
-
-    let zh = language.starts_with("zh");
-    let mut blocks: Vec<String> = Vec::new();
-    let mut summaries: Vec<DegradedToolSummary> = Vec::new();
-    let mut overflow = 0usize;
-    for record in records {
-        if record.status != AgentToolStatus::Success {
-            continue;
-        }
-        let preview = record.output.as_deref().map(|output| {
-            crate::chat::agent::execute::limit_tool_text_for_model(
-                &crate::chat::tools::summarize_tool_text(output),
-                record.output_limit,
-            )
-        });
-        let preview = preview.as_deref().map(str::trim).filter(|p| !p.is_empty());
-        let Some(preview) = preview else {
-            continue;
-        };
-        if blocks.len() >= MAX_BLOCKS {
-            overflow += 1;
-            continue;
-        }
-        // 只取首个非空行并裁剪——避免把整份工具输出再糊一遍。
-        let first_line = preview
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .unwrap_or(preview);
-        let clipped: String = if first_line.chars().count() > MAX_PREVIEW_CHARS {
-            format!(
-                "{}…",
-                first_line
-                    .chars()
-                    .take(MAX_PREVIEW_CHARS)
-                    .collect::<String>()
-            )
-        } else {
-            first_line.to_string()
-        };
-        summaries.push(DegradedToolSummary {
-            name: record.name.clone(),
-            preview: clipped.clone(),
-        });
-        blocks.push(format!("• {} — {}", record.name, clipped));
-    }
-    if blocks.is_empty() {
-        return None;
-    }
-    let reason = failure_reason_line(kind, zh);
-    let note = if zh {
-        format!("本轮共 {} 个工具调用,完整结果见上方卡片:", records.len())
-    } else {
-        format!(
-            "{} tool call(s) this round — full results are shown above:",
-            records.len()
-        )
-    };
-    let mut out = format!("{reason}\n\n{note}\n{}", blocks.join("\n"));
-    if overflow > 0 {
-        out.push_str(&if zh {
-            format!("\n…(另有 {overflow} 条见上方)")
-        } else {
-            format!("\n… ({overflow} more above)")
-        });
-    }
-    Some(DegradedAnswer {
-        kind: kind.wire_kind().to_string(),
-        reason: reason.to_string(),
-        detail: raw_error.and_then(extract_error_detail),
-        tool_summaries: summaries,
-        total_tool_calls: Some(records.len()),
-        text: out,
-    })
-}
-
-/// 上下文超长的静态说明文案（Gap 2 anti-thrashing 兜底用）：当压缩反复失败、且没有任何
-/// 工具结果可降级时，至少给用户一条明确的上下文超长提示，而不是空字符串/笼统报错。
-/// 复用 `failure_reason_line` 的 ContextOverflow 文案，保持口径一致。
-pub(crate) fn overflow_static_message(language: &str) -> String {
-    failure_reason_line(FailureKind::ContextOverflow, language.starts_with("zh")).to_string()
-}
-
 /// 一行人读的失败原因(按 `kind`)。这是修复「降级消息误导」的核心:429 就说限流,
 /// 上下文超长就说上下文,绝不再把限流说成"可能上下文过长"。
 fn failure_reason_line(kind: FailureKind, zh: bool) -> &'static str {
     match kind {
         FailureKind::InvalidImage => {
             if zh {
-                "⚠️ 图片数据、格式或尺寸不被接受，已停止重试。请重新读取图片，或转换为 PNG/JPEG 后重新发送。"
+                "图片数据、格式或尺寸不被接受，已停止重试。请重新读取图片，或转换为 PNG/JPEG 后重新发送。"
             } else {
-                "⚠️ Image data, format or dimensions were rejected. Retries stopped. Read the image again or convert it to PNG/JPEG before resending."
+                "Image data, format or dimensions were rejected. Retries stopped. Read the image again or convert it to PNG/JPEG before resending."
             }
         }
         FailureKind::InvalidRequest => {
             if zh {
-                "⚠️ 请求被拒绝，重复发送无法解决。请按下方错误检查输入、模型参数、访问权限或账户额度。已完成的工具结果保留。"
+                "请求被拒绝，重复发送无法解决。请按下方错误检查输入、模型参数、访问权限或账户额度。已完成的工具结果保留。"
             } else {
-                "⚠️ The request was rejected and will not be repeated. Check the input, model parameters, access or account quota using the error below. Completed tool results are preserved."
+                "The request was rejected and will not be repeated. Check the input, model parameters, access or account quota using the error below. Completed tool results are preserved."
+            }
+        }
+        FailureKind::ProviderUnavailable => {
+            if zh {
+                "模型服务暂时不可用，请稍后重试。"
+            } else {
+                "The model service is temporarily unavailable. Try again later."
             }
         }
         FailureKind::Exhausted => {
             if zh {
-                "⚠️ 模型服务限流或暂时故障，重试后仍未完成。请稍后重试或更换供应商。"
+                "模型服务限流或暂时故障，重试后仍未完成。请稍后重试或更换供应商。"
             } else {
-                "⚠️ The model service was rate-limited or temporarily unavailable and retries did not complete. Retry later or switch providers."
+                "The model service was rate-limited or temporarily unavailable and retries did not complete. Retry later or switch providers."
             }
         }
         FailureKind::ContextOverflow => {
             if zh {
-                "⚠️ 上下文超出模型窗口,压缩后重试仍失败。请改用更大上下文的模型,或精简对话后重试。"
+                "上下文超出模型窗口,压缩后重试仍失败。请改用更大上下文的模型,或精简对话后重试。"
             } else {
-                "⚠️ The context exceeded the model's window and still failed after compaction. Switch to a larger-context model or trim the conversation."
+                "The context exceeded the model's window and still failed after compaction. Switch to a larger-context model or trim the conversation."
             }
         }
         FailureKind::ContentModeration => {
             if zh {
-                "⚠️ 请求被供应商内容审核拦截。换个措辞,或更换供应商后重试。"
+                "请求被供应商内容审核拦截。换个措辞,或更换供应商后重试。"
             } else {
-                "⚠️ The request was blocked by the provider's content moderation. Rephrase or switch providers."
+                "The request was blocked by the provider's content moderation. Rephrase or switch providers."
             }
         }
         FailureKind::Empty => {
             if zh {
-                "⚠️ 模型返回了空响应。请重试,或更换模型。"
+                "模型返回了空响应。请重试,或更换模型。"
             } else {
-                "⚠️ The model returned an empty response. Retry or switch models."
+                "The model returned an empty response. Retry or switch models."
             }
         }
         FailureKind::Timeout => {
             if zh {
-                "⚠️ 请求超时 / 流式连接中断,多次重试后仍失败 —— 供应商没把这次回答传完。常见于上下文过大叠加第三方中转:精简对话,或换一个更稳的接口地址。"
+                "请求超时 / 流式连接中断,多次重试后仍失败 —— 供应商没把这次回答传完。常见于上下文过大叠加第三方中转:精简对话,或换一个更稳的接口地址。"
             } else {
-                "⚠️ The request timed out or the stream broke, and retries still failed — the provider never finished this response. Usually an oversized context through a relay endpoint: trim the conversation or switch to a more reliable endpoint."
+                "The request timed out or the stream broke, and retries still failed — the provider never finished this response. Usually an oversized context through a relay endpoint: trim the conversation or switch to a more reliable endpoint."
             }
         }
         FailureKind::Other => {
             if zh {
-                "⚠️ 模型调用失败。请重试,或更换供应商。"
+                "模型调用失败。请重试,或更换供应商。"
             } else {
-                "⚠️ The model call failed. Retry or switch providers."
+                "The model call failed. Retry or switch providers."
             }
         }
     }
@@ -586,6 +474,7 @@ fn failure_reason_line(kind: FailureKind, zh: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::agent::content::AgentToolCall;
 
     fn policy() -> RecoveryPolicy {
         RecoveryPolicy {
@@ -623,7 +512,7 @@ mod tests {
         assert!(messages[1].text_content().contains("actual question"));
         assert!(!messages[1].text_content().contains("pending work"));
         let retry_error = ModelError::with_kind("later timeout", ModelErrorKind::Timeout);
-        policy.recovery_failed(run, RecoveryFailure::Error(&retry_error));
+        policy.recovery_failed(RecoveryFailure::Error(&retry_error));
         assert_eq!(
             policy.take_degraded().unwrap().detail.as_deref(),
             Some("original moderation")
@@ -631,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn overflow_recovery_uses_retry_diagnostic_but_blocked_context_stays_text_only() {
+    fn overflow_recovery_provides_a_card_for_blocked_context_and_retry_failure() {
         let records = vec![rec("read", AgentToolStatus::Success, Some("useful result"))];
         let run = RecoverySnapshot {
             history: &[],
@@ -644,13 +533,11 @@ mod tests {
             policy.recover(run, &failure),
             RecoveryDecision::Retry(RecoveryInput::CompactCurrent)
         ));
-        assert!(!policy
-            .recovery_failed(run, RecoveryFailure::Blocked)
-            .is_empty());
-        assert!(policy.take_degraded().is_none());
+        assert!(!policy.recovery_failed(RecoveryFailure::Blocked).is_empty());
+        assert_eq!(policy.take_degraded().unwrap().kind, "context_overflow");
         policy.recover(run, &failure);
         let retry_error = ModelError::with_kind("retry rejected", ModelErrorKind::InvalidRequest);
-        policy.recovery_failed(run, RecoveryFailure::Error(&retry_error));
+        policy.recovery_failed(RecoveryFailure::Error(&retry_error));
         assert_eq!(
             policy.take_degraded().unwrap().detail.as_deref(),
             Some("retry rejected")
@@ -724,7 +611,7 @@ mod tests {
         );
         assert_eq!(
             classify("Chat API Error: 500 Internal Server Error"),
-            FailureKind::Exhausted
+            FailureKind::ProviderUnavailable
         );
     }
 
@@ -821,88 +708,27 @@ mod tests {
     }
 
     #[test]
-    fn degraded_total_includes_all_calls_beyond_summary_cap_and_reads_old_messages() {
-        let mut records: Vec<_> = (0..12)
-            .map(|_| rec("read", AgentToolStatus::Success, Some("result")))
-            .collect();
-        records.push(rec("bash", AgentToolStatus::Error, None));
-        let answer = assemble_degraded_answer(&records, "zh-CN", FailureKind::Empty, None).unwrap();
-        assert_eq!(answer.tool_summaries.len(), 8);
-        assert_eq!(answer.total_tool_calls, Some(13));
-        assert!(answer.text.contains("本轮共 13 个工具调用"));
-        let mut json = serde_json::to_value(&answer).unwrap();
-        assert_eq!(json["totalToolCalls"], 13);
-        json.as_object_mut().unwrap().remove("totalToolCalls");
-        assert_eq!(
-            serde_json::from_value::<DegradedAnswer>(json)
-                .unwrap()
-                .total_tool_calls,
-            None
-        );
-    }
-
-    #[test]
-    fn assemble_uses_successful_previews_only() {
-        let records = vec![
-            rec("web_search", AgentToolStatus::Success, Some("标题A\n标题B")),
-            rec("web_search", AgentToolStatus::Error, Some("不该出现")),
-            rec("noop", AgentToolStatus::Success, None),
-        ];
-        let out = assemble_results_from_tool_records(&records, "zh-CN", FailureKind::Exhausted);
-        assert!(out.contains("标题A"));
-        assert!(!out.contains("不该出现"));
-        assert!(out.contains("web_search"));
-        // 真实原因行出现(限流),不再是误导的"可能上下文过长"。
-        assert!(out.contains("限流") || out.contains("429"));
-
-        assert!(
-            assemble_results_from_tool_records(&[], "zh-CN", FailureKind::Exhausted).is_empty()
-        );
-    }
-
-    #[test]
-    fn structured_degraded_answer_carries_kind_reason_and_summaries() {
-        // 结构化版本是错误卡片的数据源：kind 供前端选图标（不解析文案）、
-        // reason 是人读原因、tool_summaries 让用户知道哪些工作没白做。
-        let records = vec![
-            rec(
-                "mixer_generate_image",
-                AgentToolStatus::Success,
-                Some("Generated 1 image."),
-            ),
-            rec(
-                "present_artifacts",
-                AgentToolStatus::Success,
-                Some("Displayed 1 file."),
-            ),
-            rec("failed_tool", AgentToolStatus::Error, Some("不该出现")),
-        ];
-        let d = assemble_degraded_answer(
-            &records,
+    fn failure_card_preserves_diagnostic_and_reads_older_fallback_text() {
+        let card = DegradedAnswer::new(
+            FailureKind::ProviderUnavailable,
             "zh-CN",
-            FailureKind::Exhausted,
-            Some(r#"Chat stream Error: 429 Too Many Requests - {"error":{"message":"concurrency limit reached, retry in 30s"}}"#),
-        )
-        .expect("有成功工具结果 ⇒ 应产出结构化降级描述");
-        assert_eq!(d.kind, "rate_limited");
-        assert!(d.reason.contains("限流") || d.reason.contains("配额"));
-        // 真正能排查的是原始报错，不是分类话术。
-        assert!(
-            d.detail
-                .as_deref()
-                .is_some_and(|s| s.contains("429") && s.contains("concurrency limit reached")),
-            "got {:?}",
-            d.detail
+            Some(
+                r#"ChatGPT Responses error: {"code":"server_is_overloaded","message":"Our servers are currently overloaded."}"#,
+            ),
         );
-        assert_eq!(d.tool_summaries.len(), 2, "失败的工具不进摘要");
-        assert_eq!(d.tool_summaries[0].name, "mixer_generate_image");
-        assert_eq!(d.tool_summaries[0].preview, "Generated 1 image.");
-        // text 仍是同一段纯文本，供旧前端 / 外部 CLI 回落。
-        assert!(d.text.contains("mixer_generate_image"));
-        assert!(!d.text.contains("不该出现"));
-
-        // 无成功结果 ⇒ None（调用方退回静态文案），与文本版 is_empty 语义一致。
-        assert!(assemble_degraded_answer(&[], "zh-CN", FailureKind::Exhausted, None).is_none());
+        assert_eq!(card.kind, "provider_unavailable");
+        assert_eq!(card.text, card.reason);
+        assert!(card
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("Our servers are currently overloaded."));
+        let old: DegradedAnswer = serde_json::from_value(serde_json::json!({
+            "kind":"unknown", "reason":"failed", "text":"old tool summary",
+            "toolSummaries":[{"name":"bash","preview":"exit_code: 0"}], "totalToolCalls":9
+        }))
+        .unwrap();
+        assert_eq!(old.text, "old tool summary");
     }
 
     #[test]
@@ -948,10 +774,10 @@ mod tests {
         ] {
             assert_eq!(classify(msg), FailureKind::Timeout, "should be timeout: {msg}");
         }
-        // 带状态码的 5xx 仍归 Exhausted（换 key/退避是它的路子，不是传输层）
+        // A gateway HTTP failure is reported by the provider.
         assert_eq!(
             classify("Chat API Error: 504 Gateway Timeout"),
-            FailureKind::Exhausted
+            FailureKind::ProviderUnavailable
         );
         // 超时不做去敏重做——那只会再排队等一次超时
         assert_eq!(
@@ -969,55 +795,6 @@ mod tests {
         assert_eq!(FailureKind::ContentModeration.wire_kind(), "moderation");
         assert_eq!(FailureKind::Empty.wire_kind(), "empty_response");
         assert_eq!(FailureKind::Other.wire_kind(), "unknown");
-    }
-
-    #[test]
-    fn text_and_structured_stay_in_sync() {
-        // 文本版是结构化版的投影，二者不能漂移（文本版仍被旧路径调用）。
-        let records = vec![rec("t", AgentToolStatus::Success, Some("preview"))];
-        for kind in [
-            FailureKind::Exhausted,
-            FailureKind::ContextOverflow,
-            FailureKind::ContentModeration,
-            FailureKind::Empty,
-            FailureKind::Timeout,
-            FailureKind::Other,
-        ] {
-            let text = assemble_results_from_tool_records(&records, "zh-CN", kind);
-            let structured = assemble_degraded_answer(&records, "zh-CN", kind, None).expect("some");
-            assert_eq!(text, structured.text, "kind={kind:?}");
-        }
-    }
-
-    #[test]
-    fn assemble_caps_and_clips_to_avoid_wall_of_text() {
-        // 单条超长 + 多行只保留首行裁剪;>8 条折叠为计数 —— 不再刷几百行。
-        let long = "x".repeat(5000);
-        let mut records: Vec<AgentToolCall> = (0..12)
-            .map(|i| {
-                rec(
-                    "read",
-                    AgentToolStatus::Success,
-                    Some(Box::leak(format!("行{i}首行\n{long}").into_boxed_str())),
-                )
-            })
-            .collect();
-        records.push(rec(
-            "read",
-            AgentToolStatus::Success,
-            Some(Box::leak(long.clone().into_boxed_str())),
-        ));
-        let out = assemble_results_from_tool_records(&records, "en", FailureKind::Other);
-        let lines = out.lines().count();
-        assert!(
-            lines < 20,
-            "degrade message must stay compact, got {lines} lines"
-        );
-        assert!(!out.contains(&long), "must not dump the full long preview");
-        assert!(
-            out.contains("more above"),
-            "overflow tools should be folded into a count"
-        );
     }
 }
 
