@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="UTF-8"><title>Chat status line acceptance</title></head>
+<body style="margin:0"><div id="root"></div><script type="module">
+// Synthetic data only. Real MessageList, follow-scroll and streaming owner; no backend/model.
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { flushSync } from 'react-dom';
+import { MessageList } from '/src/chat/MessageList.tsx';
+import { createStreamPreviewOwner } from '/src/chat/streamPreviewOwner.ts';
+import '/src/styles/app.css';
+import 'streamdown/styles.css';
+
+const owner = createStreamPreviewOwner();
+const conv = 'S1';
+const history = Array.from({ length: 8 }, (_, i) => [
+  { id: `hu${i}`, role: 'user', content: `Earlier question ${i}`, timestamp: 2 * i },
+  { id: `ha${i}`, role: 'assistant', content: 'An earlier answer with a few sentences of text.\n\n'.repeat(6), timestamp: 2 * i + 1 },
+]).flat();
+const question = { id: 'q', role: 'user', content: 'Explain the problem', timestamp: 100 };
+const sentence = 'This is streamed answer text that wraps across the reading column like a real reply would. ';
+const answerOf = paragraphs => Array.from({ length: paragraphs }, (_, i) => `Paragraph ${i + 1}: ${sentence}${sentence}`).join('\n\n');
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+let setMessages;
+function Harness() {
+  const [messages, set] = React.useState([...history, question]);
+  setMessages = set;
+  return React.createElement('div', { className: 'chat-main-pane', style: { position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column' } },
+    React.createElement(MessageList, { conversationId: conv, messages }));
+}
+createRoot(document.getElementById('root')).render(React.createElement(Harness));
+
+let answer = '';
+let stop = false;
+const runBase = { conversationId: conv, runId: 'r', messageId: 'live-answer', protocolVersion: 1, scope: 'run', baseRevision: 0 };
+window.statusLine = {
+  samples: [],
+  sampling: false,
+  // Painted state: sampled from a ResizeObserver re-created every frame, so it is always
+  // the newest observer and runs after the list's own layout corrections, right before paint.
+  startSampling() {
+    this.samples = []; this.sampling = true;
+    const t0 = this.t0 = performance.now();
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;visibility:hidden';
+    document.body.appendChild(probe);
+    const sample = () => {
+      const view = document.querySelector('.chat-scroll-viewport');
+      const logo = document.querySelector('.kv-stream-logo');
+      if (!view || !logo) return;
+      const top = view.getBoundingClientRect().top;
+      const marker = logo.closest('.chat-reading-content');
+      const live = document.querySelector('[data-chat-message-list-item="streaming"]');
+      let textBottom = null;
+      if (live) {
+        const range = document.createRange(); range.selectNodeContents(live);
+        const rects = [...range.getClientRects()].filter(rect => rect.height > 0);
+        if (rects.length) textBottom = Math.max(...rects.map(rect => rect.bottom)) - top;
+      }
+      this.samples.push({ t: performance.now() - t0, y: logo.getBoundingClientRect().top - top, textBottom,
+        scrollTop: view.scrollTop, gap: view.scrollHeight - view.clientHeight - view.scrollTop, height: view.clientHeight,
+        sticky: marker.style.position === 'sticky', transform: marker.style.transform });
+    };
+    let observer = null;
+    const frame = () => {
+      observer?.disconnect();
+      if (!this.sampling) { probe.remove(); return; }
+      // A new observation is delivered once, in this frame's ResizeObserver step.
+      observer = new ResizeObserver(() => { observer.disconnect(); if (this.sampling) sample(); });
+      observer.observe(probe);
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  },
+  stopSampling() { this.sampling = false; return this.samples; },
+  begin() {
+    answer = ''; stop = false; this.seq = 0;
+    owner.activate(conv); owner.begin(conv, Date.now());
+  },
+  append(text) {
+    answer += text;
+    owner.receive({ ...runBase, seq: this.seq++, type: 'text_delta', delta: text, segment: null });
+  },
+  status(note) { owner.projectDisplay({ kind: 'status', payload: { conversationId: conv, runId: runBase.runId, note } }); },
+  /** Streams `paragraphs` in small deltas; resolves early after `pause()`. */
+  async stream({ paragraphs = 14, chunk = 12, interval = 40 } = {}) {
+    this.begin();
+    await wait(400);
+    const text = answerOf(paragraphs);
+    for (let i = 0; i < text.length && !stop; i += chunk) {
+      this.append(text.slice(i, i + chunk));
+      await wait(interval);
+    }
+  },
+  pause() { stop = true; },
+  cancel() { stop = true; owner.complete(conv, { kind: 'cancelled' }); },
+  /** Returns the sample-clock time of the handoff commit. */
+  persist() {
+    const committed = [...history, question, { id: 'live-answer', role: 'assistant', content: answer, timestamp: 101 }];
+    flushSync(() => { setMessages(committed); owner.complete(conv, { kind: 'persisted', committedMessages: committed }); });
+    return performance.now() - this.t0;
+  },
+};
+</script></body></html>

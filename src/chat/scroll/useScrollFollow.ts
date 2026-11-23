@@ -64,6 +64,10 @@ export type ScrollFollowHandle = {
   // 程序化定位（消息导航）唯一的 scrollTop 写入口，不改变 follow 意图。
   scrollToOffset: (offset: number, options?: { adjustments?: number; behavior?: ScrollBehavior }) => void
   isFollowing: () => boolean
+  // 跟随中且正在主动贴底：按住指针（拖选文本）时跟随仍在，但缓动暂停、正文会落后。
+  isPinningBottom: () => boolean
+  // isPinningBottom 变化时通知（不经 React 渲染）；返回取消订阅。
+  subscribePinning: (listener: () => void) => () => void
   markLayoutCompensation: () => void
   // 仅在仍跟随时钉底（不 force re-attach）。live 行测高 / 代码块 hydrate 用。
   pinIfFollowing: () => void
@@ -103,6 +107,11 @@ export type UseScrollFollowArgs = {
    * 只影响 contentGrowth 引起的钉底；强制跟随、回到底部、松手重接等仍是瞬时。
    */
   glideGrowth?: boolean
+  /**
+   * 缓动时离底部最多落后多少 px（默认不限，仅受 GLIDE_MAX_PX）。超出的部分立即补上，
+   * 只把最后这一段缓动：贴底的状态行下方留了这么一段空，落后不超过它，新字就不会压到状态行。
+   */
+  glideMaxLagPx?: number
 }
 
 export function useScrollFollow(args: UseScrollFollowArgs): {
@@ -118,9 +127,12 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     trackKeys = false,
     growthSignal = null,
     glideGrowth = false,
+    glideMaxLagPx = Infinity,
   } = args
   const glideGrowthRef = useRef(glideGrowth)
   glideGrowthRef.current = glideGrowth
+  const glideMaxLagRef = useRef(glideMaxLagPx)
+  glideMaxLagRef.current = glideMaxLagPx
 
 
   const stateRef = useRef<FollowState>(createFollowState())
@@ -205,6 +217,9 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
       pinToBottom()
       return
     }
+    // 在发现增长的这一刻（ResizeObserver，绘制前）就把超出上限的落后补上。
+    const maxLag = glideMaxLagRef.current
+    if (gap > maxLag) applyScrollTop(el, el.scrollHeight - el.clientHeight - maxLag)
     if (glideRef.current) return
     const step = (now: number) => {
       const glide = glideRef.current
@@ -231,7 +246,10 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
       glide.last = now
       const next = remaining > GLIDE_MAX_PX
         ? max
-        : viewport.scrollTop + Math.min(remaining, Math.max(1, remaining * (1 - Math.exp(-dt / GLIDE_TAU_MS))))
+        : Math.max(
+          max - glideMaxLagRef.current,
+          viewport.scrollTop + Math.min(remaining, Math.max(1, remaining * (1 - Math.exp(-dt / GLIDE_TAU_MS)))),
+        )
       applyScrollTop(viewport, next)
       glide.frame = requestAnimationFrame(step)
     }
@@ -239,11 +257,16 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     glideRef.current = { frame: requestAnimationFrame(step), last: startedAt }
   }, [applyScrollTop, pinToBottom])
 
+  const pinningListenersRef = useRef(new Set<() => void>())
   const dispatch = useCallback(
     (event: FollowEvent) => {
       const wasFollowing = stateRef.current.following
+      const wasPinning = wasFollowing && !stateRef.current.pointerHeld
       const step = reduceFollowEvent(stateRef.current, event, configRef.current)
       stateRef.current = step.state
+      if ((step.state.following && !step.state.pointerHeld) !== wasPinning) {
+        for (const listener of pinningListenersRef.current) listener()
+      }
       if (step.pin) {
         // 流式增长：缓动到底。缓动自身产生的 scroll 事件仍处于离底状态，reducer 会要求
         // 「纠正钉底」，此时交给正在进行的缓动，而不是瞬间打断它。
@@ -265,6 +288,11 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     },
     [glideToBottom, jumpButtonThreshold, pinToBottom, stopGlide],
   )
+
+  const subscribePinning = useCallback((listener: () => void) => {
+    pinningListenersRef.current.add(listener)
+    return () => { pinningListenersRef.current.delete(listener) }
+  }, [])
 
   const stickToBottom = useCallback(() => {
     dispatch({ type: 'forceFollow' })
@@ -552,11 +580,13 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
       restoreReadingPosition,
       scrollToOffset,
       isFollowing: () => stateRef.current.following,
+      isPinningBottom: () => stateRef.current.following && !stateRef.current.pointerHeld,
+      subscribePinning,
       markLayoutCompensation,
       pinIfFollowing,
       notifyContentGrowth,
     }),
-    [jumpToBottom, markLayoutCompensation, notifyContentGrowth, pinIfFollowing, releaseFollow, restoreReadingPosition, scrollToOffset, stickToBottom],
+    [jumpToBottom, markLayoutCompensation, notifyContentGrowth, pinIfFollowing, releaseFollow, restoreReadingPosition, scrollToOffset, stickToBottom, subscribePinning],
   )
 
   return { handle, following, showJumpButton }

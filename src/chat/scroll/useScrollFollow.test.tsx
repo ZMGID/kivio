@@ -370,10 +370,10 @@ describe('useScrollFollow scroll source timing', () => {
 
 })
 
-function GlideHarness() {
+function GlideHarness({ maxLag }: { maxLag?: number }) {
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null)
   const [content, setContent] = useState<HTMLDivElement | null>(null)
-  const { following } = useScrollFollow({ viewport, content, glideGrowth: true })
+  const { following } = useScrollFollow({ viewport, content, glideGrowth: true, glideMaxLagPx: maxLag })
   return (
     <>
       <output data-testid="following">{String(following)}</output>
@@ -395,7 +395,7 @@ describe('useScrollFollow streaming glide', () => {
     frames = []
   })
 
-  function mountGlide() {
+  function mountGlide(maxLag?: number) {
     window.ResizeObserver = class {
       constructor(callback: ResizeObserverCallback) { growth = callback }
       observe() {}
@@ -405,7 +405,7 @@ describe('useScrollFollow streaming glide', () => {
     vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => frames.push(cb))
     vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {})
     vi.spyOn(performance, 'now').mockImplementation(() => clock)
-    render(<GlideHarness />)
+    render(<GlideHarness maxLag={maxLag} />)
     const viewport = screen.getByTestId('viewport')
     let scrollHeight = 1000
     let scrollTop = 500
@@ -445,6 +445,21 @@ describe('useScrollFollow streaming glide', () => {
     expect(positions.length).toBeGreaterThan(3)
     expect(positions.some((value) => value > 500 && value < 526)).toBe(true)
     for (let i = 1; i < positions.length; i++) expect(positions[i]).toBeGreaterThanOrEqual(positions[i - 1])
+    expect(screen.getByTestId('following')).toHaveTextContent('true')
+  })
+
+  it('never lags further behind than the configured cap, then eases the rest', () => {
+    const { viewport, grow, frame } = mountGlide(24)
+    grow(120)
+    // Caught up before paint, in the growth callback itself.
+    expect(viewport.scrollTop).toBe(1120 - 500 - 24)
+    const positions: number[] = []
+    for (let i = 0; i < 30 && viewport.scrollTop < 620; i++) {
+      frame()
+      positions.push(viewport.scrollTop)
+    }
+    expect(viewport.scrollTop).toBe(620)
+    expect(positions.some((value) => value > 596 && value < 620)).toBe(true)
     expect(screen.getByTestId('following')).toHaveTextContent('true')
   })
 

@@ -163,7 +163,10 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, convers
     <div
       className={`flex items-center gap-2.5 py-2${active ? ' chat-motion-fade-up' : ' kv-stream-status-idle'}`}
     >
-      <StreamStatusLogo mood={waitingInBackground ? 'wait' : mood} paused={loading} />
+      {/* 贴行底：状态说明换成多行时墨墨不随行高居中而上下移动（生成中它固定在底部槽位）。 */}
+      <span className="flex self-end">
+        <StreamStatusLogo mood={waitingInBackground ? 'wait' : mood} paused={loading} />
+      </span>
       {(waitingInBackground || (active && stats?.waitingForJobs)) && (
         <span className="sr-only" role="status">
           {lang === 'zh' ? '等待任务结果' : 'Waiting for task results'}

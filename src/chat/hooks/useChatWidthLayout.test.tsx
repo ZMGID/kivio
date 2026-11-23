@@ -35,6 +35,8 @@ function setup({ following = false, locked = false, live = false } = {}) {
   vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => rect(120 - offset + paintedStart, 300))
   const follow: ScrollFollowHandle = {
     isFollowing: () => following,
+    isPinningBottom: () => following,
+    subscribePinning: () => () => {},
     scrollToOffset: vi.fn((next) => { viewport.scrollTop = next }),
     markLayoutCompensation: vi.fn(),
     stickToBottom: vi.fn(), jumpToBottom: vi.fn(), releaseFollow: vi.fn(),

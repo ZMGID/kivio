@@ -51,6 +51,7 @@ import type { ConversationStreamSnapshot } from './conversationRuns'
 import { StreamStatusLine } from './StreamStatusLine'
 import { getActiveGroup, useGroupVersion } from './groupStreamingStore'
 import { ScrollFollowingContext, useScrollFollow } from './scroll/useScrollFollow'
+import { useTrailingMarkerGlide } from './scroll/useTrailingMarkerGlide'
 import { usePresence } from './dock/workspacePanelMotion'
 import {
   chatMessageLayoutRevision,
@@ -161,6 +162,11 @@ export interface MessageListProps {
 }
 
 const LIST_EDGE_PADDING_PX = 16
+// 生成中状态行（墨墨）上方的空行：新字先长进这里。
+const STATUS_LINE_LIVE_GAP_PX = 40
+// 墨墨与跟随滚动最多落后这么多：空行 + 状态行自身的上内边距（StreamStatusLine 的 py-2），
+// 新长出的正文最多压进这段空白，碰不到墨墨。
+const STATUS_LINE_MAX_LAG_PX = STATUS_LINE_LIVE_GAP_PX + 8
 // Per-frame cap on pre-paint row corrections; React's own limit is 50 nested updates.
 const MAX_COMMIT_ROW_CORRECTIONS = 4
 const MESSAGE_NAVIGATOR_MIN_TURNS = 2
@@ -809,6 +815,8 @@ function MessageListBase({
     trackKeys: true,
     // 出字中逐行增长缓动到底；打开会话、导航与回到底部仍瞬时。
     glideGrowth: streaming && !streamFrozen,
+    // 落后不超过状态行上方的空白，新字不会压到贴底的墨墨。
+    glideMaxLagPx: STATUS_LINE_MAX_LAG_PX,
   })
   // 回到底部按钮：消失时收缩淡出再卸载。
   const jumpButton = usePresence(showJumpButton)
@@ -2810,6 +2818,21 @@ function MessageListBase({
     return () => observer.disconnect()
   }, [conversationId, streaming, streamFrozen, messages, historyItems, viewportEl, reserveEpoch, followHandle, virtualizer, historySize])
 
+  // 墨墨状态行：有空间时平滑下移，贴底跟随时停在底部不动。放在预留与钉底之后，
+  // 每次提交读到的是本帧最终布局。
+  const [statusLineEl, setStatusLineEl] = useState<HTMLDivElement | null>(null)
+  useTrailingMarkerGlide({
+    marker: statusLineEl,
+    viewport: viewportEl,
+    active: streaming && !streamFrozen,
+    live: streaming || streamFrozen,
+    isFollowing: followHandle.isFollowing,
+    isPinningBottom: followHandle.isPinningBottom,
+    subscribePinning: followHandle.subscribePinning,
+    maxLagPx: STATUS_LINE_MAX_LAG_PX,
+    resetKey: conversationId,
+  })
+
   const renderItem = useCallback(
     (item: RenderItem) => {
       const readingAnchor = activeReadingPosition?.rowKey === readingRowKey(item) ? activeReadingPosition?.block : undefined
@@ -3067,8 +3090,12 @@ function MessageListBase({
           {renderItem(errorItem)}
         </div>
       )}
+      {/* 生成中留一行空（外边距，位移可被平滑跟踪）：新一行字长进这段空里，墨墨再平滑跟下去，滑行中不压到正文。
+          与发送预留同寿命（含停止后冻结）：落库交接时由预留 effect 一并补偿并重新钉底，
+          不在冻结那一刻单独缩高——那会和停止标记的增高叠在同一帧，被跟随判成用户上滚。 */}
       {(messages.length > 0 || streaming) && (
-        <div className="chat-reading-content">
+        <div ref={setStatusLineEl} className="chat-reading-content"
+          style={streaming || streamFrozen ? { marginTop: STATUS_LINE_LIVE_GAP_PX } : undefined}>
           <StreamStatusLine conversationId={conversationId} active={streaming && !streamFrozen && !liveGroup}
             waitingInBackground={!streaming && !streamFrozen && waitingForBackgroundTasks} lang={lang} />
         </div>
