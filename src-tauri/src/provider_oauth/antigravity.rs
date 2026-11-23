@@ -1,11 +1,7 @@
 //! Protocol adapted from Rahul Arya's pi-antigravity (MIT); see docs/licenses/.
 use super::*;
-use rand::RngCore;
 use sha2::{Digest, Sha256};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpSocket},
-};
+use tokio::net::{TcpListener, TcpSocket};
 
 pub const BASE: &str = "https://daily-cloudcode-pa.googleapis.com";
 pub(super) const CLIENT: &str =
@@ -35,11 +31,6 @@ impl Drop for Session {
 fn sessions() -> &'static Mutex<HashMap<String, Session>> {
     static SESSIONS: OnceLock<Mutex<HashMap<String, Session>>> = OnceLock::new();
     SESSIONS.get_or_init(Default::default)
-}
-fn random_secret() -> String {
-    let mut bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
 }
 pub fn is_provider(p: &ModelProvider) -> bool {
     p.request
@@ -146,55 +137,9 @@ async fn authorize(
     verifier: String,
     proxy: bool,
 ) -> Result<Tokens, String> {
-    let code = loop {
-        let (mut socket, _) = listener
-            .accept()
-            .await
-            .map_err(|_| "OAuth callback listener failed")?;
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
-            let mut bytes = Vec::new();
-            loop {
-                let mut block = [0; 1024];
-                let n = socket
-                    .read(&mut block)
-                    .await
-                    .map_err(|_| "Callback read failed")?;
-                if n == 0 {
-                    return Err("Incomplete callback");
-                }
-                bytes.extend_from_slice(&block[..n]);
-                if bytes.len() > 8192 {
-                    return Err("Callback too large");
-                }
-                if bytes.windows(4).any(|b| b == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            callback(
-                std::str::from_utf8(&bytes).map_err(|_| "Invalid callback encoding")?,
-                &state,
-            )
-        })
-        .await;
-        let accepted = matches!(result, Ok(Ok(_)));
-        let status = if accepted {
-            "200 OK"
-        } else {
-            "400 Bad Request"
-        };
-        let body = if accepted {
-            "Authorization received. Return to Kivio to finish signing in."
-        } else {
-            "Invalid OAuth callback. Return to your Google sign-in page."
-        };
-        let reply = format!("HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len());
-        let _ =
-            tokio::time::timeout(Duration::from_secs(2), socket.write_all(reply.as_bytes())).await;
-        if let Ok(Ok(code)) = result {
-            break code.ok_or("Google authorization was declined")?;
-        }
-    };
-    drop(listener);
+    let code = super::wait_for_callback(listener, |request| callback(request, &state))
+        .await?
+        .ok_or("Google authorization was declined")?;
     let client = http(proxy)?;
     let (status, value) = response_json(client.post(TOKEN_URL).form(&[
         ("client_id", CLIENT),
@@ -258,6 +203,7 @@ pub(super) async fn poll(id: &str) -> Option<Result<PollResult, String>> {
                 status: "authorized",
                 interval: 0,
                 auth: Some(OAuthConfig {
+                    requires_reauthorization: false,
                     provider: "antigravity".into(),
                     credential_id: Some(id.into()),
                     project_id: None,
@@ -435,6 +381,7 @@ fn custom_schema(value: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     #[tokio::test]
     async fn cancel_releases_listener_without_saving_credentials() {
         let listener = callback_listener("127.0.0.1:0".parse().unwrap()).unwrap();

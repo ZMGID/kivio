@@ -18,26 +18,14 @@ fn text(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 // Display metadata only. JWT decoding is not used as an authorization decision.
-fn identity(kind: &str, access: &Value, refresh: &Value) -> AccountIdentity {
-    let profile = &access["https://api.openai.com/profile"];
-    let auth = &access["https://api.openai.com/auth"];
-    let account_id = if kind == "codex" {
-        text(&auth["chatgpt_account_id"])
-            .or_else(|| text(&auth["chatgpt_user_id"]))
-            .or_else(|| text(&access["sub"]))
-    } else {
-        text(&access["user_id"])
-            .or_else(|| text(&refresh["user_id"]))
-            .or_else(|| text(&access["sub"]))
-            .or_else(|| text(&refresh["sub"]))
-    };
+fn identity(access: &Value, refresh: &Value) -> AccountIdentity {
+    let account_id = text(&access["user_id"])
+        .or_else(|| text(&refresh["user_id"]))
+        .or_else(|| text(&access["sub"]))
+        .or_else(|| text(&refresh["sub"]));
     AccountIdentity {
-        email: text(&access["email"])
-            .or_else(|| text(&profile["email"]))
-            .or_else(|| text(&refresh["email"])),
-        name: text(&access["name"])
-            .or_else(|| text(&profile["name"]))
-            .or_else(|| text(&access["username"])),
+        email: text(&access["email"]).or_else(|| text(&refresh["email"])),
+        name: text(&access["name"]).or_else(|| text(&access["username"])),
         account_id,
     }
 }
@@ -46,13 +34,22 @@ pub async fn provider_oauth_account(
     state: tauri::State<'_, AppState>,
     provider: ModelProvider,
 ) -> Result<AccountIdentity, String> {
-    let resolved = resolve_provider(&state, &provider).await?;
-    let auth = resolved
+    let auth = provider
         .request
         .oauth
         .as_ref()
         .ok_or("OAuth account required")?;
     let id = auth.credential_id.as_deref().ok_or("Sign in first")?;
+    if auth.provider == "chatgpt" {
+        let tokens = super::chatgpt::saved_session(&super::credential_root()?, id)?;
+        let reg = tokens.chatgpt.ok_or("Missing ChatGPT registration")?;
+        return Ok(AccountIdentity {
+            email: reg.email,
+            name: reg.name,
+            account_id: reg.subject,
+        });
+    }
+    let resolved = resolve_provider(&state, &provider).await?;
     if auth.provider == "antigravity" {
         let response = http(provider.request.use_system_proxy)?
             .get("https://openidconnect.googleapis.com/v1/userinfo")
@@ -70,7 +67,7 @@ pub async fn provider_oauth_account(
             .json()
             .await
             .map_err(|_| "Invalid account profile")?;
-        return Ok(identity("antigravity", &value, &Value::Null));
+        return Ok(identity(&value, &Value::Null));
     }
     let _guard = refresh_lock().lock().await;
     let tokens = read_tokens(id)?;
@@ -78,7 +75,6 @@ pub async fn provider_oauth_account(
         return Err("OAuth credential belongs to another provider".into());
     }
     Ok(identity(
-        &auth.provider,
         &claims(&tokens.access_token),
         &claims(&tokens.refresh_token),
     ))
@@ -90,29 +86,18 @@ mod tests {
     #[test]
     fn provider_identity_fields_are_whitelisted() {
         let kimi = identity(
-            "kimi",
             &json!({"sub":"weaker","client_id":"not-account","access_token":"secret"}),
             &json!({"user_id":"kimi-user"}),
         );
         assert_eq!(kimi.account_id.as_deref(), Some("kimi-user"));
         assert!(kimi.email.is_none());
         assert!(!serde_json::to_string(&kimi).unwrap().contains("secret"));
-        let codex = identity(
-            "codex",
-            &json!({"https://api.openai.com/profile":{"email":"person@example.com"},"https://api.openai.com/auth":{"chatgpt_account_id":"workspace"}}),
-            &Value::Null,
-        );
-        assert_eq!(codex.email.as_deref(), Some("person@example.com"));
-        assert_eq!(codex.account_id.as_deref(), Some("workspace"));
         let google = identity(
-            "antigravity",
             &json!({"email":"google@example.com","name":"Person","sub":"google-user"}),
             &Value::Null,
         );
         assert_eq!(google.name.as_deref(), Some("Person"));
         assert_eq!(google.email.as_deref(), Some("google@example.com"));
-        assert!(identity("kimi", &Value::Null, &Value::Null)
-            .account_id
-            .is_none());
+        assert!(identity(&Value::Null, &Value::Null).account_id.is_none());
     }
 }

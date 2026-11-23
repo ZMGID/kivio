@@ -30,7 +30,7 @@ describe('useProviderCatalogController', () => {
       getProvider: () => current,
       apply: (_id, updates) => applied(updates),
     }))
-    let request!: Promise<void>
+    let request!: Promise<boolean>
     act(() => { request = result.current.fetchModels('one') })
     current = provider({ modelOverrides: { m1: { maxOutput: 200 } } })
     await act(async () => {
@@ -40,7 +40,7 @@ describe('useProviderCatalogController', () => {
 
     expect(current.modelOverrides?.m1).toMatchObject({ maxOutput: 200, advertisedVideoInput: true })
     expect(current.availableModels).toEqual(['m1'])
-    expect(result.current.fetchingProviderId).toBeNull()
+    expect(result.current.fetchingProviderIds.size).toBe(0)
   })
 
   it('discards a late catalog when the provider connection changed or was removed', async () => {
@@ -52,7 +52,7 @@ describe('useProviderCatalogController', () => {
       getProvider: () => current,
       apply: applied,
     }))
-    let request!: Promise<void>
+    let request!: Promise<boolean>
     act(() => { request = result.current.fetchModels('one') })
     current = provider({ baseUrl: 'https://changed.test' })
     await act(async () => { pending.resolve({ models: ['stale'], capabilities: {} }); await request })
@@ -68,7 +68,7 @@ describe('useProviderCatalogController', () => {
       getProvider: () => current,
       apply: vi.fn(),
     }))
-    let request!: Promise<void>
+    let request!: Promise<boolean>
     act(() => { request = result.current.fetchModels('one') })
     current = null
     await act(async () => { pending.reject(new Error('network failed')); await request })

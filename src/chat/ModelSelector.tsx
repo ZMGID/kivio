@@ -1,3 +1,4 @@
+import { providerModelLabel } from '../data/modelCatalog'
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, Search, Star } from 'lucide-react'
@@ -130,7 +131,7 @@ export function BuiltinModelList({
       result.push({ key: 'fav', title: t.chatFavorites, favorite: true, rows: favoriteEntries })
     }
     for (const { provider, models } of visibleProviders) {
-      const rows = models.filter(model => matches(provider.name, model)).map(model => ({ providerId: provider.id, model }))
+      const rows = models.filter(model => matches(provider.name, model) || providerModelLabel(model, provider).toLowerCase().includes(normalizedQuery)).map(model => ({ providerId: provider.id, model }))
       if (rows.length > 0) result.push({ key: provider.id, title: provider.name, favorite: false, rows })
     }
     return result
@@ -159,7 +160,7 @@ export function BuiltinModelList({
           className={modelRowButtonClass(selected)}
         >
           <ModelIcon model={model} size={16} />
-          <span className="min-w-0 truncate">{model}</span>
+          <span className="min-w-0 truncate" title={model}>{providerModelLabel(model, visibleProviders.find(entry => entry.provider.id === providerId)?.provider)}</span>
         </button>
         <button
           type="button"
@@ -263,7 +264,7 @@ function ModelSelectorBase({
 
   const catalog = useBuiltinModelCatalog(currentProviderId, currentModel)
   const { currentProvider } = catalog
-  const displayName = currentModel || currentProvider?.enabledModels[0] || t.chatSelectModel
+  const displayName = providerModelLabel(currentModel || currentProvider?.enabledModels[0] || t.chatSelectModel, currentProvider)
   // Tooltip 用模型原始元数据（服务商名 + 完整模型 ID），不截取 UI 上被省略的文本。
   const tooltipText = currentProvider && currentModel
     ? `${currentProvider.name}：${currentModel}`

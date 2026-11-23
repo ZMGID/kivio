@@ -972,6 +972,7 @@ export type ModelInfo = {
   displayName?: string
   /** Latest upstream capability, separate from the user's explicit override. */
   advertisedVideoInput?: boolean
+  advertisedDisplayName?: string
   contextWindow?: number
   maxOutput?: number
   /** 模型级采样温度；未设置时请求不发送 temperature。 */
@@ -1013,7 +1014,9 @@ export type ModelInfo = {
 // AI 模型提供商配置
 // apiKeys 是密钥池；activeKeyIndex 是用户点选的当前 Key。
 // 鉴权/配额失败时后端仍会自动切到池里其它 Key。
-export type ProviderOAuthConfig = { provider: 'codex' | 'kimi' | 'antigravity'; credentialId?: string }
+export type ProviderOAuthConfig = { provider: 'chatgpt' | 'kimi' | 'antigravity'; credentialId?: string; requiresReauthorization?: boolean }
+export type ChatGPTAccount = { credentialId: string; clientId: string; subject: string | null; email?: string | null; connected: boolean; planEnabled: boolean }
+export const CHATGPT_USAGE_URL = 'https://chatgpt.com/settings/usage'
 export type ProviderOAuthAccount = { email: string | null; name: string | null; accountId: string | null }
 export type ProviderOAuthUsage = { plan: string | null; fetchedAt: number; windows: { label: string; usedPercent: number | null; used: number | null; limit: number | null; resetsAt: number | null; resetHint?: string | null }[] }
 export type ProviderOAuthLogin = { loginId: string; userCode: string; verificationUrl: string; interval: number; expiresAt: number }
@@ -1035,7 +1038,8 @@ export function isOpenCodeFree(provider: ModelProvider): boolean {
 
 export function providerAuthenticationReady(provider: ModelProvider): boolean {
   // API keys are optional for local/anonymous endpoints; OAuth still requires login.
-  return !provider.request.oauth || Boolean(provider.request.oauth.credentialId)
+  const auth = provider.request.oauth
+  return !auth || Boolean(auth.credentialId && !auth.requiresReauthorization)
 }
 
 export type SubagentRoleSummary = {
@@ -1909,13 +1913,14 @@ export const api = {
     }
   },
 
-  providerOAuthStart: (provider: ProviderOAuthConfig['provider'], useSystemProxy = true) =>
-    invoke<ProviderOAuthLogin>('provider_oauth_start', { provider, useSystemProxy }),
+  providerOAuthChatGPTAccounts: () => invoke<ChatGPTAccount[]>('provider_oauth_chatgpt_accounts'),
+  providerOAuthStart: (provider: ProviderOAuthConfig['provider'], useSystemProxy = true, credentialId?: string) =>
+    invoke<ProviderOAuthLogin>('provider_oauth_start', { provider, useSystemProxy, credentialId }),
   providerOAuthPoll: (loginId: string) => invoke<ProviderOAuthPoll>('provider_oauth_poll', { loginId }),
   providerOAuthCancel: (loginId: string) => invoke<void>('provider_oauth_cancel', { loginId }),
   providerOAuthAccount: (provider: ModelProvider) => invoke<ProviderOAuthAccount>('provider_oauth_account', { provider }),
   providerOAuthUsage: (provider: ModelProvider) => invoke<ProviderOAuthUsage>('provider_oauth_usage', { provider }),
-  providerOAuthDisconnect: (credentialId: string) => invoke<void>('provider_oauth_disconnect', { credentialId }),
+  providerOAuthDisconnect: (credentialId: string, useSystemProxy = true) => invoke<string | null>('provider_oauth_disconnect', { credentialId, useSystemProxy }),
   desktopPetGetEnabled: () => invoke<boolean>('desktop_pet_get_enabled'),
   desktopPetSetEnabled: (enabled: boolean) =>
     invoke<boolean>('desktop_pet_set_enabled', { enabled }),
@@ -1974,7 +1979,7 @@ export const api = {
   fetchModels: (providerId: string, provider?: ProviderConnectionInput) =>
     invoke<string[]>('fetch_models', { providerId, provider }),
   fetchModelCatalog: (providerId: string, provider?: ProviderConnectionInput) =>
-    invoke<{ models: string[]; capabilities: Record<string, NonNullable<ModelInfo['capabilities']>> }>('fetch_models', { providerId, provider, includeCapabilities: true }),
+    invoke<{ models: string[]; displayNames?: Record<string, string>; capabilities: Record<string, NonNullable<ModelInfo['capabilities']>> }>('fetch_models', { providerId, provider, includeCapabilities: true }),
   testProviderConnection: (providerId: string, provider?: ProviderConnectionInput) =>
     invoke<{ success: boolean; error?: string }>('test_provider_connection', { providerId, provider }),
 

@@ -41,7 +41,7 @@ describe('ProviderUsageCard', () => {
     let finish!: (result: ProviderOAuthUsage) => void
     vi.mocked(api.providerOAuthUsage).mockImplementation(() => new Promise(resolve => { finish = resolve }))
     const view = render(<ProviderUsageCard provider={provider} lang="zh" />)
-    view.rerender(<ProviderUsageCard provider={{ ...provider, request: { ...provider.request, oauth: { provider: 'codex' } } }} lang="zh" />)
+    view.rerender(<ProviderUsageCard provider={{ ...provider, request: { ...provider.request, oauth: { provider: 'chatgpt' } } }} lang="zh" />)
     await act(async () => finish(usage))
     expect(screen.queryByRole('region')).not.toBeInTheDocument()
     expect(api.providerOAuthUsage).toHaveBeenCalledTimes(1)

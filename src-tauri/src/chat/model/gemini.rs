@@ -560,6 +560,7 @@ mod tests {
         let mut p = provider();
         p.base_url = antigravity::BASE.into();
         p.request.oauth = Some(crate::provider_oauth::OAuthConfig {
+            requires_reauthorization: false,
             provider: "antigravity".into(),
             credential_id: Some("ref".into()),
             project_id: Some("account-project".into()),

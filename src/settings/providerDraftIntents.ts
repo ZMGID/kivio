@@ -201,7 +201,9 @@ export function applyProviderDraftIntent(settings: Settings, intent: ProviderDra
       const provider = settings.providers.find((item) => item.id === intent.id)
       if (!provider?.modelOverrides?.[intent.model]) return settings
       const modelOverrides = { ...provider.modelOverrides }
-      delete modelOverrides[intent.model]
+      const { advertisedDisplayName } = modelOverrides[intent.model]
+      if (advertisedDisplayName) modelOverrides[intent.model] = { advertisedDisplayName }
+      else delete modelOverrides[intent.model]
       return updateProvider(settings, intent.id, { modelOverrides })
     }
   }

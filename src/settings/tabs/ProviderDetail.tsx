@@ -1,3 +1,4 @@
+import { providerModelLabel } from '../../data/modelCatalog'
 import { useModelDatabase } from '../../data/useModelDatabase'
 import {
   Plus, Minus, Trash2, Eye, EyeOff, Wrench, Brain,
@@ -12,13 +13,15 @@ import { ProviderRequestPanel } from '../ProviderRequestPanel'
 import { ProviderOAuthPanel } from '../ProviderOAuthPanel'
 import { ProviderUsageCard } from '../ProviderUsageCard'
 import { resolveModelInfo } from '../../data/modelMatching'
-import { api, isOpenCodeFree, clampedActiveKeyIndex, activeKeyIndexAfterRemove } from '../../api/tauri'
+import { api, providerAuthenticationReady, isOpenCodeFree, clampedActiveKeyIndex, activeKeyIndexAfterRemove } from '../../api/tauri'
 import type { I18n, Lang } from '../../components/i18n'
-import type { ModelProvider, ProviderApiFormat } from '../../api/tauri'
+import type { ModelProvider, ProviderApiFormat, Settings } from '../../api/tauri'
 
 /** 右栏正文，按配置顺序排：连接（端点/协议/密钥）→ 账户用量 → 模型 → 高级（「请求配置」二级页入口）。 */
 export function ProviderDetail({
   provider,
+  settings,
+  onFetchModels,
   t,
   lang,
   revealedKeys,
@@ -33,6 +36,8 @@ export function ProviderDetail({
   onRemoveEnabledModel,
 }: {
   provider: ModelProvider
+  settings: Settings
+  onFetchModels: (id: string) => Promise<boolean>
   t: I18n
   lang: Lang
   revealedKeys: Set<string>
@@ -77,7 +82,7 @@ export function ProviderDetail({
   return (
     <>
     <SettingsGroup title={lang === 'zh' ? '连接' : 'Connection'}>
-      <ProviderOAuthPanel key={provider.id} provider={provider} lang={lang} onUpdateProvider={onUpdateProvider} />
+      <ProviderOAuthPanel key={provider.id} provider={provider} settings={settings} onFetchModels={onFetchModels} lang={lang} onUpdateProvider={onUpdateProvider} />
       <FieldBlock label={t.baseUrl}>
         <div className="kv-provider-endpoint-row">
           <Input
@@ -215,6 +220,7 @@ export function ProviderDetail({
       actions={
         <Button
           size="sm"
+          disabled={!providerAuthenticationReady(provider)}
           onClick={() => onOpenModelPicker(provider.id)}
           data-tauri-drag-region="false"
         >
@@ -234,7 +240,7 @@ export function ProviderDetail({
             return (
               <li key={model} className="kv-enabled-model-row" onClick={() => onOpenModelDrawer({ providerId: provider.id, model })}>
                 <ModelIcon model={model} size={16} />
-                <span className="kv-enabled-model-name" title={model}>{model}</span>
+                <span className="kv-enabled-model-name" title={model}>{providerModelLabel(model, provider)}</span>
                 <span className="kv-enabled-model-badges">
                   {caps?.videoInput && (
                     <span className="kv-badge-mini kv-badge-mini--vision" title={lang === 'zh' ? '视频输入' : 'Video input'}>

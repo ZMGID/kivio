@@ -50,6 +50,13 @@ impl ModelError {
         }
     }
 
+    pub fn with_request_id(mut self, request_id: Option<&str>) -> Self {
+        if let Some(id) = request_id {
+            self.message.push_str(&format!(" (request ID: {id})"));
+        }
+        self
+    }
+
     pub fn from_provider_http(status: u16, body: &str, diagnostic: String) -> Self {
         let provider_code = serde_json::from_str::<Value>(body)
             .ok()
@@ -57,7 +64,7 @@ impl ModelError {
             .and_then(|value| provider_error_code(value.get("error").unwrap_or(value)));
         Self {
             kind: classify_provider(Some(status), body, provider_code.as_deref()),
-            message: diagnostic,
+            message: plan_diagnostic(diagnostic, provider_code.as_deref()),
             status: Some(status),
             provider_code,
             retry_after: None,
@@ -69,7 +76,7 @@ impl ModelError {
         let status = extract_status_code(&diagnostic);
         Self {
             kind: classify_provider(status, &diagnostic, code),
-            message: diagnostic,
+            message: plan_diagnostic(diagnostic, code),
             status,
             provider_code: code.map(str::to_string),
             retry_after: None,
@@ -161,7 +168,51 @@ fn provider_signal<'a>(message: &'a str, code: Option<&str>) -> std::borrow::Cow
     }
 }
 
+fn plan_diagnostic(message: String, code: Option<&str>) -> String {
+    let hint = match code {
+        Some("subscription_sharing_usage_limit_exceeded") => {
+            "Check ChatGPT usage at https://chatgpt.com/settings/usage before retrying."
+        }
+        Some(
+            "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable",
+        ) => "ChatGPT plan access is temporarily unavailable. Try again later.",
+        Some("subscription_sharing_user_not_eligible") => {
+            "ChatGPT plan usage is unavailable for this account or workspace."
+        }
+        Some("subscription_sharing_unsupported_capability") => {
+            "Change the unsupported request option before retrying."
+        }
+        Some("subscription_sharing_route_not_supported") => {
+            "Verify the ChatGPT plan endpoint and HTTP method."
+        }
+        Some(
+            "subscription_sharing_invalid_user"
+            | "chatpass_v2_scope_not_authorized"
+            | "chatpass_v2_invalid_authorization_context",
+        ) => "Verify the selected ChatGPT account and its granted plan permission.",
+        _ => return message,
+    };
+    format!("{message} {hint}")
+}
+
 fn classify_provider(status: Option<u16>, body: &str, code: Option<&str>) -> ModelErrorKind {
+    match code {
+        Some("subscription_sharing_usage_limit_exceeded") => return ModelErrorKind::RateLimited,
+        Some(
+            "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable",
+        ) => return ModelErrorKind::ProviderUnavailable,
+        Some(
+            "subscription_sharing_unsupported_capability"
+            | "subscription_sharing_route_not_supported",
+        ) => return ModelErrorKind::InvalidRequest,
+        Some(
+            "subscription_sharing_user_not_eligible"
+            | "subscription_sharing_invalid_user"
+            | "chatpass_v2_scope_not_authorized"
+            | "chatpass_v2_invalid_authorization_context",
+        ) => return ModelErrorKind::Auth,
+        _ => {}
+    }
     let kind = classify(status, &provider_signal(body, code));
     if kind != ModelErrorKind::Other {
         return kind;

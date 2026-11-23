@@ -537,6 +537,7 @@ pub fn run() {
             provider_oauth::provider_oauth_start,
             provider_oauth::provider_oauth_poll,
             provider_oauth::provider_oauth_cancel,
+            provider_oauth::chatgpt::provider_oauth_chatgpt_accounts,
             provider_oauth::provider_oauth_disconnect,
             provider_oauth::usage::provider_oauth_usage,
             provider_oauth::account::provider_oauth_account,

@@ -1321,6 +1321,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 })}
                 onToggleKeyReveal={toggleKeyReveal}
                 onOpenModelPicker={openModelPicker}
+                onFetchModels={providerCatalog.fetchModels}
                 onOpenModelTest={providerModals.openTest}
                 onOpenModelDrawer={providerModals.openDrawer}
                 onRemoveEnabledModel={removeEnabledModel}
@@ -1385,7 +1386,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             addAllModels: lang === 'zh' ? '添加当前列表中的全部模型' : 'Add all models in the current list',
             close: lang === 'zh' ? '关闭' : 'Close',
           }}
-          fetching={providerCatalog.fetchingProviderId === modelPickerProvider.id}
+          fetching={providerCatalog.fetchingProviderIds.has(modelPickerProvider.id)}
           onClose={providerModals.closePicker}
           onFetch={() => void providerCatalog.fetchModels(modelPickerProvider.id)}
           onAdd={(model) => addEnabledModel(modelPickerProvider.id, model)}

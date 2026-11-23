@@ -100,33 +100,6 @@ fn parse_usage(kind: &str, value: &Value, fetched: i64) -> AccountUsage {
                 }
             }
         }
-    } else {
-        for (group, prefix) in [
-            ("rate_limit", ""),
-            ("code_review_rate_limit", "Code review · "),
-        ] {
-            for (key, fallback) in [
-                ("primary_window", "Session"),
-                ("secondary_window", "Weekly"),
-            ] {
-                let v = &value[group][key];
-                if !v.is_object() {
-                    continue;
-                }
-                let label = match number(&v["limit_window_seconds"]) {
-                    Some(n) if n >= 3600.0 && n % 3600.0 == 0.0 => format!("{}h", n / 3600.0),
-                    _ => fallback.into(),
-                };
-                windows.push(UsageWindow {
-                    label: format!("{prefix}{label}"),
-                    used_percent: number(&v["used_percent"]).map(|n| n.clamp(0.0, 100.0)),
-                    used: None,
-                    limit: None,
-                    resets_at: reset(v, fetched),
-                    reset_hint: None,
-                });
-            }
-        }
     }
     AccountUsage {
         plan: value["plan_type"].as_str().map(str::to_owned),
@@ -224,11 +197,10 @@ pub async fn provider_oauth_usage(
         let resolved = resolve_provider(&state, &provider).await?;
         return antigravity_usage(&resolved).await;
     }
-    let url = match kind.as_str() {
-        "kimi" => format!("{KIMI_BASE}/usages"),
-        "codex" => "https://chatgpt.com/backend-api/wham/usage".into(),
-        _ => return Err("Usage is not available for this provider yet".into()),
-    };
+    if kind != "kimi" {
+        return Err("This provider does not expose account usage here".into());
+    }
+    let url = format!("{KIMI_BASE}/usages");
     let resolved = resolve_provider(&state, &provider).await?;
     let client = http(provider.request.use_system_proxy)?;
     let mut request = client
@@ -305,17 +277,5 @@ mod tests {
         let result = parse_usage("kimi", &json!({"usage":{"limit":100}}), 100);
         assert_eq!(result.windows[0].used_percent, None);
         assert!(parse_usage("kimi", &json!({}), 100).windows.is_empty());
-    }
-    #[test]
-    fn codex_percent_direction_and_reset() {
-        let result = parse_usage(
-            "codex",
-            &json!({"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":80,"reset_at":200,"limit_window_seconds":18000},"secondary_window":{"used_percent":0,"reset_after_seconds":30}}}),
-            100,
-        );
-        assert_eq!(result.plan.as_deref(), Some("plus"));
-        assert_eq!(result.windows[0].used_percent, Some(80.0));
-        assert_eq!(result.windows[0].label, "5h");
-        assert_eq!(result.windows[1].resets_at, Some(130));
     }
 }

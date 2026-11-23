@@ -450,6 +450,9 @@ pub(crate) fn agent_model_capabilities(
 }
 
 pub(crate) fn model_supports_video(provider: &ModelProvider, model: &str) -> Option<bool> {
+    if crate::provider_oauth::is_chatgpt(provider) {
+        return Some(false);
+    }
     provider
         .model_overrides
         .get(model)
@@ -481,6 +484,9 @@ pub(crate) fn model_supports_image_generation(
     model: &str,
 ) -> Option<bool> {
     let provider = provider?;
+    if crate::provider_oauth::is_chatgpt(provider) {
+        return Some(false);
+    }
     override_image_generation(provider, model)
         .or_else(|| model_database_image_generation(model))
         .or_else(|| image_generation_model_name_heuristic(provider, model))

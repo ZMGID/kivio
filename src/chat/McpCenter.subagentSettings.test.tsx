@@ -46,7 +46,7 @@ it('manages roles in the current conversation and preserves sibling settings', a
   mocks.settings.providers = [
     makeProvider({ id: 'p1', name: 'Provider 1', enabledModels: ['new-model', 'backup'] }),
     makeProvider({ id: 'p2', enabled: false, enabledModels: ['disabled-model'] }),
-    makeProvider({ id: 'p3', enabledModels: ['unauthed-model'], request: { oauth: { provider: 'codex' } } }),
+    makeProvider({ id: 'p3', enabledModels: ['unauthed-model'], request: { oauth: { provider: 'chatgpt' } } }),
   ]
   mocks.settings.chatTools.taskDisabledAgents = ['auditor']
   mocks.settings.chatTools.taskAgentModelOverrides = { scout: ['old/model', 'p1/backup'], reviewer: ['provider/model'] }

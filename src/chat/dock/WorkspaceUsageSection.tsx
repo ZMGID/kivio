@@ -2,7 +2,9 @@
 // 一行标签 + 细进度条 + 数值，悬停看重置时间等细节。只在面板可见且该项打开时才读取额度。
 import { useEffect, useState } from 'react'
 import { i18n, type Lang } from '../../components/i18n'
-import { api, type ModelProvider } from '../../api/tauri'
+import { api, CHATGPT_USAGE_URL, type ModelProvider } from '../../api/tauri'
+import { Button } from '../../components/Button'
+import { notifyError } from '../../components/appNoticeStore'
 import { peekSettings } from '../../api/settingsCache'
 import { cliRemaining, cliResetTime, cliWindowLabel } from '../../api/cliAccountFormat'
 import { useCliAccount } from '../../api/useCliAccount'
@@ -20,7 +22,7 @@ export type WorkspaceUsageSource = {
 
 type UsageWindow = { label: string; remaining: number | null; detail: string }
 
-const OAUTH_USAGE_PROVIDERS = new Set(['kimi', 'codex', 'antigravity'])
+const OAUTH_USAGE_PROVIDERS = new Set(['kimi', 'antigravity'])
 
 function MeterRow({ label, value, percent, tone, detail }: {
   label: string
@@ -103,6 +105,14 @@ export function WorkspaceUsageSection({ source, conversationId, active, lang }: 
 }) {
   const t = i18n[lang]
   const { windows, error } = useUsageWindows(source, conversationId, active, lang)
+  if (active && !source.externalAgentId && peekSettings()?.providers.find(item => item.id === source.providerId)?.request.oauth?.provider === 'chatgpt') {
+    return <PanelSection>
+      <Heading>{t.workspaceItemUsage}</Heading>
+      <Button size="sm" variant="ghost" onClick={() => void api.openExternal(CHATGPT_USAGE_URL).catch(err => notifyError(String(err)))}>
+        {lang === 'zh' ? '管理 ChatGPT 用量 ↗' : 'Manage ChatGPT usage ↗'}
+      </Button>
+    </PanelSection>
+  }
   if (windows === null) return null
   return (
     <PanelSection>

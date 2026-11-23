@@ -64,6 +64,9 @@ impl OpenAiResponsesProvider<'_> {
         label: &str,
     ) -> Result<reqwest::Response, ModelError> {
         let result = self.post_responses(request, body, stream, label).await;
+        if self.config.chatgpt_plan {
+            return result;
+        }
         if let Err(ref err) = result {
             let mut learned = false;
             if body.get("prompt_cache_key").is_some()
@@ -103,7 +106,7 @@ impl OpenAiResponsesProvider<'_> {
                 return retry;
             }
             if learned {
-                let retry_body = self.request_body(request, stream);
+                let retry_body = self.request_body(request, stream)?;
                 if retry_body != *body {
                     *body = retry_body;
                     return self.post_responses(request, body, stream, label).await;
@@ -155,11 +158,19 @@ impl OpenAiResponsesProvider<'_> {
     }
 
     async fn generate_inner(&self, request: GenerateRequest) -> Result<GenerateOutput, ModelError> {
+        if self.config.chatgpt_plan {
+            return self
+                .stream_inner(
+                    request,
+                    &mut kivio_agent_sdk::agent::provider_runtime::DiscardModelSink,
+                )
+                .await;
+        }
         crate::chat::video::reject_unimplemented_transport(&request, "Responses")?;
         let label = request_label(&request, "Responses API");
         let started_at = chrono::Local::now().timestamp();
         let started = std::time::Instant::now();
-        let mut body = self.request_body(&request, false);
+        let mut body = self.request_body(&request, false)?;
         let response = self
             .send_responses_body(&request, &mut body, false, &label)
             .await
@@ -251,13 +262,13 @@ impl OpenAiResponsesProvider<'_> {
         let started = std::time::Instant::now();
         let mut measured_sink = FirstTokenStreamSink::new(sink, started);
         let sink = &mut measured_sink;
-        let stream = self.config.codex_oauth
+        let stream = self.config.chatgpt_plan
             || !responses::uses_buffered_delivery(
                 reqwest::Url::parse(self.config.base_url).ok().as_ref(),
                 self.responses_format(),
                 &request.model,
             );
-        let mut body = self.request_body(&request, stream);
+        let mut body = self.request_body(&request, stream)?;
         let response = self
             .send_responses_body(&request, &mut body, stream, &label)
             .await
@@ -280,7 +291,9 @@ impl OpenAiResponsesProvider<'_> {
                 err
             })?;
 
-        let mut output = if stream {
+        let mut output = if self.config.chatgpt_plan {
+            responses::chatgpt_plan::decode_stream(response, sink, &label, &request.model).await
+        } else if stream {
             responses::decode_responses_stream(response, sink, &label, &request.model).await
         } else {
             responses::decode_responses_buffered_stream(response, sink, &label, &request.model)
@@ -362,7 +375,7 @@ impl OpenAiResponsesProvider<'_> {
         );
     }
 
-    fn request_body(&self, request: &GenerateRequest, stream: bool) -> Value {
+    fn request_body(&self, request: &GenerateRequest, stream: bool) -> Result<Value, ModelError> {
         let format = self.responses_format();
         let is_xai = format == ResponsesFormat::Xai;
         let cache_key_supported = !is_xai
@@ -410,7 +423,7 @@ impl OpenAiResponsesProvider<'_> {
                 _ => kivio_agent_sdk::model::openai::CacheRetention::Short,
             }),
         };
-        if self.config.codex_identity && !is_xai {
+        if self.config.codex_identity && !self.config.chatgpt_plan && !is_xai {
             if options.extra_body.get("include").is_none() {
                 options.extra_body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
             }
@@ -426,10 +439,10 @@ impl OpenAiResponsesProvider<'_> {
             }
         }
         let mut body = responses::request_body(request, stream, &options);
-        if self.config.codex_oauth {
-            crate::provider_oauth::codex_body(&mut body);
+        if self.config.chatgpt_plan {
+            responses::chatgpt_plan::prepare_body(&mut body)?;
         }
-        body
+        Ok(body)
     }
 
     /// 重建本次请求实际会带的 headers（脱敏后）供请求调试面板展示。镜像发送路径：
@@ -456,7 +469,7 @@ impl OpenAiResponsesProvider<'_> {
     /// CLI 身份 / 自定义 / OAuth 头 + 缺省 UA / Accept。
     /// Codex 身份不发亲和头：真实 Codex 不带 `x-session-id`，而且值是 `conv_*`，
     /// 和身份头里的 UUID `session_id` 摆在一起就露馅了。
-    /// Accept 按**最终请求体**的 `stream` 取值：Codex OAuth 会把体强制改成流式。
+    /// Accept 按**最终请求体**的 `stream` 取值：ChatGPT 套餐 会把体强制改成流式。
     fn extra_header_pairs(
         &self,
         metadata: &crate::chat::model::RequestMetadata,
@@ -465,7 +478,7 @@ impl OpenAiResponsesProvider<'_> {
         crate::provider_request::model_header_pairs(
             self.config.source,
             metadata.conversation_id.as_deref(),
-            !self.config.codex_identity,
+            !self.config.codex_identity && !self.config.chatgpt_plan,
             body["stream"] == true,
         )
     }
@@ -711,6 +724,7 @@ mod tests {
             ProviderConfig::from_settings(&provider),
         )
         .request_body(&request, false)
+        .unwrap()
     }
 
     fn codex_identity_case(
@@ -766,9 +780,11 @@ mod tests {
             ProviderConfig::from_settings(&provider),
         );
         (
-            adapter.request_body(&request, false),
-            adapter
-                .debug_request_headers(&request.metadata, &adapter.request_body(&request, false)),
+            adapter.request_body(&request, false).unwrap(),
+            adapter.debug_request_headers(
+                &request.metadata,
+                &adapter.request_body(&request, false).unwrap(),
+            ),
         )
     }
 
@@ -810,7 +826,7 @@ mod tests {
             ProviderConfig::from_settings(&provider),
         );
         let metadata = Default::default();
-        // SSE 请求不能报 Accept: application/json（Codex OAuth 会把体强制改成 stream:true）。
+        // SSE 请求不能报 Accept: application/json（ChatGPT 套餐 会把体强制改成 stream:true）。
         let streaming = serde_json::json!({ "stream": true });
         assert_eq!(
             adapter.debug_request_headers(&metadata, &streaming)["Accept"],
@@ -904,6 +920,7 @@ mod tests {
                 ProviderConfig::from_settings(&provider),
             )
             .request_body(&request, false)
+            .unwrap()
         };
         assert!(body_with("none").get("prompt_cache_key").is_none());
         let short = body_with("short");
@@ -985,6 +1002,7 @@ mod tests {
             ProviderConfig::from_settings(&provider),
         )
         .request_body(&request, false)
+        .unwrap()
     }
 
     fn fresh_state() -> crate::state::AppState {

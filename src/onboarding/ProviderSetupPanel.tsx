@@ -1,8 +1,9 @@
+import { providerModelLabel } from '../data/modelCatalog'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, isOpenCodeFree, providerAuthenticationReady, type ModelProvider, type ProviderApiFormat, type Settings } from '../api/tauri'
-import { applyModelCatalog } from '../data/modelCatalog'
-import { ModelPairSelect, ProviderModelsPicker } from '../settings/public/modelSelection'
+import { ErrorNotice } from '../components/AppNotice'
+import { ModelPairSelect, ProviderModelsPicker, useProviderCatalogController } from '../settings/public/modelSelection'
 import { Button, IconButton } from '../components/Button'
 import { Input, Label, Select } from '../settings/public/controls'
 import type { I18n, Lang } from '../components/i18n'
@@ -211,7 +212,11 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
   const initializedRef = useRef(false)
   const [activeProviderId, setActiveProviderId] = useState(() => resolveActiveProviderId(settings))
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
-  const [fetching, setFetching] = useState(false)
+  const catalog = useProviderCatalogController({
+    fetch: api.fetchModelCatalog,
+    getProvider: id => settings.providers.find(item => item.id === id),
+    apply: (id, patch) => onChange(updateProviderInSettings(settings, id, patch)),
+  })
   const [testing, setTesting] = useState(false)
   const [testFeedback, setTestFeedback] = useState<{ ok: boolean; message: string } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -267,26 +272,6 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
     setActiveProviderId(resolveActiveProviderId(next))
   }, [onChange, provider, settings])
 
-  const fetchModels = async () => {
-    if (!provider || fetching) return
-    setFetching(true)
-    try {
-      const catalog = await api.fetchModelCatalog(provider.id, {
-        id: provider.id,
-        baseUrl: provider.baseUrl,
-        apiKeys: provider.apiKeys,
-        activeKeyIndex: provider.activeKeyIndex,
-        apiFormat: provider.apiFormat,
-        request: provider.request,
-      })
-      updateProvider(applyModelCatalog(provider, catalog))
-    } catch (err) {
-      console.error('Failed to fetch models:', err)
-    } finally {
-      setFetching(false)
-    }
-  }
-
   const handleTestConnection = async () => {
     if (!provider) return
     setTesting(true)
@@ -330,6 +315,7 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
 
   return (
     <>
+      {catalog.error && <ErrorNotice message={catalog.error} />}
       <OnboardingBlock order={0} label={t.onboardingProviderList}>
         <div className="onboarding-pick-grid">
           {settings.providers.map((item) => (
@@ -353,7 +339,7 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
               data-tauri-drag-region="false"
             >
               <ProviderIcon name={preset.name} baseUrl={preset.baseUrl} size={14} />
-              {preset.name}
+              {preset.label?.[lang] ?? preset.name}
             </button>
           ))}
           <button
@@ -388,6 +374,8 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
             key={provider.id}
             provider={provider}
             lang={lang}
+            onFetchModels={catalog.fetchModels}
+            settings={settings}
             authorizedNotice={t.onboardingProviderAuthorized}
             onUpdateProvider={(id, patch) => onChange(updateProviderInSettings(settings, id, patch))}
           />
@@ -502,7 +490,7 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
               {provider.enabledModels.map((model) => (
                 <span key={model} className="onboarding-model-chip">
                   <Check size={12} />
-                  {model}
+                  {providerModelLabel(model, provider)}
                 </span>
               ))}
             </div>
@@ -623,9 +611,9 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
             addAllModels: lang === 'zh' ? '添加当前列表中的全部模型' : 'Add all models in the current list',
             close: lang === 'zh' ? '关闭' : 'Close',
           }}
-          fetching={fetching}
+          fetching={catalog.fetchingProviderIds.has(provider.id)}
           onClose={() => setModelPickerOpen(false)}
-          onFetch={() => void fetchModels()}
+          onFetch={() => void catalog.fetchModels(provider.id)}
           onAdd={(model) => {
             if (provider.enabledModels.includes(model)) return
             onChange(updateProviderInSettings(settings, provider.id, {

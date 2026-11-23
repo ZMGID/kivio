@@ -34,7 +34,7 @@ let settingsListener: ((next: Settings) => void) | null
 function makeSettings(overrides: Record<string, unknown> = {}): Settings {
   return {
     providers: [
-      { id: 'p1', apiFormat: 'openai_responses', baseUrl: 'https://a', request: { oauth: { provider: 'codex' } } },
+      { id: 'p1', apiFormat: 'openai_responses', baseUrl: 'https://a', request: { oauth: { provider: 'chatgpt' } } },
       { id: 'p2', apiFormat: 'anthropic', baseUrl: 'https://b', request: {} },
     ],
     chatTools: {
@@ -106,7 +106,7 @@ describe('useChatToolIndicator: snapshot', () => {
       webSearchEnabled: false,
       providerApiFormats: { p1: 'openai_responses', p2: 'anthropic' },
       providerBaseUrls: { p1: 'https://a', p2: 'https://b' },
-      providerOAuthTypes: { p1: 'codex', p2: '' },
+      providerOAuthTypes: { p1: 'chatgpt', p2: '' },
     })
     expect(result.current.mcpServers.map((server) => server.id)).toEqual(['srv', 'plugin-office'])
   })

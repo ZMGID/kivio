@@ -1,3 +1,4 @@
+import { providerModelLabel } from '../data/modelCatalog'
 import { type ModelProvider } from '../api/tauri'
 import { i18n, type Lang } from '../components/i18n'
 
@@ -137,7 +138,7 @@ export const buildModelPairOptions = (
         .filter(model => !filterModel || filterModel(provider, model))
         .map(model => ({
           value: modelPairValue(provider.id, model),
-          label: `${provider.name} - ${model}`,
+          label: `${provider.name} - ${providerModelLabel(model, provider)}`,
           title: `${provider.name} - ${model}`,
         })),
     )

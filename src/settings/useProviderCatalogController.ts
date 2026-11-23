@@ -25,40 +25,44 @@ export function useProviderCatalogController(port: ProviderCatalogPort) {
   const portRef = useRef(port)
   portRef.current = port
   const live = useRef(true)
-  const inFlight = useRef(false)
-  const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null)
+  const inFlight = useRef(new Map<string, { identity: string; request: Promise<boolean> }>())
+  const [fetchingProviderIds, setFetchingProviderIds] = useState<ReadonlySet<string>>(new Set())
   const [error, setError] = useState('')
 
-  const fetchModels = useCallback(async (providerId: string): Promise<void> => {
-    if (inFlight.current) return
+  const fetchModels = useCallback((providerId: string): Promise<boolean> => {
     const provider = portRef.current.getProvider(providerId)
-    if (!provider) return
-    inFlight.current = true
-    setFetchingProviderId(providerId)
-    setError('')
+    if (!provider) return Promise.resolve(false)
     const identity = connectionIdentity(provider)
-    try {
-      const catalog = await portRef.current.fetch(providerId, {
-        id: provider.id,
-        baseUrl: provider.baseUrl,
-        apiKeys: provider.apiKeys,
-        activeKeyIndex: provider.activeKeyIndex,
-        apiFormat: provider.apiFormat,
-        request: provider.request,
-      })
-      if (!live.current) return
+    const pending = inFlight.current.get(providerId)
+    if (pending?.identity === identity) return pending.request
+
+    setError('')
+    const request = portRef.current.fetch(providerId, {
+      id: provider.id,
+      baseUrl: provider.baseUrl,
+      apiKeys: provider.apiKeys,
+      activeKeyIndex: provider.activeKeyIndex,
+      apiFormat: provider.apiFormat,
+      request: provider.request,
+    }).then(catalog => {
       const latest = portRef.current.getProvider(providerId)
-      if (!latest || connectionIdentity(latest) !== identity) return
+      if (!live.current || !latest || inFlight.current.get(providerId)?.request !== request || connectionIdentity(latest) !== identity) return false
       portRef.current.apply(providerId, applyModelCatalog(latest, catalog))
-    } catch (failure) {
+      return true
+    }).catch((failure: unknown) => {
       const latest = portRef.current.getProvider(providerId)
-      if (live.current && latest && connectionIdentity(latest) === identity) {
+      if (live.current && latest && inFlight.current.get(providerId)?.request === request && connectionIdentity(latest) === identity) {
         setError(failure instanceof Error ? failure.message : String(failure))
       }
-    } finally {
-      inFlight.current = false
-      if (live.current) setFetchingProviderId(null)
-    }
+      return false
+    }).finally(() => {
+      if (inFlight.current.get(providerId)?.request !== request) return
+      inFlight.current.delete(providerId)
+      if (live.current) setFetchingProviderIds(new Set(inFlight.current.keys()))
+    })
+    inFlight.current.set(providerId, { identity, request })
+    setFetchingProviderIds(new Set(inFlight.current.keys()))
+    return request
   }, [])
 
   useEffect(() => {
@@ -66,5 +70,5 @@ export function useProviderCatalogController(port: ProviderCatalogPort) {
     return () => { live.current = false }
   }, [])
 
-  return { fetchingProviderId, error, fetchModels }
+  return { fetchingProviderIds, error, fetchModels }
 }

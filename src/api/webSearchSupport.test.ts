@@ -17,7 +17,7 @@ describe('builtinWebSearchSupported', () => {
     expect(resolveProviderWebSearchMode('third_party', 'antigravity')).toBe('third_party')
     expect(resolveProviderWebSearchMode('off', 'antigravity')).toBe('off')
     expect(resolveProviderWebSearchMode('builtin')).toBe('builtin')
-    expect(resolveProviderWebSearchMode('builtin', 'codex')).toBe('builtin')
+    expect(resolveProviderWebSearchMode('builtin', 'chatgpt')).toBe('builtin')
   })
 
   it('allows Responses / Gemini / Anthropic regardless of host', () => {

@@ -67,7 +67,7 @@ struct ProviderConfig<'a> {
     compress_request_body: bool,
     claude_code: bool,
     codex_identity: bool,
-    codex_oauth: bool,
+    chatgpt_plan: bool,
     antigravity: bool,
     opencode_free: bool,
 }
@@ -85,7 +85,7 @@ impl<'a> ProviderConfig<'a> {
             compress_request_body: provider.compress_request_body,
             claude_code: crate::provider_request::is_claude_code_identity(provider),
             codex_identity: crate::provider_request::is_codex_identity(provider),
-            codex_oauth: crate::provider_oauth::is_codex(provider),
+            chatgpt_plan: crate::provider_oauth::is_chatgpt(provider),
             antigravity: crate::provider_oauth::antigravity::is_provider(provider),
             opencode_free: provider.is_opencode_free(),
         }
@@ -301,6 +301,165 @@ mod anonymous_http_tests {
             value: "preserved".into(),
         });
         provider
+    }
+
+    #[tokio::test]
+    async fn chatgpt_plan_replays_local_tool_results_and_requires_completed_inference() {
+        use serde_json::{json, Value};
+
+        let call = json!({"type":"function_call","namespace":"kivio","id":"fc_1",
+            "name":"read","call_id":"call_1","arguments":"{\"path\":\"a\"}","status":"completed"});
+        let event = |event: Value| format!("data: {event}\n\n");
+        let done = |output: Value| {
+            event(
+                json!({"type":"response.completed","response":{"status":"completed","output":output}}),
+            )
+        };
+        let delta = event(json!({"type":"response.output_text.delta","delta":"partial"}));
+        let responses = vec![
+            (
+                "200 OK",
+                event(json!({"type":"response.output_item.done","item":call})) + &done(json!([])),
+            ),
+            (
+                "200 OK",
+                done(
+                    json!([{"type":"message","content":[{"type":"output_text","text":"answer"}]}]),
+                ),
+            ),
+            (
+                "200 OK",
+                delta.clone()
+                    + &event(json!({"type":"response.failed","response":{"error":{
+                "code":"subscription_sharing_usage_limit_exceeded","message":"app limit","param":"model"}}})),
+            ),
+            (
+                "200 OK",
+                event(
+                    json!({"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}),
+                ),
+            ),
+            ("200 OK", delta),
+            (
+                "403 Forbidden",
+                json!({"detail":"region unavailable"}).to_string(),
+            ),
+        ];
+        let (url, server) = endpoint(responses, false).await;
+        let mut provider = provider("openai_responses", url, vec!["test-oauth".into()]);
+        provider.request.oauth =
+            Some(serde_json::from_value(json!({"provider":"chatgpt"})).unwrap());
+        provider.request.cli_identity = "codex".into();
+        let state = crate::state::AppState::new_headless(Default::default(), std::env::temp_dir());
+        let adapter = OpenAiResponsesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
+        let mut request = GenerateRequest {
+            model: "account-model".into(),
+            system: "Read the requested file.".into(),
+            messages: vec![ModelMessage::text(ModelRole::User, "read a")],
+            tools: vec![ModelTool {
+                name: "read".into(),
+                description: "Read a file".into(),
+                input_schema: json!({"type":"object"}),
+            }],
+            options: GenerateOptions {
+                max_tokens: 64,
+                builtin_web_search: true,
+                provider_options: json!({"temperature":0.9,"previous_response_id":"stale","metadata":{},"prompt_cache_options":{"ttl":"30m"},"store":true}),
+                ..Default::default()
+            },
+            metadata: RequestMetadata {
+                conversation_id: Some("conv_plan".into()),
+                ..Default::default()
+            },
+        };
+        let out = adapter
+            .stream(request.clone(), &mut |_: StreamPart| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(out.tool_calls[0].function_name, "read");
+        assert_eq!(out.tool_calls[0].arguments, json!({"path":"a"}));
+        request.messages.push(out.replay_message());
+        request.messages.push(ModelMessage {
+            role: ModelRole::Tool,
+            content: vec![MessagePart::ToolResult {
+                tool_call_id: out.tool_calls[0].id.clone(),
+                content: "file contents".into(),
+                is_error: false,
+                artifacts: vec![],
+            }],
+        });
+        assert_eq!(
+            adapter.generate(request.clone()).await.unwrap().text,
+            "answer"
+        );
+        let limit = adapter.generate(request.clone()).await.unwrap_err();
+        assert_eq!(
+            limit.provider_code.as_deref(),
+            Some("subscription_sharing_usage_limit_exceeded")
+        );
+        assert!(!limit.is_retryable_stream_error());
+        for detail in ["app limit", "model", "https://chatgpt.com/settings/usage"] {
+            assert!(limit.message.contains(detail));
+        }
+        assert!(adapter
+            .generate(request.clone())
+            .await
+            .unwrap_err()
+            .message
+            .contains("max_output_tokens"));
+        assert!(adapter
+            .generate(request.clone())
+            .await
+            .unwrap_err()
+            .is_retryable_stream_error());
+        let admission = adapter.generate(request).await.unwrap_err();
+        assert_eq!(admission.status, Some(403));
+        assert!(admission.message.contains("region unavailable"));
+
+        let requests = server.await.unwrap();
+        for wire in &requests {
+            let (headers, json) = wire.split_once("\r\n\r\n").unwrap();
+            let headers = headers.to_ascii_lowercase();
+            assert!(headers.starts_with("post /v1/responses "));
+            assert!(headers.contains("authorization: bearer test-oauth"));
+            assert!(headers.contains("accept: text/event-stream"));
+            for obsolete in [
+                "chatgpt-account-id:",
+                "originator:",
+                "openai-beta:",
+                "x-local-routing:",
+                "x-session-id:",
+            ] {
+                assert!(!headers.contains(obsolete), "{headers}");
+            }
+            let body: Value = serde_json::from_str(json).unwrap();
+            assert_eq!(body["stream"], true);
+            assert_eq!(body["store"], false);
+            for field in [
+                "max_output_tokens",
+                "prompt_cache_options",
+                "previous_response_id",
+                "temperature",
+                "metadata",
+            ] {
+                assert!(body.get(field).is_none());
+            }
+            assert_eq!(body["tools"][0]["type"], "namespace");
+            assert_eq!(body["tools"][0]["tools"][0]["name"], "read");
+            assert_eq!(body["tools"][1]["type"], "web_search");
+        }
+        let next: Value =
+            serde_json::from_str(requests[1].split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(next["input"][0]["role"], "user");
+        assert_eq!(next["input"][1]["namespace"], "kivio");
+        assert_eq!(next["input"][1]["call_id"], "call_1");
+        assert_eq!(
+            next["input"][2],
+            json!({"type":"function_call_output","call_id":"call_1","output":"file contents"})
+        );
     }
 
     async fn call(

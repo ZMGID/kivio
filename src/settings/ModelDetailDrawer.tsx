@@ -173,13 +173,17 @@ export function ModelDetailDrawer({
       ...form,
       pricingModel: form.pricingModel?.trim() || undefined,
       pricing: pricingEdited ? form.pricing : overrides?.[modelName]?.pricing,
+      ...(overrides?.[modelName]?.advertisedDisplayName && {
+        advertisedDisplayName: overrides[modelName].advertisedDisplayName,
+        displayName: form.displayName === baseline.displayName ? overrides[modelName].displayName : form.displayName,
+      }),
       advertisedVideoInput: overrides?.[modelName]?.advertisedVideoInput,
       capabilities: {
         ...form.capabilities,
         videoInput: videoInputEdited ? form.capabilities?.videoInput : overrides?.[modelName]?.capabilities?.videoInput,
       },
     })
-  }, [modelName, form, onSave, temperatureInvalid, extraBodyInvalid, pricingInvalid, pricingEdited, videoInputEdited, overrides])
+  }, [modelName, form, baseline.displayName, onSave, temperatureInvalid, extraBodyInvalid, pricingInvalid, pricingEdited, videoInputEdited, overrides])
 
   const handleReset = useCallback(() => {
     onReset(modelName)

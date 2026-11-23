@@ -12,8 +12,10 @@ vi.mock('../api/tauri', async () => {
   const actual = await vi.importActual<typeof import('../api/tauri')>('../api/tauri')
   return { ...actual, api: {
     ...actual.api,
-    providerOAuthStart: vi.fn(async () => ({ loginId: 'login', userCode: 'CODE', verificationUrl: 'https://example.com/auth', interval: 3, expiresAt: 1900000000 })),
-    providerOAuthPoll: vi.fn(async () => ({ status: 'authorized', interval: 3, auth: { provider: 'codex', credentialId: 'credential' } })),
+    providerOAuthChatGPTAccounts: vi.fn(),
+    fetchModelCatalog: vi.fn(async () => ({ models: ['plan-model'], displayNames: { 'plan-model': 'Plan Model' }, capabilities: {} })),
+    providerOAuthStart: vi.fn(async () => ({ loginId: 'login', userCode: '', verificationUrl: '', interval: 3, expiresAt: 1900000000 })),
+    providerOAuthPoll: vi.fn(async () => ({ status: 'authorized', interval: 3, auth: { provider: 'chatgpt', credentialId: 'credential' } })),
     providerOAuthCancel: vi.fn(async () => {}),
     providerOAuthAccount: vi.fn(async () => ({ email: null, name: null, accountId: 'account' })),
     openExternal: vi.fn(async () => {}),
@@ -26,18 +28,33 @@ afterEach(() => { vi.useRealTimers(); vi.clearAllMocks() })
 describe('onboarding matches current capabilities', () => {
   it('authorizes an OAuth preset and tests with the unsaved credential reference', async () => {
     vi.useFakeTimers()
+    vi.mocked(api.providerOAuthChatGPTAccounts).mockResolvedValueOnce([]).mockResolvedValue([
+      { credentialId: 'credential', clientId: 'client', subject: 'subject', email: 'person@example.test', connected: true, planEnabled: true },
+    ])
     function Setup() {
       const [settings, setSettings] = useState(makeSettings())
       return <ProviderSetupPanel t={i18n.zh} lang="zh" settings={settings} onChange={setSettings} />
     }
     render(<Setup />)
-    fireEvent.click(screen.getByRole('button', { name: 'Codex OAuth' }))
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '登录授权' })) })
+    fireEvent.click(screen.getByRole('button', { name: 'ChatGPT 登录', exact: true }))
+    await act(async () => {})
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '使用 ChatGPT 登录' })) })
+    expect(api.openExternal).not.toHaveBeenCalled()
+    expect(screen.getByText(/请在浏览器中完成 ChatGPT 授权/)).toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
-    expect(screen.getByText('已授权')).toBeInTheDocument()
+    expect(screen.getByText(/当前账号 · person@example.test/)).toBeInTheDocument()
+    expect(api.fetchModelCatalog).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      baseUrl: 'https://api.openai.com/v1', request: expect.objectContaining({ oauth: { provider: 'chatgpt', credentialId: 'credential' } }),
+    }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '管理 ChatGPT 用量 ↗' })) })
+    expect(api.openExternal).toHaveBeenCalledWith('https://chatgpt.com/settings/usage')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '选择模型' })) })
+    expect(within(screen.getByRole('dialog')).getByText('Plan Model')).toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '添加 plan-model' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '关闭' }))
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '测试连接' })) })
     expect(api.testProviderConnection).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
-      request: expect.objectContaining({ oauth: { provider: 'codex', credentialId: 'credential' } }),
+      request: expect.objectContaining({ oauth: { provider: 'chatgpt', credentialId: 'credential' } }),
       apiFormat: 'openai_responses',
     }))
   })

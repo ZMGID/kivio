@@ -1,3 +1,4 @@
+import { providerModelLabel } from '../data/modelCatalog'
 import { useModelDatabase } from '../data/useModelDatabase'
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -242,7 +243,7 @@ export function ProviderModelsPicker({
                   <li key={model} className="kv-model-picker-row">
                     <ModelIcon model={providerModelDatabaseId(model, provider)} size={16} />
                     <span className="kv-model-picker-row-name" title={model}>
-                      {providerModelDatabaseId(model, provider) !== model ? (resolveModelInfo(model, provider.modelOverrides, provider).displayName ?? model) : model}
+                      {providerModelDatabaseId(model, provider) !== model ? (resolveModelInfo(model, provider.modelOverrides, provider).displayName ?? model) : providerModelLabel(model, provider)}
                     </span>
                     {isEnabled ? (
                       <span className="kv-tag ok shrink-0">{labels.enabled}</span>

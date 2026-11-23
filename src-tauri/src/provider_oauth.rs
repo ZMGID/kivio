@@ -1,4 +1,4 @@
-//! Device authorization based on Hermes Agent (MIT) and Kimi CLI (Apache-2.0).
+//! Model provider authorization and protected local credential storage.
 //! See docs/provider-oauth.md and docs/licenses/. No upstream credential files are modified.
 use crate::{settings::ModelProvider, state::AppState};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -8,11 +8,11 @@ use std::{collections::HashMap, sync::OnceLock, time::Duration};
 use tokio::sync::Mutex;
 pub mod account;
 pub mod antigravity;
+pub mod chatgpt;
 pub mod usage;
 
-const CODEX_CLIENT: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const KIMI_CLIENT: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
-pub const CODEX_BASE: &str = "https://chatgpt.com/backend-api/codex";
+pub const CHATGPT_BASE: &str = "https://api.openai.com/v1";
 pub const KIMI_BASE: &str = "https://api.kimi.com/coding/v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +21,8 @@ pub struct OAuthConfig {
     pub provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requires_reauthorization: bool,
     /// Runtime-only account project, loaded from the local JSON credential store.
     #[serde(skip)]
     pub project_id: Option<String>,
@@ -35,13 +37,14 @@ struct Tokens {
     expires_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chatgpt: Option<chatgpt::Registration>,
 }
 
 #[derive(Clone)]
 struct Pending {
     provider: String,
     device_code: String,
-    user_code: String,
     expires_at: i64,
     next_poll: i64,
     interval: i64,
@@ -66,6 +69,64 @@ pub struct PollResult {
     auth: Option<OAuthConfig>,
 }
 
+fn random_secret() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+async fn wait_for_callback<T>(
+    listener: tokio::net::TcpListener,
+    parse: impl Fn(&str) -> Result<T, &'static str>,
+) -> Result<T, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    loop {
+        let (mut socket, _) = listener
+            .accept()
+            .await
+            .map_err(|_| "OAuth callback listener failed")?;
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut bytes = Vec::new();
+            loop {
+                let mut block = [0; 1024];
+                let n = socket
+                    .read(&mut block)
+                    .await
+                    .map_err(|_| "Callback read failed")?;
+                if n == 0 {
+                    return Err("Incomplete callback");
+                }
+                bytes.extend_from_slice(&block[..n]);
+                if bytes.len() > 8192 {
+                    return Err("Callback too large");
+                }
+                if bytes.windows(4).any(|b| b == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            parse(std::str::from_utf8(&bytes).map_err(|_| "Invalid callback encoding")?)
+        })
+        .await;
+        let accepted = matches!(result, Ok(Ok(_)));
+        let status = if accepted {
+            "200 OK"
+        } else {
+            "400 Bad Request"
+        };
+        let body = if accepted {
+            "Authorization received. Return to Kivio to finish signing in."
+        } else {
+            "Invalid OAuth callback. Return to your sign-in page."
+        };
+        let reply = format!("HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let _ =
+            tokio::time::timeout(Duration::from_secs(2), socket.write_all(reply.as_bytes())).await;
+        if let Ok(Ok(code)) = result {
+            return Ok(code);
+        }
+    }
+}
+
 fn pending() -> &'static Mutex<HashMap<String, Pending>> {
     static PENDING: OnceLock<Mutex<HashMap<String, Pending>>> = OnceLock::new();
     PENDING.get_or_init(Default::default)
@@ -79,7 +140,6 @@ fn now() -> i64 {
 }
 fn client_id(provider: &str) -> Result<&'static str, String> {
     match provider {
-        "codex" => Ok(CODEX_CLIENT),
         "kimi" => Ok(KIMI_CLIENT),
         "antigravity" => Ok(antigravity::CLIENT),
         _ => Err("Unsupported OAuth provider".into()),
@@ -89,11 +149,7 @@ fn token_url(provider: &str) -> &'static str {
     if provider == "antigravity" {
         return antigravity::TOKEN_URL;
     }
-    if provider == "codex" {
-        "https://auth.openai.com/oauth/token"
-    } else {
-        "https://auth.kimi.com/api/oauth/token"
-    }
+    "https://auth.kimi.com/api/oauth/token"
 }
 fn http(use_system_proxy: bool) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
@@ -214,6 +270,7 @@ fn tokens_from(value: &Value, provider: &str, old_refresh: &str) -> Result<Token
         refresh_token,
         expires_at,
         project_id: None,
+        chatgpt: None,
     })
 }
 fn entry(id: &str) -> Result<keyring::Entry, String> {
@@ -263,7 +320,8 @@ fn credential_root() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "OAuth data directory is unavailable".into())
 }
 fn credential_path(root: &std::path::Path, id: &str) -> Result<std::path::PathBuf, String> {
-    uuid::Uuid::parse_str(id).map_err(|_| "Invalid OAuth credential reference".to_string())?;
+    uuid::Uuid::parse_str(id.strip_prefix(chatgpt::CREDENTIAL_PREFIX).unwrap_or(id))
+        .map_err(|_| "Invalid OAuth credential reference".to_string())?;
     Ok(root.join(format!("{id}.json")))
 }
 fn save_tokens_in(root: &std::path::Path, id: &str, tokens: &Tokens) -> Result<(), String> {
@@ -308,23 +366,21 @@ fn save_tokens(id: &str, tokens: &Tokens) -> Result<(), String> {
     save_tokens_in(&credential_root()?, id, tokens)
 }
 fn read_tokens_in(root: &std::path::Path, id: &str) -> Result<Tokens, String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            credential_path(root, id)?,
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .map_err(|_| "Cannot restrict OAuth credential permissions")?;
-    }
-    let data = std::fs::read(credential_path(root, id)?).map_err(|error| {
+    let file = std::fs::File::open(credential_path(root, id)?).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             "OAuth session is missing; sign in again"
         } else {
             "Cannot read OAuth credential JSON"
         }
     })?;
-    serde_json::from_slice(&data).map_err(|_| "OAuth session is invalid; sign in again".into())
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|_| "Cannot restrict OAuth credential permissions")?;
+    }
+    serde_json::from_reader(std::io::BufReader::new(file))
+        .map_err(|_| "OAuth session is invalid; sign in again".into())
 }
 fn read_legacy_tokens(id: &str) -> Result<(Tokens, CredentialManifest), String> {
     let m = manifest(id)?;
@@ -362,6 +418,9 @@ fn read_or_migrate_tokens_in(
     }
 }
 fn read_tokens(id: &str) -> Result<Tokens, String> {
+    if id.starts_with(chatgpt::CREDENTIAL_PREFIX) {
+        return read_tokens_in(&credential_root()?, id);
+    }
     read_or_migrate_tokens_in(
         &credential_root()?,
         id,
@@ -441,7 +500,11 @@ fn import_credentials_in(
                 auth.credential_id = Some(id.clone());
                 continue;
             }
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = if auth.provider == "chatgpt" {
+                chatgpt::new_credential_id()
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            };
             save_tokens_in(root, &id, tokens)?;
             remapped.insert(old_id.clone(), id.clone());
             imported.push(id.clone());
@@ -470,26 +533,25 @@ pub(crate) fn discard_imported_credentials(ids: &[String]) {
 
 #[tauri::command]
 pub async fn provider_oauth_start(
+    app: tauri::AppHandle,
+    credential_id: Option<String>,
     provider: String,
     use_system_proxy: bool,
 ) -> Result<Login, String> {
+    if provider == "chatgpt" {
+        return chatgpt::start(app, credential_id, use_system_proxy).await;
+    }
     if provider == "antigravity" {
         return antigravity::start(use_system_proxy).await;
     }
     let client_id = client_id(&provider)?;
     let client = http(use_system_proxy)?;
-    let request = if provider == "codex" {
+    let request = common_headers(
         client
-            .post("https://auth.openai.com/api/accounts/deviceauth/usercode")
-            .json(&json!({"client_id": client_id}))
-    } else {
-        common_headers(
-            client
-                .post("https://auth.kimi.com/api/oauth/device_authorization")
-                .form(&[("client_id", client_id)]),
-            &provider,
-        )
-    };
+            .post("https://auth.kimi.com/api/oauth/device_authorization")
+            .form(&[("client_id", client_id)]),
+        &provider,
+    );
     let (status, value) = response_json(request).await?;
     if status != 200 {
         return Err(format!(
@@ -497,25 +559,15 @@ pub async fn provider_oauth_start(
         ));
     }
     let user_code = field(&value, "user_code")?;
-    let device_code = field(
-        &value,
-        if provider == "codex" {
-            "device_auth_id"
-        } else {
-            "device_code"
-        },
-    )?;
-    let verification_url = if provider == "codex" {
-        "https://auth.openai.com/codex/device".into()
-    } else {
-        field(&value, "verification_uri_complete").or_else(|_| field(&value, "verification_uri"))?
-    };
+    let device_code = field(&value, "device_code")?;
+    let verification_url = field(&value, "verification_uri_complete")
+        .or_else(|_| field(&value, "verification_uri"))?;
     let url =
         url::Url::parse(&verification_url).map_err(|_| "Invalid verification URL".to_string())?;
     if url.scheme() != "https"
         || !matches!(
             url.host_str(),
-            Some("auth.openai.com" | "auth.kimi.com" | "www.kimi.com" | "kimi.com")
+            Some("auth.kimi.com" | "www.kimi.com" | "kimi.com")
         )
     {
         return Err("Unrecognized OAuth verification URL".into());
@@ -533,7 +585,6 @@ pub async fn provider_oauth_start(
         Pending {
             provider,
             device_code,
-            user_code: user_code.clone(),
             expires_at,
             next_poll: now() + interval,
             interval,
@@ -551,6 +602,9 @@ pub async fn provider_oauth_start(
 
 #[tauri::command]
 pub async fn provider_oauth_poll(login_id: String) -> Result<PollResult, String> {
+    if let Some(result) = chatgpt::poll(&login_id).await {
+        return result;
+    }
     if let Some(result) = antigravity::poll(&login_id).await {
         return result;
     }
@@ -574,28 +628,19 @@ pub async fn provider_oauth_poll(login_id: String) -> Result<PollResult, String>
         p.clone()
     };
     let client = http(p.use_system_proxy)?;
-    let req = if p.provider == "codex" {
-        client
-            .post("https://auth.openai.com/api/accounts/deviceauth/token")
-            .json(&json!({"device_auth_id": p.device_code, "user_code": p.user_code}))
-    } else {
-        common_headers(
-            client.post(token_url(&p.provider)).form(&[
-                ("client_id", KIMI_CLIENT),
-                ("device_code", &p.device_code),
-                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ]),
-            &p.provider,
-        )
-    };
-    let (status, mut value) = response_json(req).await?;
-    let waiting = (p.provider == "codex" && matches!(status, 403 | 404))
-        || (p.provider == "kimi"
-            && matches!(
-                value["error"].as_str(),
-                Some("authorization_pending" | "slow_down")
-            ))
-        || status == 429;
+    let req = common_headers(
+        client.post(token_url(&p.provider)).form(&[
+            ("client_id", KIMI_CLIENT),
+            ("device_code", &p.device_code),
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+        ]),
+        &p.provider,
+    );
+    let (status, value) = response_json(req).await?;
+    let waiting = matches!(
+        value["error"].as_str(),
+        Some("authorization_pending" | "slow_down")
+    ) || status == 429;
     if waiting {
         let interval = if status == 429 || value["error"] == "slow_down" {
             (p.interval + 5).min(60)
@@ -618,28 +663,6 @@ pub async fn provider_oauth_poll(login_id: String) -> Result<PollResult, String>
             "OAuth authorization failed (HTTP {status}); start again"
         ));
     }
-    if p.provider == "codex" {
-        let code = field(&value, "authorization_code")?;
-        let verifier = field(&value, "code_verifier")?;
-        let (status, token_value) = response_json(client.post(token_url("codex")).form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", CODEX_CLIENT),
-            ("code", &code),
-            ("code_verifier", &verifier),
-            (
-                "redirect_uri",
-                "https://auth.openai.com/deviceauth/callback",
-            ),
-        ]))
-        .await?;
-        if status != 200 {
-            pending().lock().await.remove(&login_id);
-            return Err(format!(
-                "OAuth token exchange failed (HTTP {status}); start again"
-            ));
-        }
-        value = token_value;
-    }
     let tokens = tokens_from(&value, &p.provider, "")?;
     let mut sessions = pending().lock().await;
     if !sessions.contains_key(&login_id) {
@@ -651,6 +674,7 @@ pub async fn provider_oauth_poll(login_id: String) -> Result<PollResult, String>
         status: "authorized",
         interval: 0,
         auth: Some(OAuthConfig {
+            requires_reauthorization: false,
             provider: p.provider,
             credential_id: Some(login_id),
             project_id: None,
@@ -660,18 +684,32 @@ pub async fn provider_oauth_poll(login_id: String) -> Result<PollResult, String>
 
 #[tauri::command]
 pub async fn provider_oauth_cancel(login_id: String) {
+    chatgpt::cancel(&login_id).await;
     antigravity::cancel(&login_id).await;
     pending().lock().await.remove(&login_id);
 }
 
 #[tauri::command]
-pub async fn provider_oauth_disconnect(credential_id: String) -> Result<(), String> {
+pub async fn provider_oauth_disconnect(
+    credential_id: String,
+    use_system_proxy: Option<bool>,
+) -> Result<Option<String>, String> {
+    let root = credential_root()?;
+    let path = credential_path(&root, &credential_id)?;
+    if credential_id.starts_with(chatgpt::CREDENTIAL_PREFIX) {
+        let _store_guard = chatgpt::store_lock().await?;
+        let mut tokens = chatgpt::saved_session(&root, &credential_id)?;
+        return chatgpt::sign_out(
+            &credential_id,
+            &mut tokens,
+            use_system_proxy.unwrap_or(true),
+        )
+        .await;
+    }
     let _guard = refresh_lock().lock().await;
     let _file_guard = credential_lock()
         .lock()
         .map_err(|_| "OAuth credential store unavailable")?;
-    let root = credential_root()?;
-    let path = credential_path(&root, &credential_id)?;
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -684,7 +722,7 @@ pub async fn provider_oauth_disconnect(credential_id: String) -> Result<(), Stri
             .map_err(|_| "Cannot remove legacy OAuth session")?;
         delete_chunks(&credential_id, &previous);
     }
-    Ok(())
+    Ok(None)
 }
 
 pub fn validate_provider(provider: &ModelProvider) -> Result<(), String> {
@@ -692,7 +730,7 @@ pub fn validate_provider(provider: &ModelProvider) -> Result<(), String> {
         return Ok(());
     };
     let (base, format) = match auth.provider.as_str() {
-        "codex" => (CODEX_BASE, "openai_responses"),
+        "chatgpt" => (CHATGPT_BASE, "openai_responses"),
         "kimi" => (KIMI_BASE, "openai_chat"),
         "antigravity" => (antigravity::BASE, "gemini"),
         _ => return Err("Unsupported OAuth provider".into()),
@@ -717,36 +755,51 @@ pub async fn resolve_provider(
         .credential_id
         .as_deref()
         .ok_or("Sign in to the model provider first")?;
-    let _guard = refresh_lock().lock().await;
-    let mut tokens = read_tokens(id)?;
-    if tokens.provider != auth.provider {
-        return Err("OAuth credential belongs to another provider".into());
-    }
-    if tokens.expires_at <= now() + 120 {
-        let client = http(provider.request.use_system_proxy)?;
-        let mut form = vec![
-            ("grant_type", "refresh_token"),
-            ("client_id", client_id(&auth.provider)?),
-            ("refresh_token", &tokens.refresh_token),
-        ];
-        if auth.provider == "antigravity" {
-            form.push(("client_secret", antigravity::CLIENT_SECRET));
+    let tokens = if auth.provider == "chatgpt" {
+        // A cancelled model call must not interrupt a refresh after the old grant was spent.
+        let id = id.to_owned();
+        let proxy = provider.request.use_system_proxy;
+        tokio::spawn(async move {
+            let _guard = chatgpt::store_lock().await?;
+            let mut tokens = chatgpt::saved_session(&credential_root()?, &id)?;
+            chatgpt::prepare_session(&id, &mut tokens, proxy).await?;
+            Ok::<_, String>(tokens)
+        })
+        .await
+        .map_err(|_| "ChatGPT session preparation was interrupted")??
+    } else {
+        let _guard = refresh_lock().lock().await;
+        let mut tokens = read_tokens(id)?;
+        if tokens.provider != auth.provider {
+            return Err("OAuth credential belongs to another provider".into());
         }
-        let request = common_headers(
-            client.post(token_url(&auth.provider)).form(&form),
-            &auth.provider,
-        );
-        let (status, value) = response_json(request).await?;
-        if status != 200 {
-            return Err(format!(
+        if tokens.expires_at <= now() + 120 {
+            let client = http(provider.request.use_system_proxy)?;
+            let mut form = vec![
+                ("grant_type", "refresh_token"),
+                ("client_id", client_id(&auth.provider)?),
+                ("refresh_token", &tokens.refresh_token),
+            ];
+            if auth.provider == "antigravity" {
+                form.push(("client_secret", antigravity::CLIENT_SECRET));
+            }
+            let request = common_headers(
+                client.post(token_url(&auth.provider)).form(&form),
+                &auth.provider,
+            );
+            let (status, value) = response_json(request).await?;
+            if status != 200 {
+                return Err(format!(
                 "OAuth refresh failed (HTTP {status}); sign in again if the session was revoked"
             ));
+            }
+            let project_id = tokens.project_id.clone();
+            tokens = tokens_from(&value, &auth.provider, &tokens.refresh_token)?;
+            tokens.project_id = project_id;
+            save_tokens(id, &tokens)?;
         }
-        let project_id = tokens.project_id.clone();
-        tokens = tokens_from(&value, &auth.provider, &tokens.refresh_token)?;
-        tokens.project_id = project_id;
-        save_tokens(id, &tokens)?;
-    }
+        tokens
+    };
     if auth.provider == "antigravity" && tokens.project_id.is_none() {
         return Err("Antigravity account project is missing; sign in again".into());
     }
@@ -760,12 +813,12 @@ pub async fn resolve_provider(
     Ok(resolved)
 }
 
-pub fn is_codex(provider: &ModelProvider) -> bool {
+pub fn is_chatgpt(provider: &ModelProvider) -> bool {
     provider
         .request
         .oauth
         .as_ref()
-        .is_some_and(|a| a.provider == "codex")
+        .is_some_and(|a| a.provider == "chatgpt")
 }
 
 pub fn header_pairs(provider: &ModelProvider) -> Vec<(String, String)> {
@@ -773,21 +826,7 @@ pub fn header_pairs(provider: &ModelProvider) -> Vec<(String, String)> {
         return vec![];
     };
     let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
-    if is_codex(provider) {
-        let mut pairs = vec![
-            pair("originator", "kivio"),
-            pair("User-Agent", concat!("Kivio/", env!("CARGO_PKG_VERSION"))),
-            pair("OpenAI-Beta", "responses=experimental"),
-        ];
-        if let Some(token) = provider.preferred_api_key() {
-            if let Some(id) =
-                claims(token)["https://api.openai.com/auth"]["chatgpt_account_id"].as_str()
-            {
-                pairs.push(pair("ChatGPT-Account-Id", id));
-            }
-        }
-        pairs
-    } else if auth.provider == "antigravity" {
+    if auth.provider == "antigravity" {
         let mut pairs = vec![pair("User-Agent", &antigravity::user_agent())];
         if let Some(token) = provider.preferred_api_key() {
             pairs.push(pair("Authorization", &format!("Bearer {token}")));
@@ -818,74 +857,120 @@ pub fn apply_headers(
     request
 }
 
-pub fn codex_body(body: &mut Value) {
-    body["stream"] = json!(true);
-    body["store"] = json!(false);
-    if !body["instructions"].is_string() {
-        body["instructions"] = json!("");
-    }
-    if let Some(object) = body.as_object_mut() {
-        for key in [
-            "max_output_tokens",
-            "temperature",
-            "top_p",
-            "prompt_cache_retention",
-            "previous_response_id",
-        ] {
-            object.remove(key);
-        }
-    }
+#[derive(Default)]
+pub struct OAuthModelCatalog {
+    pub models: Vec<String>,
+    pub display_names: std::collections::BTreeMap<String, String>,
 }
 
-pub async fn models(state: &AppState, provider: &ModelProvider) -> Result<Vec<String>, String> {
+pub async fn models(
+    state: &AppState,
+    provider: &ModelProvider,
+) -> Result<OAuthModelCatalog, String> {
     let provider = resolve_provider(state, provider).await?;
     if antigravity::is_provider(&provider) {
-        return antigravity::models(&provider).await;
+        return Ok(OAuthModelCatalog {
+            models: antigravity::models(&provider).await?,
+            ..Default::default()
+        });
     }
     let client = http(provider.request.use_system_proxy)?;
-    let url = if is_codex(&provider) {
-        format!("{CODEX_BASE}/models?client_version=1.0.0")
+    let url = if is_chatgpt(&provider) {
+        format!("{CHATGPT_BASE}/models")
     } else {
         format!("{KIMI_BASE}/models")
     };
-    let response = apply_headers(
-        client.get(url).bearer_auth(
-            provider
-                .preferred_api_key()
-                .ok_or("Missing OAuth session")?,
-        ),
-        &provider,
-    )
-    .send()
-    .await
-    .map_err(|_| "OAuth model discovery network error".to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "OAuth model discovery failed (HTTP {})",
-            response.status()
-        ));
-    }
-    let value: Value = response
-        .json()
-        .await
-        .map_err(|_| "Invalid model list".to_string())?;
-    parse_models(&value)
+    let token = provider
+        .preferred_api_key()
+        .ok_or("Missing OAuth session")?;
+    let request = || {
+        apply_headers(
+            client
+                .get(&url)
+                .bearer_auth(token)
+                .header(reqwest::header::ACCEPT, "application/json")
+                .header(reqwest::header::ACCEPT_ENCODING, "identity"),
+            &provider,
+        )
+    };
+    let value = fetch_model_catalog(request).await?;
+    parse_models(&value, is_chatgpt(&provider))
 }
 
-fn parse_models(value: &Value) -> Result<Vec<String>, String> {
-    let rows = value["models"]
-        .as_array()
-        .or_else(|| value["data"].as_array())
-        .ok_or("Invalid model list")?;
-    let mut models: Vec<String> = rows
-        .iter()
-        .filter(|m| m["visibility"].as_str() != Some("hide"))
-        .filter_map(|m| m["slug"].as_str().or_else(|| m["id"].as_str()))
-        .map(str::to_owned)
-        .collect();
-    models.sort();
-    models.dedup();
-    Ok(models)
+async fn fetch_model_catalog(
+    request: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<Value, String> {
+    for attempt in 0..2 {
+        let response = match request().send().await {
+            Ok(response) => response,
+            Err(_) if attempt == 0 => continue,
+            Err(_) => return Err("OAuth model discovery network error".into()),
+        };
+        if !response.status().is_success() {
+            let status = response.status();
+            let request_id = response
+                .headers()
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            let body = response.text().await.unwrap_or_default();
+            let error = kivio_agent_sdk::model::ModelError::from_provider_http(
+                status.as_u16(),
+                &body,
+                format!("OAuth model discovery failed (HTTP {status}): {body}"),
+            )
+            .with_request_id(request_id.as_deref());
+            return Err(error.message);
+        }
+        if let Ok(bytes) = response.bytes().await {
+            match serde_json::from_slice(&bytes) {
+                Ok(value) => return Ok(value),
+                Err(error) if !error.is_eof() => {
+                    return Err("Invalid JSON in OAuth model list".into())
+                }
+                _ => {}
+            }
+        }
+    }
+    Err("The model list download was interrupted. Refresh models to try again.".into())
+}
+
+fn parse_models(value: &Value, chatgpt: bool) -> Result<OAuthModelCatalog, String> {
+    let mut catalog = OAuthModelCatalog::default();
+    if chatgpt {
+        for row in value["models"]
+            .as_array()
+            .ok_or("Invalid ChatGPT model list")?
+        {
+            if row["visibility"] != "list" {
+                continue;
+            }
+            let Some(slug) = row["slug"].as_str().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            if catalog.models.iter().any(|id| id == slug) {
+                continue;
+            }
+            catalog.models.push(slug.into());
+            if let Some(name) = row["display_name"].as_str().filter(|name| !name.is_empty()) {
+                catalog.display_names.insert(slug.into(), name.into());
+            }
+        }
+    } else {
+        let rows = value["models"]
+            .as_array()
+            .or_else(|| value["data"].as_array())
+            .ok_or("Invalid model list")?;
+        catalog.models = rows
+            .iter()
+            .filter(|row| row["visibility"] != "hide")
+            .filter_map(|row| row["slug"].as_str().or_else(|| row["id"].as_str()))
+            .map(str::to_owned)
+            .collect();
+        catalog.models.sort();
+        catalog.models.dedup();
+    }
+    Ok(catalog)
 }
 
 pub async fn test_connection(
@@ -894,12 +979,23 @@ pub async fn test_connection(
     model: Option<&str>,
 ) -> Result<(), String> {
     use crate::chat::model::*;
-    let Some(model) = model else {
-        models(state, provider).await?;
-        return Ok(());
+    let plan = is_chatgpt(provider);
+    let model = match model {
+        Some(model) => model.to_owned(),
+        None => {
+            let catalog = models(state, provider).await?;
+            if !plan {
+                return Ok(());
+            }
+            catalog
+                .models
+                .into_iter()
+                .next()
+                .ok_or("The ChatGPT account has no listed models to test")?
+        }
     };
     let request = GenerateRequest {
-        model: model.to_string(),
+        model,
         system: String::new(),
         messages: vec![ModelMessage::text(
             ModelRole::User,
@@ -915,9 +1011,12 @@ pub async fn test_connection(
             ..Default::default()
         },
     };
-    generate_with_chat_provider(state, provider, 1, request)
+    let output = generate_with_chat_provider(state, provider, 1, request)
         .await
         .map_err(|e| e.to_string())?;
+    if plan && output.text.trim().is_empty() {
+        return Err("ChatGPT completed the connection test without a text reply".into());
+    }
     Ok(())
 }
 
@@ -925,65 +1024,54 @@ pub async fn test_connection(
 mod tests {
     use super::*;
     fn provider() -> ModelProvider {
-        serde_json::from_value(json!({"id":"p", "name":"Codex", "baseUrl":CODEX_BASE,
-            "apiFormat":"openai_responses", "request":{"oauth":{"provider":"codex","credentialId":uuid::Uuid::new_v4().to_string()}}})).unwrap()
+        serde_json::from_value(json!({"id":"p", "name":"ChatGPT", "baseUrl":CHATGPT_BASE,
+            "apiFormat":"openai_responses", "request":{"oauth":{"provider":"chatgpt","credentialId":uuid::Uuid::new_v4().to_string()}}})).unwrap()
     }
+    #[tokio::test]
+    async fn interrupted_model_list_is_downloaded_again_before_parsing() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/models", listener.local_addr().unwrap());
+        let body = r#"{"models":[{"slug":"allowed","visibility":"list"}]}"#;
+        let server = tokio::spawn(async move {
+            for payload in [&body[..12], body] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 2048];
+                assert!(stream.read(&mut buffer).await.unwrap() > 0);
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    payload
+                );
+                stream.write_all(reply.as_bytes()).await.unwrap();
+            }
+        });
+        let client = http(false).unwrap();
+        let value = fetch_model_catalog(|| client.get(&url)).await.unwrap();
+        assert_eq!(parse_models(&value, true).unwrap().models, ["allowed"]);
+        server.await.unwrap();
+    }
+
     #[test]
     fn oauth_destination_and_protocol_are_bound_before_credentials_are_read() {
         let mut p = provider();
         assert!(validate_provider(&p).is_ok());
         assert!(p.authentication_ready());
         for base in [
-            "http://chatgpt.com/backend-api/codex",
-            "https://chatgpt.com.evil.test/backend-api/codex",
-            "https://chatgpt.com/backend-api/codex?redirect=evil",
+            "https://chatgpt.com/backend-api/codex",
+            "https://api.openai.com.evil.test/v1",
+            "https://api.openai.com/v1?redirect=evil",
             KIMI_BASE,
         ] {
             p.base_url = base.into();
             assert!(validate_provider(&p).is_err());
         }
-        p.base_url = CODEX_BASE.into();
+        p.base_url = CHATGPT_BASE.into();
         p.api_format = "openai_chat".into();
         assert!(validate_provider(&p).is_err());
         p.request.oauth.as_mut().unwrap().credential_id = None;
         p.api_keys = vec!["old-api-key".into()];
         assert!(!p.authentication_ready());
-    }
-    #[test]
-    fn codex_account_headers_override_custom_headers_without_duplicates() {
-        let mut p = provider();
-        let payload = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(
-                &json!({"https://api.openai.com/auth":{"chatgpt_account_id":"account-123"}}),
-            )
-            .unwrap(),
-        );
-        p.api_keys = vec![format!("header.{payload}.signature")];
-        p.request
-            .custom_headers
-            .push(crate::settings::ProviderCustomHeader {
-                key: "Originator".into(),
-                value: "other".into(),
-            });
-        let pairs = crate::provider_request::header_pairs(&p, None);
-        assert_eq!(
-            pairs
-                .iter()
-                .filter(|(k, _)| k.eq_ignore_ascii_case("originator"))
-                .count(),
-            1
-        );
-        assert!(pairs.contains(&("originator".into(), "kivio".into())));
-        assert!(pairs.contains(&("ChatGPT-Account-Id".into(), "account-123".into())));
-
-        // 同时选了 Codex 身份：OAuth 的 originator / UA 覆盖身份预设，配套的 version 不留。
-        p.request.cli_identity = "codex".into();
-        let pairs = crate::provider_request::header_pairs(&p, None);
-        assert!(pairs.contains(&("originator".into(), "kivio".into())));
-        assert!(!pairs.iter().any(|(k, _)| k.eq_ignore_ascii_case("version")));
-        assert!(pairs
-            .iter()
-            .any(|(k, v)| k == "User-Agent" && v.starts_with("Kivio/")));
     }
     #[test]
     fn json_credentials_migrate_durably_and_preserve_legacy_on_failure() {
@@ -998,6 +1086,7 @@ mod tests {
                     refresh_token: "synthetic-refresh".into(),
                     expires_at: 42,
                     project_id: None,
+                    chatgpt: None,
                 },
                 CredentialManifest {
                     version: uuid::Uuid::new_v4().to_string(),
@@ -1083,11 +1172,12 @@ mod tests {
             .unwrap()
             .clone();
         let tokens = Tokens {
-            provider: "codex".into(),
+            provider: "chatgpt".into(),
             access_token: "synthetic-access".into(),
             refresh_token: "synthetic-refresh".into(),
             expires_at: 42,
             project_id: None,
+            chatgpt: None,
         };
         save_tokens_in(directory.path(), &old_id, &tokens).unwrap();
         let backup = json!({ old_id.clone(): serde_json::to_value(&tokens).unwrap() });
@@ -1152,6 +1242,7 @@ mod tests {
                                     refresh_token: "synthetic-refresh".into(),
                                     expires_at: 42,
                                     project_id: None,
+                                    chatgpt: None,
                                 },
                                 CredentialManifest {
                                     version: uuid::Uuid::new_v4().to_string(),
@@ -1187,27 +1278,24 @@ mod tests {
         assert_eq!(t.refresh_token, "new");
     }
     #[test]
-    fn codex_requires_stream_without_unsupported_fields() {
-        let mut body = json!({"max_output_tokens":64,"temperature":0.5,"input":[],"tools":[{"type":"function"}]});
-        codex_body(&mut body);
-        assert_eq!(body["stream"], true);
-        assert_eq!(body["store"], false);
-        assert_eq!(body["instructions"], "");
-        assert!(body.get("max_output_tokens").is_none());
-        assert!(body.get("temperature").is_none());
-        assert_eq!(body["tools"].as_array().unwrap().len(), 1);
-    }
-    #[test]
-    fn discovery_accepts_both_provider_shapes() {
+    fn account_catalog_exposes_only_listed_slugs_in_server_order() {
+        let catalog = parse_models(
+            &json!({"models":[
+                {"slug":"z","display_name":"Preferred","visibility":"list"},
+                {"slug":"unlisted"},{"slug":"hidden","visibility":"hide"},
+                {"slug":"a","visibility":"list"}, {"slug":"z","visibility":"list"}
+            ]}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(catalog.models, ["z", "a"]);
+        assert_eq!(catalog.display_names["z"], "Preferred");
+        assert!(parse_models(&json!({"data":[{"id":"api-key-model"}]}), true).is_err());
         assert_eq!(
-            parse_models(&json!({"models":[{"slug":"a"},{"slug":"hidden","visibility":"hide"}]}))
-                .unwrap(),
-            vec!["a"]
+            parse_models(&json!({"data":[{"id":"kimi"}]}), false)
+                .unwrap()
+                .models,
+            ["kimi"]
         );
-        assert_eq!(
-            parse_models(&json!({"data":[{"id":"kimi"}]})).unwrap(),
-            vec!["kimi"]
-        );
-        assert!(parse_models(&json!({"error":"unauthorized"})).is_err());
     }
 }

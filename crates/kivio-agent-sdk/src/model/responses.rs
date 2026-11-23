@@ -1,4 +1,6 @@
 //! Shared Responses wire protocol and host-configured HTTP provider.
+pub mod chatgpt_plan;
+
 use serde_json::Value;
 
 use super::error::provider_error_code;
@@ -107,11 +109,28 @@ impl OpenAiResponsesConfig {
 pub struct OpenAiResponsesProvider {
     client: reqwest::Client,
     config: OpenAiResponsesConfig,
+    chatgpt_plan: bool,
 }
 
 impl OpenAiResponsesProvider {
     pub fn new(client: reqwest::Client, config: OpenAiResponsesConfig) -> Self {
-        Self { client, config }
+        Self {
+            client,
+            config,
+            chatgpt_plan: false,
+        }
+    }
+
+    /// Uses the official ChatGPT plan route with a host-authorized access token.
+    pub fn new_chatgpt_plan(client: reqwest::Client, access_token: String) -> Self {
+        let mut config =
+            OpenAiResponsesConfig::new("https://api.openai.com/v1/responses".parse().unwrap());
+        config.api_key = Some(access_token);
+        Self {
+            client,
+            config,
+            chatgpt_plan: true,
+        }
     }
 
     fn bind_output_provenance(&self, output: &mut GenerateOutput) {
@@ -147,12 +166,19 @@ impl OpenAiResponsesProvider {
                 .or(self.config.options.temperature),
             ..self.config.options.clone()
         };
+        let mut body = request_body(request, stream, &options);
+        if self.chatgpt_plan {
+            chatgpt_plan::prepare_body(&mut body)?;
+        }
         let mut http = self
             .client
             .post(self.config.endpoint.clone())
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
             .headers(self.config.headers.clone())
-            .json(&request_body(request, stream, &options));
+            .json(&body);
+        if self.chatgpt_plan {
+            http = http.header(reqwest::header::ACCEPT, "text/event-stream");
+        }
         if let Some(key) = &self.config.api_key {
             http = http.bearer_auth(key);
         }
@@ -168,6 +194,9 @@ impl OpenAiResponsesProvider {
 impl LanguageModelProvider for OpenAiResponsesProvider {
     fn generate<'a>(&'a self, request: GenerateRequest) -> ModelFuture<'a, GenerateOutput> {
         Box::pin(async move {
+            if self.chatgpt_plan {
+                return self.stream(request, &mut DiscardSink).await;
+            }
             let label = request_label(&request, "Responses API");
             let response = self.post(&request, false).await?;
             let mut output = read_responses_body(response, &label, &request.model).await?;
@@ -183,16 +212,17 @@ impl LanguageModelProvider for OpenAiResponsesProvider {
     ) -> ModelFuture<'a, GenerateOutput> {
         Box::pin(async move {
             let label = request_label(&request, "Responses stream");
-            let buffered = uses_buffered_delivery(
-                Some(&self.config.endpoint),
-                self.config.options.format,
-                &request.model,
-            );
+            let buffered = !self.chatgpt_plan
+                && uses_buffered_delivery(
+                    Some(&self.config.endpoint),
+                    self.config.options.format,
+                    &request.model,
+                );
             let response = self.post(&request, !buffered).await?;
             let mut output = if buffered {
                 decode_responses_buffered_stream(response, sink, &label, &request.model).await?
             } else {
-                decode_responses_stream(response, sink, &label, &request.model).await?
+                decode_stream(response, sink, &label, &request.model, self.chatgpt_plan).await?
             };
             self.bind_output_provenance(&mut output);
             Ok(output)
@@ -389,28 +419,48 @@ pub async fn decode_responses_buffered_stream(
 
 /// Completion commits the response even when a proxy keeps the HTTP body open.
 pub async fn decode_responses_stream(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     sink: &mut (dyn StreamSink + Send),
     label: &str,
     model: &str,
 ) -> Result<GenerateOutput, ModelError> {
+    decode_stream(response, sink, label, model, false).await
+}
+
+async fn decode_stream(
+    mut response: reqwest::Response,
+    sink: &mut (dyn StreamSink + Send),
+    label: &str,
+    model: &str,
+    chatgpt_plan: bool,
+) -> Result<GenerateOutput, ModelError> {
+    let request_id = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let mut sse = super::sse::SseDecoder::default();
     let mut state = ResponsesStreamState {
         model: model.to_string(),
         deepseek: is_official_deepseek(Some(response.url())),
+        chatgpt_plan,
         ..Default::default()
     };
     'stream: loop {
-        let chunk = response
-            .chunk()
-            .await
-            .map_err(|error| stream_read_error(label, &error))?;
+        let chunk = response.chunk().await.map_err(|error| {
+            stream_read_error(label, &error).with_request_id(request_id.as_deref())
+        })?;
         let Some(chunk) = chunk else {
             break;
         };
-        for data in sse.push(&chunk)? {
-            if let Some(error) = process_sse_data(&data, &mut state, sink)? {
-                return Err(error);
+        for data in sse
+            .push(&chunk)
+            .map_err(|e| e.with_request_id(request_id.as_deref()))?
+        {
+            if let Some(error) = process_sse_data(&data, &mut state, sink)
+                .map_err(|e| e.with_request_id(request_id.as_deref()))?
+            {
+                return Err(error.with_request_id(request_id.as_deref()));
             }
             if state.finish_reason.is_some() {
                 break 'stream;
@@ -418,7 +468,7 @@ pub async fn decode_responses_stream(
         }
     }
     if state.finish_reason.is_none() {
-        return Err(ModelError::stream_ended_early(label));
+        return Err(ModelError::stream_ended_early(label).with_request_id(request_id.as_deref()));
     }
     state.finish(sink)
 }
@@ -863,6 +913,7 @@ struct ResponsesStreamState {
     /// 本次请求的模型名，随 reasoning item 落进历史（回放前校验同模型，密文模型键控）。
     model: String,
     deepseek: bool,
+    chatgpt_plan: bool,
     /// SSE item completion order can differ from output order. Terminal gateway
     /// snapshots can also omit a server tool already delivered by a done event.
     xai_items: std::collections::BTreeMap<u64, Value>,
@@ -1041,6 +1092,14 @@ impl ResponsesStreamState {
         complete: bool,
         sink: &mut (dyn StreamSink + Send),
     ) -> Result<(), ModelError> {
+        // The host dispatches by local name. A same-named function in a different
+        // namespace must never be executed as one of our tools.
+        if self.chatgpt_plan && item["namespace"] != chatgpt_plan::LOCAL_NAMESPACE {
+            return Err(ModelError::with_kind(
+                "ChatGPT returned a function call outside the local tool namespace",
+                ModelErrorKind::InvalidRequest,
+            ));
+        }
         let item_id = item["id"]
             .as_str()
             .filter(|id| !id.is_empty())
@@ -1531,6 +1590,15 @@ fn handle_responses_stream_event(
                 }
             }
         }
+        "response.incomplete" if state.chatgpt_plan => {
+            let reason = value["response"]["incomplete_details"]["reason"]
+                .as_str()
+                .unwrap_or("incomplete");
+            return Ok(Some(ModelError::from_provider_payload(
+                Some(reason),
+                format!("ChatGPT response incomplete: {reason}"),
+            )));
+        }
         "response.completed" | "response.incomplete" => {
             if let Some(response) = value.get("response") {
                 if let Some(error) = responses_terminal_error(response) {
@@ -1617,11 +1685,19 @@ fn handle_responses_stream_event(
             let code = responses_error_payload(value)
                 .and_then(provider_error_code)
                 .or_else(|| value["code"].as_str().map(str::to_string));
-            let message = responses_stream_error_text(value);
-            return Ok(Some(ModelError::from_provider_stream(
-                code.as_deref(),
-                message,
-            )));
+            let error = if state.chatgpt_plan {
+                let payload = responses_error_payload(value).unwrap_or(value);
+                ModelError::from_provider_payload(
+                    code.as_deref(),
+                    format!("ChatGPT Responses error: {payload}"),
+                )
+            } else {
+                ModelError::from_provider_stream(
+                    code.as_deref(),
+                    responses_stream_error_text(value),
+                )
+            };
+            return Ok(Some(error));
         }
         _ => {}
     }

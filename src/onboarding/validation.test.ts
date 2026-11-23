@@ -136,7 +136,7 @@ describe('onboarding validation', () => {
       ...configuredBindings,
       providers: [{
         ...testProvider,
-        request: { ...testProvider.request, oauth: { provider: 'codex' } },
+        request: { ...testProvider.request, oauth: { provider: 'chatgpt' } },
       }],
     })
     expect(isProviderModelBindingUsable(settings, 'p1', 'gpt-4o')).toBe(false)

@@ -6,7 +6,7 @@ import type { Lang } from '../components/i18n'
 
 export function ProviderUsageCard({ provider, lang }: { provider: ModelProvider; lang: Lang }) {
   const auth = provider.request.oauth
-  const supported = auth?.provider === 'kimi' || auth?.provider === 'codex' || auth?.provider === 'antigravity'
+  const supported = auth?.provider === 'kimi' || auth?.provider === 'antigravity'
   const [data, setData] = useState<ProviderOAuthUsage | null>(null)
   const [error, setError] = useState(false)
   const [busy, setBusy] = useState(false)

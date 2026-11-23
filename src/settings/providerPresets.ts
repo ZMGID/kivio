@@ -1,11 +1,13 @@
-import type { ProviderApiFormat } from '../api/tauri'
+import type { Lang } from '../components/i18n'
+import type { ProviderApiFormat, ProviderOAuthConfig } from '../api/tauri'
 
 // Presets only prefill provider metadata. Models are fetched from the provider API
 // and explicitly enabled by the user.
 
 export type ProviderPreset = {
-  oauth?: 'codex' | 'kimi' | 'antigravity'
+  oauth?: ProviderOAuthConfig['provider']
   name: string
+  label?: Partial<Record<Lang, string>>
   /** OpenAI-compatible base URL, usually including /v1. */
   baseUrl: string
   /** 申请 API Key 的页面（在 API 密钥区显示「获取 API Key」引导链接）。本地/无需 key 的可省略。 */
@@ -18,7 +20,7 @@ export type ProviderPreset = {
 
 /** 顺序：赞助中转 → 国内 Coding / Token 套餐 → 一线实验室 → 云厂商/聚合 → 本地 → 少用的。 */
 export const PROVIDER_PRESETS: ProviderPreset[] = [
-  { name: 'Codex OAuth', baseUrl: 'https://chatgpt.com/backend-api/codex', apiFormat: 'openai_responses', oauth: 'codex' },
+  { name: 'ChatGPT', label: { zh: 'ChatGPT 登录', en: 'ChatGPT Sign In' }, baseUrl: 'https://api.openai.com/v1', apiFormat: 'openai_responses', oauth: 'chatgpt' },
   { name: 'Kimi OAuth', baseUrl: 'https://api.kimi.com/coding/v1', oauth: 'kimi' },
   { name: 'Antigravity OAuth', baseUrl: 'https://daily-cloudcode-pa.googleapis.com', apiFormat: 'gemini', oauth: 'antigravity' },
   { name: 'OpenCode Free', baseUrl: 'https://opencode.ai/zen/v1' },

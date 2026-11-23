@@ -117,7 +117,7 @@ similar = { version = "2.7", default-features = false }
 
 # 工具库
 base64 = "0.22"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["serde", "v4"] }
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }
 # 连接器 OAuth（PKCE + DCR + loopback）：sha2 算 code_challenge，rand 生成 code_verifier，
 # url 构造/解析 authorize URL 与回调 query。
@@ -145,6 +145,7 @@ oar-ocr = { version = "0.8", default-features = false, features = ["simd"] }
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-23"] }
 croner = "4"
 jsonschema = { version = "0.60.2", default-features = false }
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
 
 # macOS 平台特有依赖（系统 API 调用）
 [target.'cfg(target_os = "macos")'.dependencies]

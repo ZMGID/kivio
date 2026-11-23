@@ -198,11 +198,11 @@ export function resolveModelInfo(
     : storedOverride
 
   if (!defaults && !override) return {}
-  if (!defaults) return override!
+  if (!defaults) return { ...override, displayName: override?.displayName ?? override?.advertisedDisplayName }
   if (!override) return defaults
 
   return {
-    displayName: override.displayName ?? defaults.displayName,
+    displayName: override.displayName ?? override.advertisedDisplayName ?? defaults.displayName,
     contextWindow: override.contextWindow ?? defaults.contextWindow,
     maxOutput: override.maxOutput ?? defaults.maxOutput,
     temperature: override.omitTemperature

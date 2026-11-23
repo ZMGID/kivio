@@ -59,7 +59,8 @@ fn select_live_provider(settings: &Settings) -> Result<&ModelProvider, String> {
             .providers
             .iter()
             .find(|provider| {
-                provider.preferred_api_key().is_some()
+                !crate::provider_oauth::is_chatgpt(provider)
+                    && provider.preferred_api_key().is_some()
                     && reqwest::Url::parse(provider.base_url.trim())
                         .ok()
                         .is_some_and(|url| url.host_str() == Some("api.openai.com"))
@@ -68,6 +69,9 @@ fn select_live_provider(settings: &Settings) -> Result<&ModelProvider, String> {
                 "未找到已配置 API 密钥的 OpenAI 语音提供商，请在设置中选择提供商或配置 API 密钥。",
             )?
     };
+    if crate::provider_oauth::is_chatgpt(provider) {
+        return Err("ChatGPT 套餐授权不支持 GPT-Live，请选择使用 API 密钥的提供商。".into());
+    }
     if provider.preferred_api_key().is_none() {
         return Err("所选语音提供商未配置 API 密钥。".into());
     }
@@ -278,6 +282,14 @@ mod tests {
             .contains("不存在"));
         settings.voice = None;
         settings.providers.truncate(3);
+        let mut plan = provider("plan", "https://api.openai.com/v1", &["previous-api-key"]);
+        plan.request.oauth = Some(serde_json::from_value(json!({"provider":"chatgpt"})).unwrap());
+        settings.providers.push(plan);
+        assert!(select_live_provider(&settings).is_err());
+        settings.voice = Some(VoiceSettings {
+            live_provider_id: Some("plan".into()),
+            ..Default::default()
+        });
         assert!(select_live_provider(&settings).is_err());
     }
 

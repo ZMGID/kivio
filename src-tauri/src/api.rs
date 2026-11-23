@@ -748,12 +748,18 @@ where
                     return Ok(response);
                 }
                 let retry_after = parse_retry_after(response.headers());
+                let request_id = response
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
                 let text = response.text().await.unwrap_or_default();
                 let error = ModelError::from_provider_http(
                     status.as_u16(),
                     &text,
                     format!("{label} Error: {status} - {text}"),
-                );
+                )
+                .with_request_id(request_id.as_deref());
                 let is_rate_limit = status == StatusCode::TOO_MANY_REQUESTS;
                 if is_rate_limit {
                     rate_limit_attempts += 1;

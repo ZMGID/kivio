@@ -98,8 +98,8 @@ describe('resolveModelInfo', () => {
   })
 
   it('uses catalog defaults for different providers while preserving explicit overrides', () => {
-    const codex = { baseUrl: 'https://chatgpt.com/backend-api/codex', request: { oauth: { provider: 'codex' as const } } }
-    for (const provider of [undefined, codex, { baseUrl: 'https://api.openai.com/v1' }, { baseUrl: 'https://gateway.example/v1' }]) {
+    const chatgpt = { baseUrl: 'https://api.openai.com/v1', request: { oauth: { provider: 'chatgpt' as const } } }
+    for (const provider of [undefined, chatgpt, { baseUrl: 'https://api.openai.com/v1' }, { baseUrl: 'https://gateway.example/v1' }]) {
       expect(resolveModelInfo('model-4.6', undefined, provider)).toEqual(matchModelExact('model-4.6'))
       expect(resolveModelInfo('model-4.6', { 'model-4.6': { contextWindow: 8192 } }, provider).contextWindow).toBe(8192)
     }

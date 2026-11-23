@@ -1067,11 +1067,11 @@ async fn fetch_models_with_state(
         }
     }
     if oauth_provider.request.oauth.is_some() {
-        let ids = crate::provider_oauth::models(state, &oauth_provider).await?;
+        let catalog = crate::provider_oauth::models(state, &oauth_provider).await?;
         return Ok(if include_capabilities == Some(true) {
-            serde_json::json!({"models":ids,"capabilities":{}})
+            serde_json::json!({"models":catalog.models,"displayNames":catalog.display_names,"capabilities":{}})
         } else {
-            serde_json::json!(ids)
+            serde_json::json!(catalog.models)
         });
     }
 
@@ -1504,20 +1504,20 @@ mod tests {
     async fn model_commands_require_oauth_login_even_with_api_keys() {
         let state = crate::state::test_app_state();
         let input: crate::api::ProviderConnectionInput = serde_json::from_value(json!({
-            "id": "codex",
-            "baseUrl": "https://chatgpt.com/backend-api/codex",
+            "id": "chatgpt",
+            "baseUrl": "https://api.openai.com/v1",
             "apiFormat": "openai_responses",
             "apiKeys": ["old-api-key"],
-            "request": {"oauth": {"provider": "codex"}}
+            "request": {"oauth": {"provider": "chatgpt"}}
         }))
         .unwrap();
         let error =
-            super::fetch_models_with_state(&state, "codex".into(), Some(input.clone()), None)
+            super::fetch_models_with_state(&state, "chatgpt".into(), Some(input.clone()), None)
                 .await
                 .unwrap_err();
         assert_eq!(error, "Sign in to the model provider first");
         let result =
-            super::test_provider_connection_with_state(&state, "codex".into(), Some(input))
+            super::test_provider_connection_with_state(&state, "chatgpt".into(), Some(input))
                 .await
                 .unwrap();
         assert_eq!(

@@ -314,7 +314,7 @@ impl ModelProvider {
         self.request
             .oauth
             .as_ref()
-            .is_none_or(|auth| auth.credential_id.is_some())
+            .is_none_or(|auth| auth.credential_id.is_some() && !auth.requires_reauthorization)
     }
 
     pub fn api_format_kind(&self) -> ProviderApiFormat {
@@ -389,6 +389,8 @@ impl CacheRetention {
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelInfo {
     pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advertised_display_name: Option<String>,
     /// Latest upstream capability; never takes precedence over an explicit override.
     pub advertised_video_input: Option<bool>,
     pub context_window: Option<u64>,
@@ -4323,7 +4325,7 @@ mod tests {
         }
         provider.request.oauth = Some(
             serde_json::from_value(serde_json::json!({
-                "provider": "codex"
+                "provider": "chatgpt"
             }))
             .unwrap(),
         );

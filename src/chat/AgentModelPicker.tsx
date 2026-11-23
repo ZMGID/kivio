@@ -1,3 +1,4 @@
+import { providerModelLabel } from '../data/modelCatalog'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Loader2, Lock, Zap } from 'lucide-react'
 import { AgentIcon } from '../components/AgentIcon'
@@ -125,7 +126,7 @@ function AgentModelPickerBase({
     : usesChat ? 'Kivio Chat' : 'Kivio Agent'
   const modelLabel = usesExternal
     ? external.displayName
-    : model || builtinCatalog.currentProvider?.enabledModels[0] || t.chatSelectModel
+    : providerModelLabel(model || builtinCatalog.currentProvider?.enabledModels[0] || t.chatSelectModel, builtinCatalog.currentProvider)
   const effortLabel = usesExternal
     ? (external.reasoningOptions.length > 0 ? external.reasoningLabel : null)
     : (thinking.hidden ? null : thinking.effectiveLabel)

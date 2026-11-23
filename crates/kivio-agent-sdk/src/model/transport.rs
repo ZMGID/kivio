@@ -39,6 +39,11 @@ pub(crate) async fn send(
                         })
                 })
         });
+    let request_id = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let body = response
         .text()
         .await
@@ -51,7 +56,8 @@ pub(crate) async fn send(
             status.as_u16(),
             body.chars().take(500).collect::<String>()
         ),
-    );
+    )
+    .with_request_id(request_id.as_deref());
     error.retry_after = retry_after;
     Err(error)
 }

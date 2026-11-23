@@ -39,6 +39,15 @@ describe('imported model video capabilities', () => {
     expect(resolveModelInfo('known-video', imported.modelOverrides, provider).capabilities?.videoInput).toBe(false)
   })
 
+  it('refreshes advertised names without changing explicit labels or model IDs', () => {
+    const result = applyModelCatalog({ ...provider, modelOverrides: {
+      preferred: { displayName: 'My label' }, renamed: { advertisedDisplayName: 'Old name' },
+    } }, { models: ['preferred', 'renamed'], capabilities: {}, displayNames: { renamed: 'New name', preferred: 'Upstream name' } })
+    expect(result.availableModels).toEqual(['preferred', 'renamed'])
+    expect(resolveModelInfo('preferred', result.modelOverrides).displayName).toBe('My label')
+    expect(resolveModelInfo('renamed', result.modelOverrides).displayName).toBe('New name')
+  })
+
   it('does not enable video merely because a model accepts images', () => {
     const imported = applyModelCatalog(provider, { models: ['known-image'], capabilities: {} })
     expect(resolveModelInfo('known-image', imported.modelOverrides, provider).capabilities)

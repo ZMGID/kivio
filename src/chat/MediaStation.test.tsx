@@ -165,7 +165,7 @@ it('fetches an accepted video again instead of submitting a new paid task', asyn
 it('hides providers that media generation cannot use', async () => {
   vi.mocked(getSettingsCached).mockResolvedValue({
     providers: [
-      { id: 'oauth', name: 'OAuth', enabled: true, enabledModels: ['gpt-image-1'], apiFormat: 'openai_responses', request: { oauth: { provider: 'codex' } } },
+      { id: 'oauth', name: 'OAuth', enabled: true, enabledModels: ['gpt-image-1'], apiFormat: 'openai_responses', request: { oauth: { provider: 'chatgpt' } } },
       { id: 'claude', name: 'Claude', enabled: true, enabledModels: ['gpt-image-1'], apiFormat: 'anthropic_messages', request: {} },
       { id: 'p', name: 'Provider', enabled: true, enabledModels: ['gpt-image-1'], apiFormat: 'openai_chat', request: {} },
     ],

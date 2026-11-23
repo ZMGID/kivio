@@ -33,6 +33,7 @@ interface ProvidersTabProps {
   onToggleGzipInfo: (id: string) => void
   onToggleKeyReveal: (keyId: string) => void
   onOpenModelPicker: (id: string) => void
+  onFetchModels: (id: string) => Promise<boolean>
   onOpenModelTest: (id: string) => void
   onOpenModelDrawer: (target: { providerId: string; model: string }) => void
   onRemoveEnabledModel: (providerId: string, model: string) => void
@@ -66,6 +67,7 @@ export function ProvidersTab({
   onToggleKeyReveal,
   onOpenModelPicker,
   onOpenModelTest,
+  onFetchModels,
   onOpenModelDrawer,
   onRemoveEnabledModel,
 }: ProvidersTabProps) {
@@ -125,14 +127,14 @@ export function ProvidersTab({
   const presetMatches = useMemo(() => {
     const q = presetQuery.trim().toLowerCase()
     const list = q
-      ? PROVIDER_PRESETS.filter((preset) => matchesQuery(q, preset.name, preset.baseUrl))
+      ? PROVIDER_PRESETS.filter((preset) => matchesQuery(q, preset.label?.[lang] ?? preset.name, preset.baseUrl))
       : PROVIDER_PRESETS
     const rest = list.filter((preset) => !preset.sponsored)
     if (presetSortAz) {
       rest.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
     }
     return [...list.filter((preset) => preset.sponsored), ...rest]
-  }, [presetQuery, presetSortAz])
+  }, [lang, presetQuery, presetSortAz])
 
   if (opened) {
     const enabled = isProviderEnabled(opened)
@@ -179,6 +181,7 @@ export function ProvidersTab({
               </span>
               <Button
                 size="sm"
+                disabled={!configured}
                 onClick={() => onOpenModelTest(opened.id)}
                 data-tauri-drag-region="false"
               >
@@ -239,6 +242,8 @@ export function ProvidersTab({
         )}
         <ProviderDetail
           provider={opened}
+          settings={settings}
+          onFetchModels={onFetchModels}
           t={t}
           lang={lang}
           revealedKeys={revealedKeys}
@@ -382,7 +387,7 @@ export function ProvidersTab({
                   data-tauri-drag-region="false"
                 >
                   <ProviderIcon name={preset.name} baseUrl={preset.baseUrl} size={18} />
-                  <span className="kv-provider-preset-tile-name">{preset.name}</span>
+                  <span className="kv-provider-preset-tile-name">{preset.label?.[lang] ?? preset.name}</span>
                   {preset.sponsored ? (
                     <Heart
                       size={12}

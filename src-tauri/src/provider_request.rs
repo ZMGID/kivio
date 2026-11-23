@@ -295,6 +295,10 @@ pub fn header_pairs(
     provider: &ModelProvider,
     conversation_id: Option<&str>,
 ) -> Vec<(String, String)> {
+    // A ChatGPT plan request uses only its granted bearer token and standard HTTP headers.
+    if crate::provider_oauth::is_chatgpt(provider) {
+        return Vec::new();
+    }
     let mut pairs = identity_pairs(provider, conversation_id);
     for header in &provider.request.custom_headers {
         if !is_usable_header(header) {
@@ -305,11 +309,6 @@ pub fn header_pairs(
         upsert_pair(&mut pairs, header.key.clone(), header.value.clone());
     }
     let oauth = crate::provider_oauth::header_pairs(provider);
-    if crate::provider_oauth::is_codex(provider) {
-        // Codex OAuth 账号以它自己的 originator / UA 为准（走官方后端、按注册的客户端校验）；
-        // 身份预设里配套的 `version` 留着就和 `originator: kivio` 对不上了。
-        pairs.retain(|(name, _)| !name.eq_ignore_ascii_case("version"));
-    }
     for (name, value) in oauth {
         upsert_pair(&mut pairs, name, value);
     }
@@ -344,7 +343,7 @@ pub fn is_codex_identity(provider: &ModelProvider) -> bool {
 /// 缺省头只在前面都没给时才补（reqwest 的 `.header()` 是追加，同名两行会让网关困惑）：
 /// reqwest 默认不带 UA，空 UA 本身就像脚本，所以没有身份也没有自定义 UA 时如实报 Kivio；
 /// Accept 按请求体是否流式取值（官方 SDK 与 Codex CLI 都是 SSE 发 `text/event-stream`），
-/// 由调用方从最终请求体读出 `stream`，体里强制流式（如 Codex OAuth）时头也跟着对。
+/// 由调用方从最终请求体读出 `stream`，体里强制流式（如 ChatGPT 套餐）时头也跟着对。
 pub fn model_header_pairs(
     provider: &ModelProvider,
     conversation_id: Option<&str>,
