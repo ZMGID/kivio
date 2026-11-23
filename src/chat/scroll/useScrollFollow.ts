@@ -109,7 +109,7 @@ export type UseScrollFollowArgs = {
   glideGrowth?: boolean
   /**
    * 缓动时离底部最多落后多少 px（默认不限，仅受 GLIDE_MAX_PX）。超出的部分立即补上，
-   * 只把最后这一段缓动：贴底的状态行下方留了这么一段空，落后不超过它，新字就不会压到状态行。
+   * 只把最后这一段缓动，避免内容盖住贴底状态行。
    */
   glideMaxLagPx?: number
 }

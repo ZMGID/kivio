@@ -161,10 +161,8 @@ export interface MessageListProps {
 }
 
 const LIST_EDGE_PADDING_PX = 16
-// 生成中状态行（墨墨）上方的空行：贴底时正文随跟随缓动落后的那一截长进这里，碰不到墨墨。
-const STATUS_LINE_LIVE_GAP_PX = 40
-// 跟随缓动最多落后这么多：空行 + 状态行自身的上内边距（StreamStatusLine 的 py-2）。
-const STATUS_LINE_MAX_LAG_PX = STATUS_LINE_LIVE_GAP_PX + 8
+// 只在状态行已有的上内边距（StreamStatusLine 的 py-2）内缓动，保留普通消息间距。
+const STATUS_LINE_MAX_LAG_PX = 8
 // 尾部容器的下内边距（tail 的 pb-0.5）；贴底固定时墨墨停在完全滚到底时的同一位置。
 const TAIL_BOTTOM_PADDING_PX = 2
 // Per-frame cap on pre-paint row corrections; React's own limit is 50 nested updates.
@@ -815,7 +813,6 @@ function MessageListBase({
     trackKeys: true,
     // 出字中逐行增长缓动到底；打开会话、导航与回到底部仍瞬时。
     glideGrowth: streaming && !streamFrozen,
-    // 落后不超过状态行上方的空白，新字不会压到贴底的墨墨。
     glideMaxLagPx: STATUS_LINE_MAX_LAG_PX,
   })
   // 回到底部按钮：消失时收缩淡出再卸载。
@@ -3084,12 +3081,8 @@ function MessageListBase({
       )}
       {/* 墨墨、排队消息和尾部留白一起贴底固定：槽位就是完全滚到底时的位置，排队消息变高也不用另算。 */}
       <div style={pinStatusLine ? { position: 'sticky', bottom: TAIL_BOTTOM_PADDING_PX } : undefined}>
-        {/* 生成中留一行空：贴底时正文的缓动落后长进这段空里，不压到墨墨。
-            与发送预留同寿命（含停止后冻结）：落库交接时由预留 effect 一并补偿并重新钉底，
-            不在冻结那一刻单独缩高——那会和停止标记的增高叠在同一帧，被跟随判成用户上滚。 */}
         {(messages.length > 0 || streaming) && (
-          <div className="chat-reading-content"
-            style={streaming || streamFrozen ? { marginTop: STATUS_LINE_LIVE_GAP_PX } : undefined}>
+          <div className="chat-reading-content">
             <StreamStatusLine conversationId={conversationId} active={streaming && !streamFrozen && !liveGroup}
               waitingInBackground={!streaming && !streamFrozen && waitingForBackgroundTasks} lang={lang} />
           </div>

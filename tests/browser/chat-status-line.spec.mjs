@@ -38,6 +38,28 @@ const now = page => page.evaluate(() => performance.now() - window.statusLine.t0
 const samplesSince = (page, from) => page.evaluate(start => window.statusLine.samples.filter(s => s.t >= start), from)
 const overlaps = samples => samples.filter(s => s.textBottom != null && s.y < s.height && s.textBottom > s.y + 1)
 
+test('a short answer keeps the same spacing above the mascot while streaming and after saving', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await open(page)
+  await page.evaluate(() => {
+    window.statusLine.begin()
+    window.statusLine.append('这是一个只有一行的回答。')
+  })
+  const measureGap = async kind => {
+    const paragraph = page.locator(`[data-chat-message-list-item="${kind}"] p`).last()
+    await expect(paragraph).toHaveText('这是一个只有一行的回答。')
+    return paragraph.evaluate(p => {
+      const range = document.createRange()
+      range.selectNodeContents(p)
+      return document.querySelector('.kv-stream-logo').getBoundingClientRect().top - range.getBoundingClientRect().bottom
+    })
+  }
+  const activeGap = await measureGap('streaming')
+  await page.evaluate(() => window.statusLine.persist())
+  // The persisted answer enters virtual history and is measured after it mounts.
+  await expect.poll(async () => Math.abs(activeGap - await measureGap('message'))).toBeLessThanOrEqual(1)
+})
+
 for (const [pace, chunk] of [['steady', 12], ['bursty', 160]]) test(`stays fixed at the bottom while a ${pace} answer scrolls up, without covering text`, async ({ page }) => {
   await open(page)
   await page.evaluate(() => window.statusLine.startSampling())
@@ -51,6 +73,7 @@ for (const [pace, chunk] of [['steady', 12], ['bursty', 160]]) test(`stays fixed
   expect(scrolling).toBeGreaterThan(0)
   const pinned = samples.slice(scrolling)
   expect(pinned.length).toBeGreaterThan(30)
+  expect(pinned.some((s, i) => i > 0 && s.gap > 1 && s.gap < pinned[i - 1].gap && s.scrollTop > pinned[i - 1].scrollTop)).toBe(true)
   expect(pinned.every(s => s.sticky)).toBe(true)
   const slot = pinned.at(-1).y
   for (const sample of pinned) expect(Math.abs(sample.y - slot)).toBeLessThanOrEqual(1)
