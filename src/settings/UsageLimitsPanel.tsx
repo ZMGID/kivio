@@ -13,6 +13,7 @@ import { Button, IconButton } from '../components/Button'
 import { notifyError } from '../components/appNoticeStore'
 import { confirmDialog } from '../components/dialogQueue'
 import { i18n, type Lang } from '../components/i18n'
+import { cliPlanTone } from './cliPlanTone'
 import './UsageLimitsPanel.css'
 
 type QuotaWindow = ExternalCliAccount['windows'][number]
@@ -216,7 +217,9 @@ function AgentLimits({ agent, account, error, lang, now }: {
   now: number
 }) {
   const t = i18n[lang]
-  const identity = cliAccountIdentity(account)
+  const identity = account.account?.email || account.account?.name
+  const plan = account.account?.plan
+  const planTone = plan ? cliPlanTone(agent.id, plan) : undefined
   const updatedAt = new Date(account.checkedAt * 1000)
   const resetCredits = account.resetCredits
   const nextExpiry = cliResetTime(resetCredits?.nextExpiresAt ?? null)
@@ -286,7 +289,10 @@ function AgentLimits({ agent, account, error, lang, now }: {
         <div className="cli-limits-identity">
           <AgentIcon id={agent.id} size={22} />
           <div>
-            <h2 id={`limits-heading-${agent.id}`}>{agent.name}</h2>
+            <div className="cli-limits-title">
+              <h2 id={`limits-heading-${agent.id}`}>{agent.name}</h2>
+              {plan && <span className="cli-limits-plan" data-tone={planTone}>{plan}</span>}
+            </div>
             {identity && <p>{identity}</p>}
           </div>
         </div>
@@ -318,11 +324,6 @@ function AgentLimits({ agent, account, error, lang, now }: {
   )
 }
 
-function cliAccountIdentity(reading: ExternalCliAccount) {
-  const { account } = reading
-  return [account?.email || account?.name, account?.plan].filter(Boolean).join(' · ')
-}
-
 export function UsageLimitsPanel({ lang }: { lang: Lang }) {
   const t = i18n[lang]
   const { agents, failed: scanFailed } = useSyncExternalStore(subscribeRoster, getRoster, getRoster)
@@ -338,7 +339,9 @@ export function UsageLimitsPanel({ lang }: { lang: Lang }) {
   const accounts = useCliAccounts(available)
   const readings = accounts.flatMap(({ agent, view }) => {
     const { account, error } = view
-    return account && (cliAccountIdentity(account) || account.windows.length > 0 || (account.resetCredits?.availableCount ?? 0) > 0 || !!account.resetCredits?.cards?.length)
+    const identity = account?.account
+    return account && (identity?.email || identity?.name || identity?.plan ||
+      account.windows.length > 0 || (account.resetCredits?.availableCount ?? 0) > 0 || !!account.resetCredits?.cards?.length)
       ? [<AgentLimits key={agent.id} agent={agent} account={account} error={error} now={now} lang={lang} />]
       : []
   })

@@ -40,11 +40,89 @@
   flex-shrink: 0;
 }
 
+.cli-limits-identity > div {
+  min-width: 0;
+}
+
+.cli-limits-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
 .cli-limits-identity h2 {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
   overflow-wrap: anywhere;
+}
+
+.cli-limits-plan {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--theme-surface-muted);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.cli-limits-plan[data-tone="free"] {
+  color: var(--text-muted);
+}
+
+.cli-limits-plan[data-tone="entry"] {
+  background: var(--theme-surface-active);
+}
+
+.cli-limits-plan[data-tone="standard"] {
+  background: var(--accent-soft);
+}
+
+.cli-limits-plan[data-tone="team"] {
+  background: color-mix(in srgb, var(--theme-surface-muted) 85%, #17987e);
+  box-shadow: inset 0 0 0 1px rgb(23 152 126 / 32%);
+}
+
+.cli-limits-plan:is([data-tone="advanced"], [data-tone="premium"], [data-tone="flagship"], [data-tone="enterprise"]) {
+  background:
+    linear-gradient(118deg, transparent 23%, var(--plan-highlight) 47%, transparent 67%),
+    linear-gradient(105deg, var(--plan-start), var(--plan-end));
+  color: #fff;
+  box-shadow: inset 0 0 0 1px var(--plan-rim), 0 1px 4px var(--plan-shadow);
+}
+
+.cli-limits-plan[data-tone="advanced"] {
+  --plan-start: #173051;
+  --plan-end: #23517b;
+  --plan-highlight: rgb(182 219 255 / 15%);
+  --plan-rim: rgb(182 219 255 / 30%);
+  --plan-shadow: rgb(21 54 95 / 24%);
+}
+
+.cli-limits-plan[data-tone="premium"] {
+  --plan-start: color-mix(in srgb, #202b75 83%, var(--accent));
+  --plan-end: #6630a3;
+  --plan-highlight: rgb(189 211 255 / 27%);
+  --plan-rim: rgb(207 194 255 / 50%);
+  --plan-shadow: rgb(75 52 164 / 32%);
+}
+
+.cli-limits-plan[data-tone="flagship"] {
+  --plan-start: #301b42;
+  --plan-end: #71343a;
+  --plan-highlight: rgb(255 208 140 / 29%);
+  --plan-rim: rgb(255 212 149 / 56%);
+  --plan-shadow: rgb(105 52 52 / 35%);
+}
+
+.cli-limits-plan[data-tone="enterprise"] {
+  --plan-start: #183447;
+  --plan-end: #1e5b58;
+  --plan-highlight: rgb(156 230 215 / 19%);
+  --plan-rim: rgb(143 220 201 / 36%);
+  --plan-shadow: rgb(23 81 79 / 29%);
 }
 
 .cli-limits-identity p,
