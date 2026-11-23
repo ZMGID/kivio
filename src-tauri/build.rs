@@ -56,6 +56,26 @@ fn main() {
     )
     .unwrap();
 
+    // Embed the shipped expert profiles in every desktop binary, including portable builds.
+    let directory = std::path::Path::new("resources/experts");
+    println!("cargo:rerun-if-changed={}", directory.display());
+    let mut experts = Vec::new();
+    for entry in std::fs::read_dir(directory).expect("expert directory") {
+        let path = entry.expect("expert entry").path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            let bytes = std::fs::read(&path).expect("expert file");
+            let expert: serde_json::Value = serde_json::from_slice(&bytes)
+                .unwrap_or_else(|error| panic!("invalid expert {}: {error}", path.display()));
+            experts.push(expert);
+        }
+    }
+    experts.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    std::fs::write(
+        out.join("experts.json"),
+        serde_json::to_vec(&experts).unwrap(),
+    )
+    .unwrap();
+
     // tauri-build does not track the ICO used by the Windows resource compiler.
     // Without this, incremental builds can keep the old icon inside the EXE.
     println!("cargo:rerun-if-changed=icons");

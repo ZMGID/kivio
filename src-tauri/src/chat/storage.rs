@@ -35,7 +35,7 @@ mod sets;
 
 pub use assistants::{
     archive_assistant, assistant_snapshot, create_assistant, duplicate_assistant, get_assistant,
-    get_assistants, load_assistant_index, remove_builtin_assistants, save_assistant_index,
+    get_assistants, load_assistant_index, save_assistant_index, sync_builtin_assistants,
     update_assistant,
 };
 #[cfg(test)]

@@ -1,4 +1,5 @@
 import { sessionTokenUsage } from './sessionTokenUsage'
+import { bundledExperts } from './bundledExperts'
 // Chat API 调用封装
 import { invoke } from '@tauri-apps/api/core'
 import { isPlaceholderTitle, optimisticConversationTitle } from './conversationTitle'
@@ -212,9 +213,17 @@ function loadMockAssistants(): ChatAssistant[] {
   try {
     const raw = window.localStorage.getItem(mockAssistantsStorageKey)
     const parsed = raw ? JSON.parse(raw) : []
-    const assistants: ChatAssistant[] = Array.isArray(parsed) ? parsed.map((item: ChatAssistant) => ({
+    const stored: ChatAssistant[] = Array.isArray(parsed) ? parsed.map((item: ChatAssistant) => ({
       ...item, tool_policy: assistantToolPolicy(item),
     })) : []
+    const assistants = stored.filter((item) => !item.built_in || bundledExperts.some((expert) => expert.id === item.id))
+    for (const template of bundledExperts) {
+      const index = assistants.findIndex((item) => item.id === template.id)
+      if (index < 0) assistants.push({ ...template })
+      else if (assistants[index].built_in && assistants[index].updated_at === 0) {
+        assistants[index] = { ...template, installed: assistants[index].installed, archived: assistants[index].archived }
+      }
+    }
     assistants.sort((a, b) => b.updated_at - a.updated_at || a.name.localeCompare(b.name, 'zh-CN'))
     return assistants
   } catch {
@@ -627,9 +636,10 @@ const mockChatApi = {
       created_at: assistants[index].created_at,
     })
     if (!next.name) throw new Error('助手名称不能为空')
-    if (assistants.some((item) => item.id !== next.id && !item.archived && item.name === next.name)) {
+    if (next.name !== assistants[index].name && assistants.some((item) => item.id !== next.id && !item.archived && item.name === next.name)) {
       throw new Error('助手名称已存在')
     }
+    if (next.built_in) next.updated_at = assistant.updated_at ?? next.updated_at
     assistants[index] = next
     saveMockAssistants(assistants)
     return next

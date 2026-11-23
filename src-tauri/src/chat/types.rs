@@ -1197,7 +1197,7 @@ impl From<StoredAssistantDefaults> for AssistantDefaults {
 /// 可复用 Chat 助手配置。存储字段保持 snake_case，与 Conversation JSON 一致。
 /// 重建后只保留：身份(name/desc/icon/color) + 系统提示词 + 模型 + MCP/技能使用偏好。
 /// 旧文件里的 author/tags/quick_commands/data_connectors/knowledge_skills 等字段由 serde 忽略未知字段容错。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatAssistant {
     pub id: String,
     pub name: String,

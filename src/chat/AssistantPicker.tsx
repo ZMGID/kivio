@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Award, Check, CircleOff, Settings2 } from 'lucide-react'
 import { useT } from '../components/i18n'
 import { chatApi } from './api'
+import { AssistantAvatar } from './AssistantAvatar'
 import { api } from '../api/tauri'
 import { IconButton } from '../components/Button'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
@@ -141,9 +142,7 @@ export function AssistantPicker({
                       : 'text-neutral-700 hover:bg-neutral-100'
                   }`}
                 >
-                  <span className="grid size-4 shrink-0 place-items-center text-accent">
-                    <Award size={13} strokeWidth={1.75} />
-                  </span>
+                  <AssistantAvatar assistant={assistant} size="menu" />
                   <span className="min-w-0 flex-1 truncate">{assistant.name}</span>
                   {active && <Check size={12} strokeWidth={2.5} className="shrink-0 text-accent" />}
                 </button>

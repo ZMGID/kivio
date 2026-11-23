@@ -3,7 +3,6 @@ use super::*;
 pub fn load_assistant_index(app: &AppHandle) -> Result<ChatAssistantIndex, String> {
     let path = assistants_file_path(app)?;
     if !path.exists() {
-        // 内置专家已下线，启动为空，由用户自建。
         return Ok(ChatAssistantIndex::default());
     }
 
@@ -23,24 +22,43 @@ pub fn save_assistant_index(app: &AppHandle, index: &ChatAssistantIndex) -> Resu
     atomic_write(&path, &content, "assistants")
 }
 
-/// 删除随应用附带的内置专家（`built_in == true`）。
-/// 用户自建专家保留；集里指向已不存在助手的默认助手一并清空，避免留下悬空引用。
-/// 幂等，启动时运行；旧备份恢复后重新出现的条目也会再次被清理。
-pub fn remove_builtin_assistants(app: &AppHandle) -> Result<usize, String> {
+/// Install new profiles and retire discontinued ones while preserving local edits and favorites.
+pub fn sync_builtin_assistants(app: &AppHandle) -> Result<(), String> {
     let _catalog = catalog_mutation_lock();
     let mut index = load_assistant_index(app)?;
-    let removed = remove_builtin_assistants_from(&mut index.assistants);
-    if removed > 0 {
+    if merge_builtin_assistants(&mut index.assistants)? {
         save_assistant_index(app, &index)?;
     }
-    clear_missing_default_assistants(app, &index.assistants)?;
-    Ok(removed)
+    clear_missing_default_assistants(app, &index.assistants)
 }
 
-fn remove_builtin_assistants_from(assistants: &mut Vec<ChatAssistant>) -> usize {
+fn merge_builtin_assistants(assistants: &mut Vec<ChatAssistant>) -> Result<bool, String> {
+    let templates: Vec<ChatAssistant> =
+        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/experts.json")))
+            .map_err(|error| format!("parse bundled experts: {error}"))?;
     let before = assistants.len();
-    assistants.retain(|assistant| !assistant.built_in);
-    before - assistants.len()
+    assistants.retain(|item| !item.built_in || templates.iter().any(|t| t.id == item.id));
+    let mut changed = before != assistants.len();
+    for mut template in templates {
+        template.defaults.tool_policy = crate::chat::types::AssistantToolPolicy::Preferences;
+        match assistants.iter_mut().find(|item| item.id == template.id) {
+            // Zero is the timestamp of a shipped template. Refresh it until the user edits it.
+            Some(item) if item.built_in && item.updated_at == 0 => {
+                template.installed = item.installed;
+                template.archived = item.archived;
+                if *item != template {
+                    *item = template;
+                    changed = true;
+                }
+            }
+            Some(_) => {}
+            None => {
+                assistants.push(template);
+                changed = true;
+            }
+        }
+    }
+    Ok(changed)
 }
 
 fn clear_missing_default_assistants(
@@ -134,16 +152,25 @@ pub fn update_assistant(
         .iter()
         .position(|item| item.id == next.id)
         .ok_or_else(|| "助手不存在".to_string())?;
-    if index
-        .assistants
-        .iter()
-        .any(|item| item.id != next.id && !item.archived && item.name == next.name)
+    if next.name != index.assistants[pos].name
+        && index
+            .assistants
+            .iter()
+            .any(|item| item.id != next.id && !item.archived && item.name == next.name)
     {
         return Err("助手名称已存在".to_string());
     }
     next.defaults.tool_policy = index.assistants[pos].defaults.tool_policy;
     next.built_in = index.assistants[pos].built_in;
     next.created_at = index.assistants[pos].created_at;
+    if next.built_in && next.updated_at == 0 {
+        let mut previous = index.assistants[pos].clone();
+        previous.installed = next.installed;
+        previous.archived = next.archived;
+        if previous != next {
+            next.updated_at = chrono::Local::now().timestamp();
+        }
+    }
     index.assistants[pos] = next.clone();
     save_assistant_index(app, &index)?;
     Ok(next)
@@ -312,15 +339,30 @@ mod tests {
     }
 
     #[test]
-    fn removes_only_built_in_assistants() {
+    fn shipped_experts_survive_restart_with_edits_and_favorites() {
         let mut assistants = vec![
-            assistant("asst_builtin_writer", true),
+            assistant("asst_retired", true),
             assistant("asst_user_custom", false),
         ];
-
-        assert_eq!(remove_builtin_assistants_from(&mut assistants), 1);
-        assert_eq!(assistants.len(), 1);
-        assert_eq!(assistants[0].id, "asst_user_custom");
+        assert!(merge_builtin_assistants(&mut assistants).unwrap());
+        assert_eq!(assistants.len(), 21);
+        assert!(assistants.iter().all(|item| item.id != "asst_retired"));
+        let mut names = HashSet::new();
+        for expert in assistants.iter().filter(|item| item.built_in) {
+            validate_assistant_id(&expert.id).unwrap();
+            assert!(names.insert(&expert.name));
+            assert!(!expert.installed && !expert.system_prompt.trim().is_empty());
+        }
+        let first = &mut assistants[1];
+        first.installed = true;
+        first.system_prompt = "local edit".into();
+        first.updated_at = 123;
+        assistants[2].installed = true;
+        assistants[3].archived = true;
+        assert!(!merge_builtin_assistants(&mut assistants).unwrap());
+        assert_eq!(assistants[1].system_prompt, "local edit");
+        assert!(assistants[1].installed && assistants[2].installed && assistants[3].archived);
+        assert!(!assistants[0].built_in);
     }
 
     #[test]

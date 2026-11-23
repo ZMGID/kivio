@@ -23,6 +23,7 @@ import { Checkbox, Input, SearchInput, Select, TextArea } from '../settings/publ
 import { useT } from '../components/i18n'
 import { AgentIcon } from '../settings/public/icons'
 import { chatApi } from './api'
+import { AssistantAvatar } from './AssistantAvatar'
 import { kbListLibraries, type KnowledgeLibrary } from './knowledgeBase'
 import type { ChatAssistant, SkillMeta } from './types'
 import { confirmDialog } from '../components/dialogQueue'
@@ -49,7 +50,7 @@ interface AssistantCenterProps {
 
 type AssistantDraft = ChatAssistant
 type CenterView = 'list' | 'detail' | 'edit'
-type SuiteTab = 'installed' | 'mine'
+type SuiteTab = 'installed' | 'all'
 
 const assistantColors = ['#6A8FBD', '#2f6ff0', '#4F9D7A', '#8A6FBD', '#B7791F', '#5E8C6A']
 
@@ -155,12 +156,7 @@ function AssistantSuiteCard({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span
-            className="grid size-9 shrink-0 place-items-center rounded-lg border border-neutral-200 bg-neutral-50 text-[15px] font-semibold"
-            style={{ color: assistant.color || '#6A8FBD' }}
-          >
-            {assistant.name.trim().slice(0, 1) || t.chatAssistantAvatarFallback}
-          </span>
+          <AssistantAvatar assistant={assistant} size="card" />
           <span className="truncate text-[13px] font-semibold leading-tight text-neutral-950">
             {assistant.name}
           </span>
@@ -495,7 +491,7 @@ export function AssistantCenter({
       <div className="assistant-center-tabs flex min-w-0 items-center gap-1 border-b border-neutral-200 pb-2">
           {[
             ['installed', t.chatAssistantTabInstalled, installedCount],
-            ['mine', t.chatAssistantTabMine, assistants.length],
+            ['all', t.chatAssistantTabAll, assistants.length],
           ].map(([value, label, count]) => (
             <button
               key={value}
@@ -596,12 +592,7 @@ export function AssistantCenter({
             >
               <ArrowLeft size={18} />
             </IconButton>
-            <div
-              className="grid size-16 shrink-0 place-items-center rounded-md text-[26px] font-semibold text-white"
-              style={{ backgroundColor: assistant.color || '#6A8FBD' }}
-            >
-              {assistant.name.trim().slice(0, 1) || t.chatAssistantAvatarFallbackDetail}
-            </div>
+            <AssistantAvatar assistant={assistant} size="detail" />
             <div className="min-w-0">
               <h2 className="truncate text-[28px] font-semibold tracking-normal text-neutral-950">
                 {assistant.name}
