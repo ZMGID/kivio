@@ -60,6 +60,10 @@
   overflow-y: auto;
 }
 
+.settings-embedded-nav-list:not(.settings-embedded-nav-list--header)::-webkit-scrollbar {
+  display: none;
+}
+
 /* 顶部「返回对话」：固定不滚，与分类列表隔开一点。 */
 .settings-embedded-nav-list--header {
   flex-shrink: 0;

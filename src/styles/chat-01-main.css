@@ -701,10 +701,7 @@ button.chat-composer-status-item:hover {
   pointer-events: auto;
 }
 
-.chat-heading-navigator:not(.is-expanded) .chat-heading-navigator-list {
-  scrollbar-width: none;
-}
-
+/* 收起时隐藏滚动条。只用 ::-webkit-scrollbar；标准属性 scrollbar-width 会让展开后的全局胶囊样式失效。 */
 .chat-heading-navigator:not(.is-expanded) .chat-heading-navigator-list::-webkit-scrollbar {
   display: none;
 }
@@ -808,8 +805,11 @@ button.chat-composer-status-item:hover {
   height: 100%;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-width: none;
   pointer-events: auto;
+}
+
+.chat-message-navigator-viewport::-webkit-scrollbar {
+  display: none;
 }
 
 .chat-message-navigator-track {
