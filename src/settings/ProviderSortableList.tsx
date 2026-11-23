@@ -1,12 +1,13 @@
-import { providerAuthenticationReady } from '../api/tauri'
-import { useMemo, useRef } from 'react'
+import { api, type ChatGPTAccount } from '../api/tauri'
+import { useEffect, useId, useMemo, useRef, useState, type ComponentProps } from 'react'
 import { GripVertical, Pencil, Trash2 } from 'lucide-react'
-import type { ModelProvider } from '../api/tauri'
+import type { ModelProvider, ProviderOAuthConfig } from '../api/tauri'
 import { IconButton } from '../components/Button'
 import { ProviderIcon } from '../components/ModelIcon'
 import type { I18n, Lang } from '../components/i18n'
 import { usePointerReorder } from '../utils/pointerReorder'
 import { Toggle } from './components'
+import { ProviderAccountIdentity, ProviderAccountSummary } from './ProviderAccountIdentity'
 import { isProviderEnabled } from './utils'
 
 /** 卡片之间的间距（px）；拖拽落点按「行高 + 间距」换算，必须与 CSS 的 gap 一致。 */
@@ -27,6 +28,22 @@ type ProviderSortableListProps = {
   onReorder: (fromId: string, toId: string) => void
 }
 
+type ChatGPTAccountsResult =
+  | { key: string; status: 'error' }
+  | { key: string; status: 'ready'; accounts: ChatGPTAccount[] }
+
+function accountSummary(auth: ProviderOAuthConfig, result: ChatGPTAccountsResult | null):
+  Pick<ComponentProps<typeof ProviderAccountSummary>, 'status' | 'identity'> {
+  if (!auth.credentialId) return { status: 'signedOut' }
+  if (auth.provider !== 'chatgpt' || result?.status === 'error') {
+    return { status: auth.requiresReauthorization ? 'reauthorize' : 'unavailable' }
+  }
+  if (!result) return { status: 'loading' }
+  const account = result.accounts.find(item => item.credentialId === auth.credentialId)
+  if (!account?.connected) return { status: 'signedOut' }
+  return { status: account.planEnabled ? 'signedIn' : 'planRequired', identity: account.email || account.subject }
+}
+
 /** 「已添加」的供应商卡片列表：整张卡片点开详情，右侧是启用开关、编辑和删除，左侧手柄拖拽排序。 */
 export function ProviderSortableList({
   providers,
@@ -40,7 +57,24 @@ export function ProviderSortableList({
   onReorder,
 }: ProviderSortableListProps) {
   const zh = lang === 'zh'
+  const listId = useId()
   const listRef = useRef<HTMLDivElement>(null)
+  const [chatGPTAccounts, setChatGPTAccounts] = useState<ChatGPTAccountsResult | null>(null)
+  const chatGPTKey = providers.flatMap(({ request: { oauth } }) =>
+    oauth?.provider === 'chatgpt' && oauth.credentialId
+      ? [`${oauth.credentialId}:${Boolean(oauth.requiresReauthorization)}`] : [],
+  ).sort().join(',')
+  useEffect(() => {
+    if (!chatGPTKey) return
+    let active = true
+    void api.providerOAuthChatGPTAccounts().then(
+      accounts => { if (active) setChatGPTAccounts({ key: chatGPTKey, status: 'ready', accounts }) },
+      () => { if (active) setChatGPTAccounts({ key: chatGPTKey, status: 'error' }) },
+    )
+    return () => { active = false }
+  }, [chatGPTKey])
+  const currentAccounts = chatGPTAccounts?.key === chatGPTKey ? chatGPTAccounts : null
+
   const ids = useMemo(() => providers.map((p) => p.id), [providers])
   const { draggingId, startDrag, itemTransform } = usePointerReorder({
     ids,
@@ -57,10 +91,12 @@ export function ProviderSortableList({
     <div ref={listRef} className={`kv-provider-cards${draggingId ? ' is-sorting' : ''}`}>
       {providers.map((provider, index) => {
         const enabled = isProviderEnabled(provider)
-        const configured = providerAuthenticationReady(provider)
         const name = provider.name || t.providerName
         const transform = itemTransform(index)
         const modelCount = provider.enabledModels.length
+        const auth = provider.request.oauth
+        const profile = auth && auth.provider !== 'chatgpt' && auth.credentialId && !auth.requiresReauthorization
+        const heading = { id: `${listId}-account-${provider.id}`, name }
 
         return (
           <div
@@ -71,6 +107,7 @@ export function ProviderSortableList({
             role="button"
             tabIndex={0}
             aria-label={name}
+            aria-describedby={auth ? `${heading.id} ${heading.id}-identity` : undefined}
             onClick={() => onOpen(provider.id)}
             onKeyDown={(e) => {
               if (e.target !== e.currentTarget) return
@@ -102,13 +139,18 @@ export function ProviderSortableList({
               />
             </span>
             <span className="kv-provider-card-text">
-              <span className="kv-provider-card-name">{name}</span>
-              <span className="kv-provider-card-url">
-                {provider.baseUrl || (zh ? '未填写 API 地址' : 'No API endpoint')}
-              </span>
+              {profile
+                ? <ProviderAccountIdentity key={`${auth.provider}:${auth.credentialId}`}
+                    provider={provider} lang={lang} heading={heading} />
+                : auth ? <ProviderAccountSummary heading={heading} lang={lang} {...accountSummary(auth, currentAccounts)} />
+                : <>
+                  <span className="kv-provider-card-name">{name}</span>
+                  <span className="kv-provider-card-url">
+                    {provider.baseUrl || (zh ? '未填写 API 地址' : 'No API endpoint')}
+                  </span>
+                </>}
             </span>
             <span className="kv-provider-card-tags">
-              {enabled && !configured && <span className="kv-tag warn">{t.permissionMissing}</span>}
               <span className="kv-tag tabular-nums">
                 {zh ? `${modelCount} 个模型` : `${modelCount} model${modelCount === 1 ? '' : 's'}`}
               </span>

@@ -111,10 +111,10 @@ describe('ProvidersTab 列表', () => {
     expect(screen.queryByText(t.baseUrl)).toBeNull()
   })
 
-  it('未填密钥的启用供应商在卡片上标出未授权', () => {
+  it('未授权的账号型供应商在卡片上标出未登录', () => {
     const provider = makeProvider({ apiKeys: [], request: { oauth: { provider: 'kimi' } } })
     renderTab({ selectedProvider: provider, settings: makeSettings({ providers: [provider] }) })
-    expect(within(screen.getByRole('button', { name: 'OpenAI' })).getByText(t.permissionMissing)).toBeTruthy()
+    expect(within(screen.getByRole('button', { name: 'OpenAI' })).getByText('未登录')).toBeInTheDocument()
   })
 
   it('供应商被删除后从详情退回列表', async () => {
@@ -322,14 +322,21 @@ it('reconnects a saved ChatGPT account, requests plan access and flags unavailab
   const original = buildProps({ selectedProvider: saved, settings: makeSettings({ providers: [saved] }) })
   let latest = original.settings
   const account = { credentialId: 'saved', clientId: 'app', email: 'work@example.test', subject: 'sub', connected: true, planEnabled: false }
-  vi.mocked(api.providerOAuthChatGPTAccounts).mockResolvedValueOnce([{ ...account, connected: false }]).mockResolvedValueOnce([account])
-    .mockResolvedValue([{ ...account, planEnabled: true }])
+  let savedAccount = { ...account, connected: false }
+  vi.mocked(api.providerOAuthChatGPTAccounts).mockImplementation(async () => [savedAccount])
   vi.mocked(api.providerOAuthStart).mockResolvedValue({ loginId: 'login', interval: 0, verificationUrl: '', userCode: '', expiresAt: 1900000000 })
-  vi.mocked(api.providerOAuthPoll).mockResolvedValueOnce({ status: 'authorized', interval: 0,
-    auth: { provider: 'chatgpt', credentialId: 'saved', requiresReauthorization: true } })
-    .mockResolvedValue({ status: 'authorized', interval: 0, auth: { provider: 'chatgpt', credentialId: 'saved' } })
+  vi.mocked(api.providerOAuthPoll).mockImplementationOnce(async () => {
+    savedAccount = account
+    return { status: 'authorized', interval: 0, auth: { provider: 'chatgpt', credentialId: 'saved', requiresReauthorization: true } }
+  }).mockImplementation(async () => {
+    savedAccount = { ...account, planEnabled: true }
+    return { status: 'authorized', interval: 0, auth: { provider: 'chatgpt', credentialId: 'saved' } }
+  })
   vi.mocked(api.fetchModelCatalog).mockResolvedValue({ models: ['new-id'], capabilities: {}, displayNames: { 'new-id': 'New Model' } })
-  vi.mocked(api.providerOAuthDisconnect).mockResolvedValue('Remote revocation could not be confirmed.')
+  vi.mocked(api.providerOAuthDisconnect).mockImplementation(async () => {
+    savedAccount = { ...account, connected: false }
+    return 'Remote revocation could not be confirmed.'
+  })
   function SettingsTab() {
     const [settings, setSettings] = useState(original.settings)
     const provider = settings.providers[0]
@@ -341,22 +348,35 @@ it('reconnects a saved ChatGPT account, requests plan access and flags unavailab
     return <ProvidersTab {...original} settings={settings} selectedProvider={provider} onUpdateProvider={patch} onFetchModels={catalog.fetchModels} />
   }
   render(<SettingsTab />)
+  const card = () => within(screen.getByRole('button', { name: 'Work account' }))
+  expect(await card().findByText('未登录')).toBeInTheDocument()
   await openDetail('Work account')
   expect(await screen.findByText(/账号已断开/)).toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: '使用 ChatGPT 登录' }))
-  const consent = await screen.findByRole('button', { name: '授权 ChatGPT 套餐' })
+  await screen.findByRole('button', { name: '授权 ChatGPT 套餐' })
   expect(screen.getByRole('button', { name: '管理模型' })).toBeDisabled()
   expect(providerAuthenticationReady(latest.providers[0])).toBe(false)
   expect(api.fetchModelCatalog).not.toHaveBeenCalled()
-  await userEvent.click(consent)
+  await userEvent.click(screen.getByRole('button', { name: '全部供应商' }))
+  expect(await card().findByText('待授权套餐')).toBeInTheDocument()
+  expect(card().getByText('work@example.test')).toBeInTheDocument()
+  await openDetail('Work account')
+  await userEvent.click(await screen.findByRole('button', { name: '授权 ChatGPT 套餐' }))
   expect(api.providerOAuthStart).toHaveBeenLastCalledWith('chatgpt', true, 'saved')
   expect(await screen.findByText(/当前账号无法使用 gpt-4o/)).toBeInTheDocument()
   expect(latest.providers[0]).toMatchObject({ id: saved.id, name: saved.name, availableModels: ['new-id'], enabledModels: ['gpt-4o'] })
   expect(latest.screenshotTranslation.model).toBe('gpt-4o')
   expect(screen.getByRole('button', { name: '管理模型' })).toBeEnabled()
-  vi.mocked(api.providerOAuthChatGPTAccounts).mockResolvedValue([{ ...account, connected: false, planEnabled: false }])
+  await userEvent.click(screen.getByRole('button', { name: '全部供应商' }))
+  expect(await card().findByText('已登录')).toBeInTheDocument()
+  expect(card().getByText('work@example.test')).toBeInTheDocument()
+  await openDetail('Work account')
+  await screen.findByRole('button', { name: '断开授权' })
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '断开授权' })) })
   expect(api.providerOAuthDisconnect).toHaveBeenCalledWith('saved', true)
   expect(screen.getByText('Remote revocation could not be confirmed.')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '管理模型' })).toBeDisabled()
+  await userEvent.click(screen.getByRole('button', { name: '全部供应商' }))
+  expect(await card().findByText('未登录')).toBeInTheDocument()
+  expect(card().queryByText(/work@example.test/)).not.toBeInTheDocument()
 })

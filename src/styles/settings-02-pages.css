@@ -1597,6 +1597,7 @@ html[data-focus-source="keyboard"] .kv-provider-card:focus-visible {
 .kv-provider-card-grip:hover { color: var(--text); }
 .kv-provider-card-grip:active { cursor: grabbing; }
 .kv-provider-card-icon {
+  position: relative;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1607,12 +1608,41 @@ html[data-focus-source="keyboard"] .kv-provider-card:focus-visible {
   border-radius: 9px;
   background: var(--bg);
 }
+.kv-provider-card:has(.kv-provider-account-tag.ok) > .kv-provider-card-icon::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--success);
+  pointer-events: none;
+}
 .kv-provider-card-text {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+.kv-provider-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 18px;
+}
+.kv-provider-account-tag {
+  flex: 0 0 auto;
+  gap: 4px;
+  max-inline-size: 75%;
+  min-inline-size: 0;
+}
+.kv-provider-account-tag svg { flex-shrink: 0; }
+.kv-provider-account-tag > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .kv-provider-card-name {
   font-size: 13px;
@@ -1625,14 +1655,15 @@ html[data-focus-source="keyboard"] .kv-provider-card:focus-visible {
 }
 .kv-provider-card-url {
   font-size: 12px;
-  line-height: 1.35;
+  line-height: 16px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .kv-provider-card.is-off .kv-provider-card-icon,
-.kv-provider-card.is-off .kv-provider-card-text { opacity: 0.55; }
+.kv-provider-card.is-off .kv-provider-card-name,
+.kv-provider-card.is-off .kv-provider-card-url { opacity: 0.55; }
 .kv-provider-card-tags,
 .kv-provider-card-actions {
   flex-shrink: 0;
@@ -3445,6 +3476,15 @@ html[data-focus-source="keyboard"] .kv-cli-entry:focus-visible {
 .kv-tag.accent {
   background: var(--accent-soft);
   color: var(--accent);
+}
+.kv-provider-account-tag.ok {
+  color: color-mix(in srgb, var(--success) 75%, var(--text));
+}
+.kv-provider-account-tag.warn {
+  color: color-mix(in srgb, var(--warn) 75%, var(--text));
+}
+.kv-provider-account-tag.accent {
+  color: color-mix(in srgb, var(--accent) 75%, var(--text));
 }
 .kv-inline-error {
   font-size: 12px;

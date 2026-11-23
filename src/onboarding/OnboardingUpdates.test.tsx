@@ -36,7 +36,7 @@ describe('onboarding matches current capabilities', () => {
       return <ProviderSetupPanel t={i18n.zh} lang="zh" settings={settings} onChange={setSettings} />
     }
     render(<Setup />)
-    fireEvent.click(screen.getByRole('button', { name: 'ChatGPT 登录', exact: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'ChatGPT 登录' }))
     await act(async () => {})
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '使用 ChatGPT 登录' })) })
     expect(api.openExternal).not.toHaveBeenCalled()
