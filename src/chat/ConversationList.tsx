@@ -52,6 +52,14 @@ function conversationFolderLabel(
 /** 归档退场：比 `--kv-dur-fast`（150ms）略长，给 transitionend 漏触发时兜底卸行。 */
 const ARCHIVE_EXIT_MS = 240
 
+function setTitleScrollDuration(event: React.AnimationEvent<HTMLSpanElement>) {
+  if (event.animationName !== 'kv-conv-title-scroll' || !(event.target instanceof HTMLElement)) return
+  const viewport = event.currentTarget
+  const overflow = event.target.scrollWidth - viewport.clientWidth
+  // 动画开始时再测量，此时行尾按钮已经展开，标题也已打完。
+  viewport.style.setProperty('--kv-title-scroll-duration', `${Math.max(1, overflow / 36)}s`)
+}
+
 function conversationUsesExternalAgent(conv: ConversationListItem): boolean {
   const runtime = normalizeAgentRuntime(conv)
   return runtime.kind === 'external' && Boolean(runtime.externalAgentId)
@@ -452,15 +460,20 @@ export const ConversationList = memo(function ConversationList({
               >
                 <span className="flex min-w-0 items-center gap-1.5">
                   {/* 模型标题替换乐观截断标题时打字机逐字打出；生成中的临时标题置灰 */}
-                  <SwapTitle
-                    text={visibleTitle}
-                    className={`block min-w-0 flex-1 truncate${
-                      isTitleGenerating
-                      || (isGenerating && isProvisionalTitle(displayTitle, conv.preview))
-                        ? ' kv-title-provisional'
-                        : ''
-                    }`}
-                  />
+                  <span
+                    className="kv-conv-title-window min-w-0 flex-1 overflow-hidden"
+                    onAnimationStart={setTitleScrollDuration}
+                  >
+                    <SwapTitle
+                      text={visibleTitle}
+                      className={`kv-conv-title-text block w-max max-w-full truncate${
+                        isTitleGenerating
+                        || (isGenerating && isProvisionalTitle(displayTitle, conv.preview))
+                          ? ' kv-title-provisional'
+                          : ''
+                      }`}
+                    />
+                  </span>
                   {isFork && (
                     <span
                       className="shrink-0 text-[11px] font-normal text-neutral-400 dark:text-neutral-500"

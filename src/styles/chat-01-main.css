@@ -1395,6 +1395,20 @@ button.chat-composer-status-item:hover {
   font-weight: 500;
 }
 
+.kv-conv-title-window {
+  container-type: inline-size;
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .kv-conv-row:hover:not(.is-dragging) .kv-conv-title-text:not(:has(.kv-title-caret)) {
+    animation: kv-conv-title-scroll var(--kv-title-scroll-duration, 1s) linear 500ms forwards;
+  }
+}
+@keyframes kv-conv-title-scroll {
+  from, to { max-width: none; }
+  from { transform: translateX(0); }
+  to { transform: translateX(min(0px, calc(100cqi - 100%))); }
+}
+
 /* 行尾交换槽：平时只显示状态标记（钉/定时/归属），悬停或键盘焦点时整体换成置顶 + 归档。
    按钮用 opacity 隐藏而非 visibility：隐藏时仍可 Tab 聚焦，聚焦后 :has(:focus-visible) 把它们亮出来。
    :has(:focus-visible) 而非 :focus-within：鼠标点击后焦点留在行内，不能让按钮常驻盖住短龄。 */
