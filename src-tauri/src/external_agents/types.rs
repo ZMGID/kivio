@@ -625,6 +625,11 @@ pub enum UnifiedAgentEvent {
         name: String,
         input: Value,
     },
+    /// Authoritative inputs reported by the CLI before the tool's result.
+    ToolInputUpdated {
+        tool_use_id: String,
+        input: Value,
+    },
     /// Latest cumulative partial output of a still-running tool (snapshot, replaces previous).
     ToolPartialOutput {
         tool_use_id: String,

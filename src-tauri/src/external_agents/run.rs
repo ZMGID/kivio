@@ -4880,6 +4880,21 @@ fn apply_unified_event(
             tool_calls.push(record.clone());
             emit_chat_tool_record(app, run_id, &record);
         }
+        UnifiedAgentEvent::ToolInputUpdated { tool_use_id, input } => {
+            if let Some(record) = tool_map
+                .get(&tool_use_id)
+                .and_then(|idx| tool_calls.get_mut(*idx))
+                .filter(|record| {
+                    matches!(
+                        record.status,
+                        ToolCallStatus::Pending | ToolCallStatus::Running
+                    )
+                })
+            {
+                record.arguments = input.to_string();
+                record.structured_content = Some(input);
+            }
+        }
         UnifiedAgentEvent::ToolPartialOutput {
             tool_use_id,
             output,

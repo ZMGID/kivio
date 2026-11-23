@@ -512,11 +512,7 @@ fn claude_config_dir() -> Option<PathBuf> {
 /// CLI 把「本轮实际生效的档位」导给 hook / Bash 用（zod 描述原文："Also exposed to hook
 /// commands and Bash as the CLAUDE_EFFORT env var"）。真正的输入覆盖是
 /// `CLAUDE_CODE_EFFORT_LEVEL`（`ait()` 只读它，且 `unset` / `auto` 视为「没配」）。
-/// 读错的后果不是「读不到」而是**读到别人的**：Kivio 若从 Claude Code 内启动，
-/// `CLAUDE_EFFORT` 会被继承进来（本机 `env | grep CLAUDE` 可见，且它不在
-/// `spawn::PARENT_SESSION_ENV_VARS` 的剥离清单里），胶囊显示的就是宿主那一轮的档位，
-/// 与用户的 claude 配置无关。
-
+/// Kivio 从 Claude Code 启动时，`CLAUDE_EFFORT` 表示宿主轮次的档位。
 ///
 /// 返回值必须落在 `defs/claude.rs` 的 `REASONING` 选项 id 集合内，否则前端选不中；
 /// 认不出的值一律 `None`（显示「自动」），不猜、不 panic。

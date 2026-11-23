@@ -399,10 +399,7 @@ fn approval_ask_from_params(method: &str, id: &Value, params: &Value) -> Approva
 /// `run_persistent_turn` can RetryFresh; emitting `Error` and returning `Ok` would skip retry
 /// and still poison `stream_error` if a later reconnect succeeds.
 ///
-/// Mid-turn `error` / `thread/realtime/error` is **not** a turn end: Codex retries the
-/// upstream stream in-process (`stream_max_retries`, default 5) and keeps emitting
-/// `Reconnecting... N/M` until `turn/completed`. Treating those as `TurnFailed` kills the
-/// still-running CLI and shows "通信出错" while Codex is still thinking.
+/// App-server retry notifications report progress. The terminal notification closes the turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CodexMapResult {
     Continue,
@@ -464,6 +461,7 @@ struct CodexTurnState {
     billing_base: Option<CodexUsageTotals>,
     compaction_item: Option<String>,
     recount: Option<u64>,
+    terminal_error: Option<String>,
 }
 
 /// Map a single codex app-server notification to zero or more `UnifiedAgentEvent`s.
@@ -665,22 +663,33 @@ fn map_codex_notification(
             return match params.pointer("/turn/status").and_then(Value::as_str) {
                 Some("completed") => CodexMapResult::TurnEnded,
                 Some("interrupted") => CodexMapResult::TurnFailed("cancelled".into()),
-                Some("failed") => CodexMapResult::TurnFailed(codex_error_message(
-                    params.pointer("/turn/error").unwrap_or(&Value::Null),
-                )),
+                Some("failed") => CodexMapResult::TurnFailed(
+                    params
+                        .pointer("/turn/error")
+                        .filter(|error| error.is_object())
+                        .map(codex_error_message)
+                        .or_else(|| turn_state.terminal_error.take())
+                        .unwrap_or_else(|| "Codex error".to_string()),
+                ),
                 _ => CodexMapResult::TurnFailed("invalid Codex terminal status".into()),
             };
         }
-        // Mid-turn `error` / `thread/realtime/error` **precedes** `turn/completed` (app-server
-        // README). Codex uses this for stream reconnect (`Reconnecting... 7/50`); the TUI
-        // keeps thinking. Do **not** end the Kivio turn here — returning `TurnFailed` kills
-        // the live process (RetryFresh) while Codex is still retrying. Quota / window /
-        // exhausted-retry stay fail-closed; everything else is an English status-line note
-        // (`reconnect 7/50`) until `turn/completed`.
         "error" | "thread/realtime/error" => {
             let message = codex_error_message(params);
-            if crate::external_agents::errors::is_non_retryable_error(&message, "codex") {
-                return CodexMapResult::TurnFailed(message);
+            match params.get("willRetry").and_then(Value::as_bool) {
+                Some(false) => {
+                    turn_state.terminal_error = Some(message);
+                    return CodexMapResult::Continue;
+                }
+                Some(true) => turn_state.terminal_error = None,
+                // Older frames leave retry classification to the client.
+                None if crate::external_agents::errors::is_non_retryable_error(
+                    &message, "codex",
+                ) =>
+                {
+                    return CodexMapResult::TurnFailed(message);
+                }
+                None => {}
             }
             sink(UnifiedAgentEvent::StatusNote {
                 text: mid_turn_error_status_note(&message),
@@ -733,61 +742,44 @@ fn value_as_text(value: Option<&Value>) -> String {
     }
 }
 
-/// Codex `webSearch` items are `{id, query, action?}` — there is no `results` field.
-/// Serializing JSON `null` produced the literal `"null"` in the tool card.
-fn web_search_result(item: &serde_json::Map<String, Value>) -> String {
-    if let Some(results) = item.get("results") {
-        match results {
-            Value::Null => {}
-            Value::String(s) if s.is_empty() || s == "null" => {}
-            Value::Array(entries) if entries.is_empty() => {}
-            other => {
-                let text = value_as_text(Some(other));
-                if !text.is_empty() {
-                    return text;
-                }
-            }
-        }
-    }
+fn web_search_patterns(item: &serde_json::Map<String, Value>) -> Vec<&str> {
+    let mut patterns = Vec::new();
     if let Some(action) = item.get("action") {
-        let kind = json_str(action, "type").unwrap_or("");
-        let from_action = match kind {
-            "openPage" | "open_page" => json_str(action, "url").unwrap_or("").to_string(),
-            "findInPage" | "find_in_page" => {
-                let url = json_str(action, "url").unwrap_or("");
-                let pattern = json_str(action, "pattern").unwrap_or("");
-                [url, pattern]
-                    .into_iter()
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" · ")
-            }
-            _ => json_str(action, "query")
-                .or_else(|| {
+        match json_str(action, "type") {
+            Some("search") => {
+                patterns.extend(
                     action
                         .get("queries")
                         .and_then(Value::as_array)
-                        .and_then(|queries| {
-                            queries
-                                .iter()
-                                .find_map(|q| q.as_str().map(str::trim).filter(|s| !s.is_empty()))
-                        })
-                })
-                .unwrap_or("")
-                .to_string(),
-        };
-        if !from_action.is_empty() {
-            return from_action;
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str),
+                );
+                patterns.extend(json_str(action, "query"));
+            }
+            Some("openPage" | "open_page") => patterns.extend(json_str(action, "url")),
+            Some("findInPage" | "find_in_page") => {
+                patterns.extend(json_str(action, "pattern"));
+                patterns.extend(json_str(action, "url"));
+            }
+            _ => {}
         }
     }
-    let query = map_str(item, "query").unwrap_or("");
-    if !query.is_empty() {
-        return query.to_string();
+    patterns.extend(map_str(item, "query"));
+    let mut seen = HashSet::new();
+    patterns
+        .into_iter()
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty() && seen.insert(*pattern))
+        .collect()
+}
+
+fn web_search_result(item: &serde_json::Map<String, Value>) -> String {
+    match item.get("results") {
+        Some(Value::String(s)) if s == "null" => String::new(),
+        Some(Value::Array(entries)) if entries.is_empty() => String::new(),
+        results => value_as_text(results),
     }
-    item.get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("completed")
-        .to_string()
 }
 
 fn item_failed(item: &serde_json::Map<String, Value>) -> bool {
@@ -903,12 +895,15 @@ fn codex_rate_limit_reached_note(params: &Value) -> Option<String> {
 /// classification can see `UsageLimitExceeded` even when `message` is generic.
 fn codex_error_message(error: &Value) -> String {
     let err = error.get("error").unwrap_or(error);
-    let message = err
-        .get("message")
-        .and_then(Value::as_str)
+    let message = json_str(err, "message").map(str::trim).unwrap_or("");
+    let details = json_str(err, "additionalDetails")
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("");
+        .filter(|details| !details.is_empty() && *details != message);
+    let message = match (message, details) {
+        ("", Some(details)) => details.to_owned(),
+        (message, Some(details)) => format!("{message} ({details})"),
+        (message, None) => message.to_owned(),
+    };
     let info = match err.get("codexErrorInfo") {
         Some(Value::String(s)) => Some(s.trim().to_string()).filter(|s| !s.is_empty()),
         Some(Value::Object(map)) => map
@@ -918,7 +913,7 @@ fn codex_error_message(error: &Value) -> String {
             .or_else(|| map.keys().next().cloned()),
         _ => None,
     };
-    match (info.as_deref(), message) {
+    match (info.as_deref(), message.as_str()) {
         (Some(info), "") => info.to_string(),
         (Some(info), msg) => format!("{info}: {msg}"),
         (None, "") => "Codex error".to_string(),
@@ -1025,9 +1020,11 @@ fn emit_thread_item(
             sink,
             include_result,
             "Edit",
-            json!({
-                "changes": item.get("changes").cloned().unwrap_or(Value::Null),
-            }),
+            if include_result {
+                file_change_input(item)
+            } else {
+                json!({ "changes": item.get("changes") })
+            },
             file_change_result(item),
         ),
         Some("mcpToolCall") => {
@@ -1051,16 +1048,15 @@ fn emit_thread_item(
             );
         }
         Some("webSearch") => {
-            let query = map_str(item, "query")
-                .or_else(|| item.get("action").and_then(|a| json_str(a, "query")))
-                .unwrap_or("");
+            let patterns = web_search_patterns(item);
+            let query = patterns.first().copied().unwrap_or("");
             emit_named_tool(
                 item,
                 emitted_tools,
                 sink,
                 include_result,
                 "web_search",
-                json!({ "query": query }),
+                json!({ "query": query, "queries": patterns }),
                 web_search_result(item),
             );
         }
@@ -1235,6 +1231,108 @@ fn image_generation_result(item: &serde_json::Map<String, Value>) -> String {
         .to_string()
 }
 
+fn file_change_input(item: &serde_json::Map<String, Value>) -> Value {
+    let mut files = Vec::new();
+    let (mut additions, mut removals) = (0, 0);
+    for change in item
+        .get("changes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(path) = json_str(change, "path") else {
+            continue;
+        };
+        let dest = change
+            .pointer("/kind/move_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .unwrap_or(path);
+        let operation = match change
+            .pointer("/kind/type")
+            .and_then(Value::as_str)
+            .or_else(|| json_str(change, "kind"))
+        {
+            Some("add") => "create",
+            Some("delete") => "delete",
+            _ => "edit",
+        };
+        let diff = file_change_diff(
+            path,
+            dest,
+            operation,
+            change.get("diff").and_then(Value::as_str).unwrap_or(""),
+        );
+        let diff = diff.trim_end_matches('\n');
+        let (added, removed) = diff
+            .lines()
+            .skip_while(|line| !line.starts_with("@@ "))
+            .fold((0, 0), |(added, removed), line| {
+                (
+                    added + usize::from(line.starts_with('+')),
+                    removed + usize::from(line.starts_with('-')),
+                )
+            });
+        additions += added;
+        removals += removed;
+        files.push(json!({
+            "path": dest, "operation": operation, "diff": diff,
+            "additions": added, "removals": removed,
+        }));
+    }
+    json!({
+        "ok": !item_failed(item), "path": files.first().and_then(|file| json_str(file, "path")),
+        "files": files, "additions": additions, "removals": removals,
+    })
+}
+
+fn file_change_diff(old_path: &str, new_path: &str, operation: &str, diff: &str) -> String {
+    let diff = match diff.rsplit_once("\n\nMoved to: ") {
+        Some((patch, destination)) if old_path != new_path && destination == new_path => patch,
+        _ => diff,
+    };
+    if operation == "edit" && diff.starts_with("diff --git ") {
+        return diff.to_string();
+    }
+    let old = json!(format!("a/{old_path}"));
+    let new = json!(format!("b/{new_path}"));
+    let header = format!("diff --git {old} {new}\n");
+    if operation == "edit" && diff.starts_with("--- ") {
+        return format!("{header}{diff}");
+    }
+    let missing = "/dev/null";
+    let (old, new) = (old.to_string(), new.to_string());
+    let (before, after) = match operation {
+        "create" => (missing, new.as_str()),
+        "delete" => (old.as_str(), missing),
+        _ => (old.as_str(), new.as_str()),
+    };
+    let mut patch = format!("{header}--- {before}\n+++ {after}\n");
+    if operation == "edit" || diff.is_empty() {
+        patch.push_str(diff);
+        return patch;
+    }
+    // Codex sends the raw contents of added and deleted files as the diff.
+    let lines = diff.split_terminator('\n');
+    let count = lines.clone().count();
+    let sign = if operation == "create" {
+        patch.push_str(&format!("@@ -0,0 +1,{count} @@\n"));
+        '+'
+    } else {
+        patch.push_str(&format!("@@ -1,{count} +0,0 @@\n"));
+        '-'
+    };
+    for line in lines {
+        patch.push(sign);
+        patch.push_str(line);
+        patch.push('\n');
+    }
+    if !diff.ends_with('\n') {
+        patch.push_str("\\ No newline at end of file\n");
+    }
+    patch
+}
+
 fn file_change_result(item: &serde_json::Map<String, Value>) -> String {
     let paths: Vec<String> = item
         .get("changes")
@@ -1272,6 +1370,11 @@ fn emit_named_tool(
         sink(UnifiedAgentEvent::ToolUse {
             id: id.clone(),
             name: name.to_string(),
+            input,
+        });
+    } else if include_result && matches!(map_str(item, "type"), Some("fileChange" | "webSearch")) {
+        sink(UnifiedAgentEvent::ToolInputUpdated {
+            tool_use_id: id.clone(),
             input,
         });
     }
@@ -2321,7 +2424,12 @@ impl CodexAppServerSession {
 
             let line = match timeout(Duration::from_millis(200), self.reader.next_line()).await {
                 Ok(Ok(Some(l))) => l,
-                Ok(Ok(None)) => return Err("codex app-server exited mid-turn".to_string()),
+                Ok(Ok(None)) => {
+                    return Err(turn_state
+                        .terminal_error
+                        .take()
+                        .unwrap_or_else(|| "codex app-server exited mid-turn".to_string()))
+                }
                 Ok(Err(e)) => return Err(e.to_string()),
                 Err(_) => continue,
             };
@@ -5031,14 +5139,19 @@ mod tests {
     }
 
     #[test]
-    fn web_search_null_results_use_query_not_literal_null() {
+    fn web_search_preserves_distinct_patterns_when_results_are_missing() {
+        let action = json!({
+            "type": "search",
+            "query": "openai status",
+            "queries": ["openai status", " incidents this week ", "openai status", " "]
+        });
         let started = json!({
             "item": {
                 "type": "webSearch",
                 "id": "ws-1",
                 "query": "openai status",
-                "results": null,
-                "status": "inProgress"
+                "action": null,
+                "results": null
             }
         });
         let completed = json!({
@@ -5046,9 +5159,8 @@ mod tests {
                 "type": "webSearch",
                 "id": "ws-1",
                 "query": "openai status",
-                "action": { "type": "search", "query": "openai status" },
-                "results": null,
-                "status": "completed"
+                "action": action,
+                "results": null
             }
         });
         let mut events = Vec::new();
@@ -5067,20 +5179,22 @@ mod tests {
             &mut Default::default(),
             &mut |e| events.push(e),
         );
-        assert!(matches!(
-            events.first(),
-            Some(UnifiedAgentEvent::ToolUse { id, name, .. })
-                if id == "ws-1" && name == "web_search"
-        ));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            UnifiedAgentEvent::ToolResult { tool_use_id, content, is_error }
-                if tool_use_id == "ws-1" && content == "openai status" && !*is_error
-        )));
-        assert!(!events.iter().any(|event| matches!(
-            event,
-            UnifiedAgentEvent::ToolResult { content, .. } if content == "null"
-        )));
+        let records: Vec<_> = events
+            .iter()
+            .map(|event| serde_json::to_value(event).unwrap())
+            .collect();
+        assert_eq!(records.len(), 3, "{records:?}");
+        assert_eq!(records[0]["type"], "tool_use");
+        assert_eq!(records[0]["name"], "web_search");
+        assert_eq!(records[0]["input"]["queries"], json!(["openai status"]));
+        assert_eq!(records[1]["type"], "tool_input_updated");
+        assert_eq!(records[1]["tool_use_id"], "ws-1");
+        assert_eq!(
+            records[1]["input"]["queries"],
+            json!(["openai status", "incidents this week"])
+        );
+        assert_eq!(records[2]["content"], "");
+        assert_eq!(records[2]["is_error"], false);
     }
 
     #[test]
@@ -5366,6 +5480,55 @@ mod tests {
     }
 
     #[test]
+    fn native_retry_flag_controls_progress_and_terminal_error() {
+        let frames = [
+            (
+                "error",
+                json!({
+                    "error":{"message":"Reconnecting... 1/5","codexErrorInfo":"usageLimitExceeded"},
+                    "willRetry":true
+                }),
+            ),
+            (
+                "error",
+                json!({
+                    "error":{"message":"API rejected the request","additionalDetails":"Invalid encrypted history","codexErrorInfo":"badRequest"},
+                    "willRetry":false
+                }),
+            ),
+            (
+                "turn/completed",
+                json!({"turn":{"id":"turn-1","status":"failed","error":null}}),
+            ),
+        ];
+        let mut events = Vec::new();
+        let mut tools = HashSet::new();
+        let mut state = CodexTurnState::default();
+        let actual: Vec<_> = frames
+            .iter()
+            .map(|(method, params)| {
+                map_codex_notification(method, params, &mut tools, &mut state, &mut |event| {
+                    events.push(event)
+                })
+            })
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                CodexMapResult::Continue,
+                CodexMapResult::Continue,
+                CodexMapResult::TurnFailed(
+                    "badRequest: API rejected the request (Invalid encrypted history)".into()
+                )
+            ],
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [UnifiedAgentEvent::StatusNote { text }] if text == "reconnect 1/5"
+        ));
+    }
+
+    #[test]
     fn parse_reconnect_progress_reads_attempt_and_max() {
         assert_eq!(
             parse_reconnect_progress("Reconnecting... 7/50"),
@@ -5392,6 +5555,7 @@ mod tests {
             UnifiedAgentEvent::InteractionResolved { .. } => "InteractionResolved",
             UnifiedAgentEvent::ThinkingDelta { .. } => "ThinkingDelta",
             UnifiedAgentEvent::ToolUse { .. } => "ToolUse",
+            UnifiedAgentEvent::ToolInputUpdated { .. } => "ToolInputUpdated",
             UnifiedAgentEvent::ToolPartialOutput { .. } => "ToolPartialOutput",
             UnifiedAgentEvent::ToolResult { .. } => "ToolResult",
             UnifiedAgentEvent::Usage { .. } => "Usage",
@@ -6239,13 +6403,18 @@ mod tests {
     }
 
     #[test]
-    fn file_change_emits_edit_tool() {
+    fn file_change_projects_every_file_into_the_edit_card() {
+        let changes = json!([
+            { "path": "src/original.rs", "kind": {"type":"update","move_path":"src/moved.rs"}, "diff": "@@ -1 +1 @@\n-old\n+new\n\n\nMoved to: src/moved.rs" },
+            { "path": "src/added.rs", "kind": {"type":"add"}, "diff": "first\nsecond\n" },
+            { "path": "src/deleted.rs", "kind": {"type":"delete"}, "diff": "gone" }
+        ]);
         let started = json!({
             "item": {
                 "type": "fileChange",
                 "id": "fc-1",
                 "status": "inProgress",
-                "changes": [{ "path": "src/main.rs", "kind": "update", "diff": "@@" }]
+                "changes": []
             }
         });
         let completed = json!({
@@ -6253,7 +6422,7 @@ mod tests {
                 "type": "fileChange",
                 "id": "fc-1",
                 "status": "completed",
-                "changes": [{ "path": "src/main.rs", "kind": "update", "diff": "@@" }]
+                "changes": changes
             }
         });
         let mut events = Vec::new();
@@ -6272,10 +6441,39 @@ mod tests {
             &mut Default::default(),
             &mut |e| events.push(e),
         );
-        assert!(matches!(
-            events.first(),
-            Some(UnifiedAgentEvent::ToolUse { id, name, .. }) if id == "fc-1" && name == "Edit"
-        ));
+        let Some(UnifiedAgentEvent::ToolUse { id, name, input }) = events.first() else {
+            panic!("missing Edit tool");
+        };
+        assert_eq!((id.as_str(), name.as_str()), ("fc-1", "Edit"));
+        assert_eq!(input["changes"], json!([]));
+        let update = serde_json::to_value(&events[1]).unwrap();
+        assert_eq!(update["type"], "tool_input_updated");
+        assert_eq!(update["tool_use_id"], "fc-1");
+        let files = update["input"]["files"]
+            .as_array()
+            .expect("Edit card files");
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0]["path"], "src/moved.rs");
+        assert!(files[0]["diff"]
+            .as_str()
+            .unwrap()
+            .contains("a/src/original.rs"));
+        assert!(files[0]["diff"]
+            .as_str()
+            .unwrap()
+            .contains("b/src/moved.rs"));
+        assert!(files[0]["diff"].as_str().unwrap().ends_with("\n+new"));
+        assert!(files[1]["diff"]
+            .as_str()
+            .unwrap()
+            .ends_with("@@ -0,0 +1,2 @@\n+first\n+second"));
+        assert!(files[2]["diff"]
+            .as_str()
+            .unwrap()
+            .contains("@@ -1,1 +0,0 @@\n-gone\n\\ No newline at end of file"));
+        assert!(files
+            .iter()
+            .all(|file| file["diff"].as_str().unwrap().starts_with("diff --git ")));
         assert!(events.iter().any(|event| matches!(
             event,
             UnifiedAgentEvent::ToolResult { tool_use_id, is_error, .. }

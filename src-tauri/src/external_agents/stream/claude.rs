@@ -41,18 +41,19 @@ fn claude_usage_parts(usage: &Value) -> CliUsageParts {
 /// `request_input` 由本车道最近一次 `message_start` 落下（见 `LaneState::request_input`），
 /// 因此这里天然是「当前这次请求」的输入侧，不会累加到上一轮/上一条消息的数上（spec 第 3 条）。
 ///
-/// 输入侧字段若在 `message_delta` 里给了非零值（未来版本可能补全），以它为准——它是更新的快照。
+/// `message_delta` 里的非零输入字段更新当前快照。兼容代理也可能只报输入，
+/// 此时沿用当前请求已知的输出用量。
 fn message_delta_usage(
     request_input: Option<&CliUsageParts>,
     delta_usage: &Value,
 ) -> Option<CliUsageParts> {
-    let field = |key: &str| delta_usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-    let newer = |incoming: u64, base: u64| if incoming > 0 { incoming } else { base };
+    let field = |key: &str| delta_usage.get(key).and_then(Value::as_u64);
+    let newer_input = |key, base| field(key).filter(|count| *count > 0).unwrap_or(base);
     let mut parts = request_input.cloned().unwrap_or_default();
-    parts.input = newer(field("input_tokens"), parts.input);
-    parts.cache_read = newer(field("cache_read_input_tokens"), parts.cache_read);
-    parts.cache_creation = newer(field("cache_creation_input_tokens"), parts.cache_creation);
-    parts.output = field("output_tokens");
+    parts.input = newer_input("input_tokens", parts.input);
+    parts.cache_read = newer_input("cache_read_input_tokens", parts.cache_read);
+    parts.cache_creation = newer_input("cache_creation_input_tokens", parts.cache_creation);
+    parts.output = field("output_tokens").unwrap_or(parts.output);
     // 口径固定为 Anthropic 家族（cache 与 input 不相交）——与 `claude_usage_parts` 一致。
     parts.cache_included_in_input = false;
     (!usage_parts_all_zero(&parts)).then_some(parts)
@@ -2369,17 +2370,17 @@ mod tests {
 
     // ---- 输出侧的实时通道（`message_delta.usage`）----
 
-    /// claude 边生成边报输出量，而 `message_delta.usage` **只带 output**。
-    /// 必须与本次请求的输入侧快照相加；直接把它当完整快照上报会把输入侧（含 cache）冲掉。
+    /// 部分用量更新必须保留当前请求已知的输入、缓存和输出。
     #[test]
-    fn message_delta_output_is_added_to_the_request_input_snapshot() {
+    fn message_delta_merges_partial_usage_into_the_current_request() {
         let events = run(&[
             r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m-1","usage":{"input_tokens":1200,"cache_read_input_tokens":45000,"cache_creation_input_tokens":300,"output_tokens":0}}}}"#,
             r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":null},"usage":{"output_tokens":128}}}"#,
-            r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":640}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":null},"usage":{"output_tokens":640}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":1300}}}"#,
         ]);
         let reported = usages(&events);
-        assert_eq!(reported.len(), 3, "message_start 一条 + 两条 message_delta");
+        assert_eq!(reported.len(), 4);
         // 输入侧：1200 + 45000 + 300 = 46500（cache 计入，spec 第 14 条）。
         assert_eq!(reported[0].total_tokens, Some(46_500));
         // 输出侧接上去：46500 + 128 / 46500 + 640，且输入侧一个 token 都没丢。
@@ -2390,6 +2391,8 @@ mod tests {
         assert_eq!(reported[2].output_tokens, Some(640));
         // 单调不减：这正是用户在长轮次里看到的「数字跟着涨」。
         assert!(reported[2].total_tokens > reported[1].total_tokens);
+        assert_eq!(reported[3].output_tokens, Some(640));
+        assert_eq!(reported[3].context_tokens, Some(47_240));
     }
 
     #[test]

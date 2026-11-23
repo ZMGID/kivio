@@ -5521,6 +5521,7 @@ mod tests {
             UnifiedAgentEvent::InteractionResolved { .. } => "InteractionResolved",
             UnifiedAgentEvent::ThinkingDelta { .. } => "ThinkingDelta",
             UnifiedAgentEvent::ToolUse { .. } => "ToolUse",
+            UnifiedAgentEvent::ToolInputUpdated { .. } => "ToolInputUpdated",
             UnifiedAgentEvent::ToolResult { .. } => "ToolResult",
             UnifiedAgentEvent::ToolPartialOutput { .. } => "ToolPartialOutput",
             UnifiedAgentEvent::Usage { .. } => "Usage",

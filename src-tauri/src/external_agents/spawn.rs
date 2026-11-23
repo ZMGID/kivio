@@ -271,6 +271,16 @@ const PARENT_SESSION_ENV_VARS: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_HOST_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_DESKTOP_APP_VERSION",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
     "CLAUDE_AGENT_SDK_VERSION",
     "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
     "CLAUDE_CODE_HOST_AUTH_ENV_VAR",
@@ -1076,17 +1086,30 @@ mod tests {
     /// 而不是 `Command` 的内部状态——后者测了等于没测。
     #[tokio::test]
     async fn cli_command_strips_parent_session_env_from_the_child() {
-        // 先在本进程设上，模拟「Kivio 被 Claude Code 拉起」。
-        std::env::set_var("CLAUDECODE", "1");
-        std::env::set_var("CLAUDE_CODE_ENTRYPOINT", "cli");
-        std::env::set_var("CLAUDE_AGENT_SDK_VERSION", "0.0.0");
-        // 宿主代管凭据标记：真机验收时正是这两个让 claude 报 "Not logged in"。
-        std::env::set_var("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "1");
-        std::env::set_var("CLAUDE_CODE_HOST_AUTH_ENV_VAR", "ANTHROPIC_AUTH_TOKEN");
-        // 对照组：这两个**不该**被剥——前者是用户配置的凭据、后者是自定义端点，
-        // 剥了子进程就真的没法认证了。剥得过头与剥得不够同样是 bug。
-        std::env::set_var("KIVIO_SPAWN_TEST_KEEP", "keep-me");
-        std::env::set_var("ANTHROPIC_AUTH_TOKEN", "sk-test-token");
+        // Seed only an isolated test process so concurrent tests keep their real CLI environment.
+        const FIXTURE_MARKER: &str = "KIVIO_TEST_PARENT_CLAUDE_SESSION";
+        if std::env::var_os(FIXTURE_MARKER).is_none() {
+            let test_thread = std::thread::current();
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test_thread.name().expect("named test thread")])
+                .env(FIXTURE_MARKER, "1")
+                .env("CLAUDECODE", "1")
+                .env("CLAUDE_CODE_ENTRYPOINT", "cli")
+                .env("CLAUDE_AGENT_SDK_VERSION", "0.0.0")
+                .env("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "1")
+                .env("CLAUDE_CODE_HOST_AUTH_ENV_VAR", "ANTHROPIC_AUTH_TOKEN")
+                .env("CLAUDE_CODE_SESSION_ID", "parent")
+                .env("CLAUDE_CODE_MESSAGING_SOCKET", "parent-socket")
+                .env("CLAUDE_CODE_MESSAGING_TOKEN", "parent-token")
+                .env("CLAUDE_EFFORT", "high")
+                .env("CLAUDE_CODE_EFFORT_LEVEL", "medium")
+                .env("ANTHROPIC_AUTH_TOKEN", "test-credential")
+                .status()
+                .await
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
 
         let out = if cfg!(windows) {
             let mut cmd = cli_command("cmd.exe");
@@ -1121,7 +1144,7 @@ mod tests {
             "CLAUDE_CODE_HOST_AUTH_ENV_VAR 泄漏 → claude 会报 Not logged in"
         );
         assert!(
-            has("KIVIO_SPAWN_TEST_KEEP"),
+            has("CLAUDE_CODE_EFFORT_LEVEL"),
             "剥得过头了：非会话身份的变量也被清掉，子进程会丢失凭据/用户配置"
         );
         assert!(
@@ -1129,13 +1152,14 @@ mod tests {
             "ANTHROPIC_AUTH_TOKEN 被误剥——那是用户配置的凭据，子进程要用它认证"
         );
 
-        std::env::remove_var("CLAUDECODE");
-        std::env::remove_var("CLAUDE_CODE_ENTRYPOINT");
-        std::env::remove_var("CLAUDE_AGENT_SDK_VERSION");
-        std::env::remove_var("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST");
-        std::env::remove_var("CLAUDE_CODE_HOST_AUTH_ENV_VAR");
-        std::env::remove_var("KIVIO_SPAWN_TEST_KEEP");
-        std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
+        for key in [
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "CLAUDE_EFFORT",
+        ] {
+            assert!(!has(key), "{key} leaked from the parent session");
+        }
     }
 
     #[cfg(unix)]
