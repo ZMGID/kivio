@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::super::{overrides::LaunchIdentity, types::RuntimeAgentDef};
-use super::{PersistedQuota, ProbeReading};
+use super::{CodexResetTarget, PersistedQuota, ProbeReading};
 
 const AUTOMATIC_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const CAPACITY: usize = 64;
@@ -121,6 +121,7 @@ type SlotKey = (LaunchIdentity, PathBuf);
 #[derive(Default)]
 pub(crate) struct AccountSnapshots {
     slots: Mutex<HashMap<SlotKey, (Instant, Arc<Slot>)>>,
+    pub(super) pending_codex_resets: tokio::sync::Mutex<HashMap<CodexResetTarget, uuid::Uuid>>,
 }
 
 impl AccountSnapshots {

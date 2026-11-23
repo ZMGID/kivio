@@ -750,3 +750,40 @@ pub async fn chat_external_cli_account(
     }
     Ok(snapshot)
 }
+
+#[derive(serde::Serialize)]
+pub struct CodexResetResult {
+    outcome: super::account::CodexResetOutcome,
+    refreshed: bool,
+}
+
+#[tauri::command]
+pub(crate) async fn chat_external_cli_redeem_codex_reset_credit(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    target: super::account::CodexResetTarget,
+    available_count: u64,
+) -> Result<CodexResetResult, String> {
+    let def = get_agent_def("codex").ok_or("Codex CLI 不可用")?;
+    let probe = def.account.ok_or("Codex CLI 未提供额度查询")?;
+    let cwd = resolve_detection_cwd(&app, None)?;
+    let bin = super::spawn::resolve_binary(def)
+        .await
+        .ok_or("Codex CLI 未安装或不在 PATH")?;
+    let outcome = state
+        .external_accounts
+        .redeem_codex_reset_credit(def, probe, &bin, &cwd, target, available_count)
+        .await?;
+    let refreshed = chat_external_cli_account(
+        app,
+        state,
+        def.id.into(),
+        None,
+        Some(super::account::AccountSnapshotMode::Refresh),
+    )
+    .await
+    .ok()
+    .flatten()
+    .is_some_and(|value| value["refreshError"].is_null() && value["unavailable"].is_null());
+    Ok(CodexResetResult { outcome, refreshed })
+}

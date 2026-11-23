@@ -1,4 +1,7 @@
-//! Read-only native account/usage discovery. Never starts a conversation or returns credentials.
+//! Native account discovery and explicit Codex usage resets. Never starts a conversation or returns credentials.
+#[cfg(unix)]
+mod antigravity_status;
+mod grok_identity;
 mod persisted;
 mod snapshot;
 pub(super) use persisted::PersistedQuota;
@@ -14,11 +17,63 @@ use crate::{
     },
     proc::NoConsoleWindow,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
+use uuid::Uuid;
+
+type AccountOutput = tokio::io::Lines<BufReader<super::diagnostics::AgentStdout>>;
+
+#[derive(Clone, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CodexResetTarget {
+    account_key: String,
+    credit_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexResetCredits {
+    available_count: u64,
+    next_expires_at: Option<i64>,
+    account_key: Option<String>,
+    cards: Vec<CodexResetCard>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexResetCard {
+    id: String,
+    title: Option<String>,
+    description: Option<String>,
+    reset_type: Option<String>,
+    granted_at: Option<i64>,
+    expires_at: Option<i64>,
+    status: CodexResetCardStatus,
+}
+
+#[derive(Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+enum CodexResetCardStatus {
+    Available,
+    Redeeming,
+    Redeemed,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CodexResetOutcome {
+    Reset,
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+}
 
 pub(super) struct ProbeReading {
     snapshot: Value,
@@ -53,7 +108,7 @@ fn reading(
 
 async fn exchange(
     input: &mut super::diagnostics::AgentStdin,
-    output: &mut tokio::io::Lines<BufReader<super::diagnostics::AgentStdout>>,
+    output: &mut AccountOutput,
     request: Value,
     claude: bool,
 ) -> Result<Value, String> {
@@ -78,6 +133,14 @@ async fn exchange(
         }
         if !claude && frame.get("method").is_none() && frame.get("id") == Some(id) {
             if frame.get("error").is_some() {
+                if request["method"] == "account/rateLimitResetCredit/consume" {
+                    return Err(if frame["error"]["code"] == -32601 {
+                        "当前 Codex CLI 不支持使用额度重置卡"
+                    } else {
+                        "Codex 未能确认额度重置结果"
+                    }
+                    .into());
+                }
                 return Err("CLI 暂未提供账号或额度信息".into());
             }
             return Ok(frame["result"].clone());
@@ -113,19 +176,32 @@ pub(super) async fn probe(
 ) -> Result<ProbeReading, String> {
     let protocol = probe.protocol;
     match protocol {
-        AccountProtocol::AntigravityUsage | AccountProtocol::KimiWeb => {
+        AccountProtocol::KimiWeb => {
             let mut command = agent_probe_command(def, bin);
             command.args(probe.args).current_dir(cwd);
-            let usage = if protocol == AccountProtocol::AntigravityUsage {
-                antigravity_usage(command).await
-            } else {
-                kimi_usage(command).await
-            };
-            let (usage, unavailable) = match usage {
+            kimi_account(command, def.id).await
+        }
+        AccountProtocol::AntigravityUsage => {
+            let mut command = agent_probe_command(def, bin);
+            command.args(probe.args).current_dir(cwd);
+            let (usage, unavailable) = match antigravity_usage(command).await {
                 Ok(usage) => (usage, None),
                 Err(error) => (Value::Null, Some(error)),
             };
-            Ok(reading(def.id, protocol, &Value::Null, &usage, unavailable))
+            #[cfg(unix)]
+            let account =
+                if antigravity_quota_groups(&usage).is_some_and(|groups| !groups.is_empty()) {
+                    let mut identity_command = agent_probe_command(def, bin);
+                    identity_command.current_dir(cwd);
+                    antigravity_status::identity(identity_command)
+                        .await
+                        .unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
+            #[cfg(not(unix))]
+            let account = Value::Null;
+            Ok(reading(def.id, protocol, &account, &usage, unavailable))
         }
         AccountProtocol::ClaudeControl
         | AccountProtocol::CodexAppServer
@@ -144,7 +220,53 @@ async fn antigravity_usage(mut command: Command) -> Result<Value, String> {
     serde_json::from_slice(&output.stdout).map_err(|_| "Antigravity 未返回结构化额度报告".into())
 }
 
-async fn kimi_usage(mut command: Command) -> Result<Value, String> {
+fn antigravity_quota_groups(usage: &Value) -> Option<&[Value]> {
+    let command = &usage["command"];
+    if usage["status"] != "SUCCESS" || usage["num_turns"] != 0 || command["name"] != "usage" {
+        return None;
+    }
+    command["data"]["groups"].as_array().map(Vec::as_slice)
+}
+
+fn account_plan<'a>(
+    protocol: AccountProtocol,
+    account: &'a Value,
+    usage: &'a Value,
+) -> Option<&'a str> {
+    let saved = account["planType"]
+        .as_str()
+        .or_else(|| account["subscriptionType"].as_str());
+    if protocol == AccountProtocol::GrokBilling {
+        return usage["subscription_tier"].as_str().or(saved);
+    }
+    if protocol == AccountProtocol::ClaudeControl {
+        return saved.or_else(|| usage["subscription_type"].as_str());
+    }
+    if protocol != AccountProtocol::CodexAppServer || account["type"] != "chatgpt" {
+        return saved;
+    }
+    let reported = [
+        &usage["rateLimitsByLimitId"]["codex"]["planType"],
+        &usage["rateLimits"]["planType"],
+    ]
+    .into_iter()
+    .find_map(|value| {
+        value
+            .as_str()
+            .filter(|plan| !plan.is_empty() && *plan != "unknown")
+    });
+    match reported.or(saved)? {
+        "pro" => Some("Pro 20×"),
+        "prolite" => Some("Pro 100"),
+        "promax" => Some("Pro 500"),
+        "plus" => Some("Plus"),
+        "free" => Some("Free"),
+        "go" => Some("Go"),
+        plan => Some(plan),
+    }
+}
+
+async fn kimi_account(mut command: Command, agent: &str) -> Result<ProbeReading, String> {
     // The CLI owns OAuth and token refresh. This client only talks to the
     // loopback server started for this probe, including on Kimi Code 2.6.2.
     let client = reqwest::Client::builder()
@@ -167,18 +289,18 @@ async fn kimi_usage(mut command: Command) -> Result<Value, String> {
     .await
     .map_err(|_| "Kimi Code 本地额度服务启动超时")??;
     let api = format!("http://127.0.0.1:{port}/api/v1");
-    let usage = async {
-        let response = client
-            .get(format!("{api}/oauth/usage"))
+    let get = |endpoint: &str| {
+        client
+            .get(format!("{api}/oauth/{endpoint}"))
             .bearer_auth(&token)
             .timeout(Duration::from_secs(8))
-            .send()
-            .await?
-            .error_for_status()?;
-        response.json::<Value>().await
-    }
-    .await
-    .map_err(|_| "Kimi Code 额度接口暂不可用".into());
+    };
+    let (usage, unavailable) = match kimi_web_get(get("usage")).await {
+        Ok(usage) => (usage, None),
+        Err(_) => (Value::Null, Some("Kimi Code 额度接口暂不可用".into())),
+    };
+    let profile = kimi_web_get(get("userinfo")).await.unwrap_or(Value::Null);
+    let account = kimi_identity(&profile);
 
     // Let the CLI close its own Web server and unregister it. AgentChild
     // terminates the process tree if an older or unresponsive CLI stays alive.
@@ -189,7 +311,35 @@ async fn kimi_usage(mut command: Command) -> Result<Value, String> {
         .send()
         .await;
     let _ = timeout(Duration::from_secs(2), child.wait()).await;
-    usage
+    Ok(reading(
+        agent,
+        AccountProtocol::KimiWeb,
+        &account,
+        &usage,
+        unavailable,
+    ))
+}
+
+async fn kimi_web_get(request: reqwest::RequestBuilder) -> Result<Value, reqwest::Error> {
+    request.send().await?.error_for_status()?.json().await
+}
+
+fn display_text(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn kimi_identity(profile: &Value) -> Value {
+    let data = &profile["data"];
+    if profile["code"] != 0 || data["kind"] != "ok" {
+        return Value::Null;
+    }
+    let user = &data["userInfo"];
+    let name = display_text(&user["username"]).or_else(|| display_text(&user["nickname"]));
+    json!({"type":"kimiCode","email":display_text(&user["email"]),"name":name,
+        "planType":display_text(&user["userLevelName"])})
 }
 
 fn kimi_web_ready(line: &str) -> Option<(u16, String)> {
@@ -206,18 +356,19 @@ fn kimi_web_ready(line: &str) -> Option<(u16, String)> {
     Some((port, token.to_owned()))
 }
 
-async fn probe_stdio(
+async fn with_account_stdio<T, F>(
     def: &RuntimeAgentDef,
     probe: AccountProbe,
     bin: &Path,
     cwd: &Path,
-) -> Result<ProbeReading, String> {
-    let protocol = probe.protocol;
-    let claude = protocol == AccountProtocol::ClaudeControl;
-    let grok = protocol == AccountProtocol::GrokBilling;
+    run: impl FnOnce(super::diagnostics::AgentStdin, AccountOutput) -> F,
+) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, String>>,
+{
     let mut command = agent_cli_command(def, bin);
     command.args(probe.args);
-    if claude {
+    if probe.protocol == AccountProtocol::ClaudeControl {
         command.args(super::provider_profile::claude_overlay_args());
     }
     let mut child = AgentChild::spawn(
@@ -232,23 +383,68 @@ async fn probe_stdio(
     .map_err(|e| e.to_string())?;
     let tail = spawn_stderr_tail(child.stderr.take());
     let result = tokio::time::timeout(Duration::from_secs(25), async {
-        let mut input = child.stdin.take().ok_or("CLI stdin unavailable")?;
-        let mut output = BufReader::new(child.stdout.take().ok_or("CLI stdout unavailable")?).lines();
+        let input = child.stdin.take().ok_or("CLI stdin unavailable")?;
+        let output = BufReader::new(child.stdout.take().ok_or("CLI stdout unavailable")?).lines();
+        run(input, output).await
+    })
+    .await
+    .unwrap_or_else(|_| Err("CLI 账号操作超时".into()));
+    let _ = join_stderr_tail(&mut child, tail).await;
+    let _ = child.wait().await;
+    result
+}
+
+async fn initialize_codex_account(
+    input: &mut super::diagnostics::AgentStdin,
+    output: &mut AccountOutput,
+) -> Result<Value, String> {
+    exchange(input, output, json!({
+        "id":1,"method":"initialize","params":{"clientInfo":{"name":"kivio","version":env!("CARGO_PKG_VERSION")}}
+    }), false).await?;
+    input
+        .write_all(b"{\"method\":\"initialized\",\"params\":{}}\n")
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(exchange(
+        input,
+        output,
+        json!({
+            "id":2,"method":"account/read","params":{"refreshToken":false}
+        }),
+        false,
+    )
+    .await?["account"]
+        .take())
+}
+
+fn codex_rate_limits_request() -> Value {
+    json!({"id":3,"method":"account/rateLimits/read","params":{}})
+}
+
+async fn probe_stdio(
+    def: &RuntimeAgentDef,
+    probe: AccountProbe,
+    bin: &Path,
+    cwd: &Path,
+) -> Result<ProbeReading, String> {
+    let protocol = probe.protocol;
+    let claude = protocol == AccountProtocol::ClaudeControl;
+    let grok = protocol == AccountProtocol::GrokBilling;
+    with_account_stdio(def, probe, bin, cwd, |mut input, mut output| async move {
+        let account = if protocol == AccountProtocol::CodexAppServer {
+            initialize_codex_account(&mut input, &mut output).await?
+        } else {
         let init = if claude {
             json!({"type":"control_request","request_id":"account-init","request":{"subtype":"initialize"}})
-        } else if grok {
-            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}})
         } else {
-            json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"kivio","version":env!("CARGO_PKG_VERSION")}}})
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}})
         };
         let init = exchange(&mut input, &mut output, init, claude).await?;
-        let account = if claude { init["account"].clone() } else if grok { Value::Null } else {
-            input.write_all(b"{\"method\":\"initialized\",\"params\":{}}\n").await.map_err(|e| e.to_string())?;
-            exchange(&mut input, &mut output, json!({"id":2,"method":"account/read","params":{"refreshToken":false}}), false).await?["account"].clone()
+        if claude { init["account"].clone() } else { Value::Null }
         };
         let request = if claude {
             json!({"type":"control_request","request_id":"account-usage","request":{"subtype":"get_usage","skip_behaviors":true}})
-        } else if grok { json!({"jsonrpc":"2.0","id":2,"method":"_x.ai/billing","params":{}}) } else { json!({"id":3,"method":"account/rateLimits/read","params":{}}) };
+        } else if grok { json!({"jsonrpc":"2.0","id":2,"method":"_x.ai/billing","params":{}}) } else { codex_rate_limits_request() };
         // Optional usage has its own budget; losing it must not discard a valid identity.
         let usage = tokio::time::timeout(Duration::from_secs(8), exchange(&mut input, &mut output, request, claude)).await;
         let (usage, unavailable) = match usage {
@@ -256,11 +452,135 @@ async fn probe_stdio(
             Ok(Err(error)) => (Value::Null, Some(error)),
             Err(_) => (Value::Null, Some("额度查询超时，可稍后刷新".to_string())),
         };
+        let account = if grok {
+            let email = grok_identity::email(&agent_cli_command(def, bin), bin, cwd);
+            json!({"email":email})
+        } else {
+            account
+        };
         Ok(reading(def.id, protocol, &account, &usage, unavailable))
-    }).await.unwrap_or_else(|_| Err("账号查询超时，请确认 CLI 可正常启动".into()));
-    let _ = join_stderr_tail(&mut child, tail).await;
-    let _ = child.wait().await;
-    result
+    }).await
+}
+
+fn codex_reset_credits(account: &Value, usage: &Value) -> Option<CodexResetCredits> {
+    let summary = &usage["rateLimitResetCredits"];
+    let available_count = summary["availableCount"].as_u64()?;
+    let mut cards: Vec<CodexResetCard> = summary["credits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|credit| CodexResetCard::deserialize(credit).ok())
+        .filter(|card| !card.id.is_empty())
+        .collect();
+    cards.sort_by_key(|card| {
+        (
+            card.status != CodexResetCardStatus::Available,
+            card.expires_at.unwrap_or(i64::MAX),
+        )
+    });
+    let next_expires_at = cards
+        .iter()
+        .filter(|card| card.status == CodexResetCardStatus::Available)
+        .filter_map(|card| card.expires_at.filter(|expiry| *expiry > 0))
+        .min();
+    let account_key = match (
+        account["type"].as_str(),
+        account["email"].as_str(),
+        usage["accountId"].as_str(),
+    ) {
+        (Some("chatgpt"), Some(email), Some(account_id))
+            if !email.is_empty() && !account_id.is_empty() =>
+        {
+            let mut hash = Sha256::new();
+            hash.update(account_id.as_bytes());
+            hash.update([0]);
+            hash.update(email.to_ascii_lowercase());
+            Some(format!("{:x}", hash.finalize()))
+        }
+        _ => None,
+    };
+    Some(CodexResetCredits {
+        available_count,
+        next_expires_at,
+        account_key,
+        cards,
+    })
+}
+
+impl AccountSnapshots {
+    pub(super) async fn redeem_codex_reset_credit(
+        &self,
+        def: &RuntimeAgentDef,
+        probe: AccountProbe,
+        bin: &Path,
+        cwd: &Path,
+        expected: CodexResetTarget,
+        expected_count: u64,
+    ) -> Result<CodexResetOutcome, String> {
+        let mut pending = self
+            .pending_codex_resets
+            .try_lock()
+            .map_err(|_| "已有额度重置正在处理")?;
+        let launch = super::overrides::LaunchIdentity::capture(def, bin);
+        let _resource = super::session::live::ResourceLease::pending(def.id)?;
+        with_account_stdio(def, probe, bin, cwd, |mut input, mut output| async move {
+            let account = initialize_codex_account(&mut input, &mut output).await?;
+            let usage = timeout(
+                Duration::from_secs(8),
+                exchange(&mut input, &mut output, codex_rate_limits_request(), false),
+            )
+            .await
+            .map_err(|_| "Codex 额度查询超时")??;
+            let credits =
+                codex_reset_credits(&account, &usage).ok_or("无法读取当前 Codex 额度重置卡")?;
+            let current = credits.account_key.ok_or("无法确认当前 Codex 登录账号")?;
+            if current != expected.account_key {
+                return Err("Codex 登录账号已变更，请刷新后再试".into());
+            }
+            launch.ensure_current(def, bin)?;
+            if !pending.contains_key(&expected) {
+                if credits.available_count == 0 {
+                    return Ok(CodexResetOutcome::NoCredit);
+                }
+                let still_available = match &expected.credit_id {
+                    Some(id) => credits.cards.iter().any(|card| {
+                        card.id == *id
+                            && card.status == CodexResetCardStatus::Available
+                            && card
+                                .expires_at
+                                .is_none_or(|at| at > chrono::Utc::now().timestamp())
+                    }),
+                    None => credits.available_count == expected_count,
+                };
+                if !still_available {
+                    return Err("Codex 额度重置卡已变更，请刷新后再试".into());
+                }
+            }
+            let key = pending.entry(expected.clone()).or_insert_with(Uuid::new_v4);
+            let mut params = json!({"idempotencyKey":*key});
+            if let Some(id) = &expected.credit_id {
+                params["creditId"] = json!(id);
+            }
+            let result = timeout(
+                Duration::from_secs(12),
+                exchange(
+                    &mut input,
+                    &mut output,
+                    json!({
+                        "id":4,"method":"account/rateLimitResetCredit/consume","params":params
+                    }),
+                    false,
+                ),
+            )
+            .await
+            .map_err(|_| "Codex 未能确认额度重置结果，可重试同一次操作")??;
+            let outcome = serde_json::from_value(result["outcome"].clone())
+                .map_err(|_| "Codex 未能确认额度重置结果")?;
+            pending.remove(&expected);
+            Ok(outcome)
+        })
+        .await
+    }
 }
 
 fn grok_usage_window(usage: &Value) -> Option<(&'static str, Value)> {
@@ -303,11 +623,6 @@ fn normalize(
     usage: &Value,
     mut unavailable: Option<String>,
 ) -> Value {
-    let account = if protocol == AccountProtocol::GrokBilling {
-        json!({"planType": usage["subscription_tier"]})
-    } else {
-        account.clone()
-    };
     let mut windows = Vec::new();
     let mut credits = Value::Null;
     let mut reset_credits = Value::Null;
@@ -341,35 +656,32 @@ fn normalize(
             unavailable = Some("Kimi Code 未返回订阅额度，请确认本地 CLI 已登录".into());
         }
     } else if protocol == AccountProtocol::AntigravityUsage {
-        let command = &usage["command"];
-        if usage["status"] == "SUCCESS" && usage["num_turns"] == 0 && command["name"] == "usage" {
-            if let Some(groups) = command["data"]["groups"].as_array() {
-                for group in groups {
-                    let Some(group_name) = group["name"].as_str() else {
+        if let Some(groups) = antigravity_quota_groups(usage) {
+            for group in groups {
+                let Some(group_name) = group["name"].as_str() else {
+                    continue;
+                };
+                let Some(buckets) = group["buckets"].as_array() else {
+                    continue;
+                };
+                for bucket in buckets {
+                    let (name, duration) = match bucket["window"].as_str() {
+                        Some("5h") => (Some("5h"), Some(300)),
+                        Some("weekly") => (Some("7d"), Some(10080)),
+                        _ => (bucket["name"].as_str(), None),
+                    };
+                    let Some(name) = name else {
                         continue;
                     };
-                    let Some(buckets) = group["buckets"].as_array() else {
-                        continue;
-                    };
-                    for bucket in buckets {
-                        let (name, duration) = match bucket["window"].as_str() {
-                            Some("5h") => (Some("5h"), Some(300)),
-                            Some("weekly") => (Some("7d"), Some(10080)),
-                            _ => (bucket["name"].as_str(), None),
-                        };
-                        let Some(name) = name else {
-                            continue;
-                        };
-                        let remaining = bucket["remaining_fraction"]
-                            .as_f64()
-                            .filter(|value| (0.0..=1.0).contains(value));
-                        add_window(
-                            format!("{group_name} · {name}"),
-                            &json!({"usedPercent": remaining.map(|ratio| (1.0 - ratio) * 100.0),
+                    let remaining = bucket["remaining_fraction"]
+                        .as_f64()
+                        .filter(|value| (0.0..=1.0).contains(value));
+                    add_window(
+                        format!("{group_name} · {name}"),
+                        &json!({"usedPercent": remaining.map(|ratio| (1.0 - ratio) * 100.0),
                                     "resetsAt": bucket["reset_time"], "windowDurationMins": duration}),
-                            false,
-                        );
-                    }
+                        false,
+                    );
                 }
             }
         }
@@ -410,24 +722,15 @@ fn normalize(
         } else {
             collect("Codex", &usage["rateLimits"]);
         }
-        let summary = &usage["rateLimitResetCredits"];
-        if let Some(count) = summary["availableCount"].as_u64() {
-            let next_expiry = summary["credits"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|credit| credit["status"] == "available")
-                .filter_map(|credit| credit["expiresAt"].as_i64().filter(|expiry| *expiry > 0))
-                .min();
-            reset_credits = json!({"availableCount":count,"nextExpiresAt":next_expiry});
-        }
+        reset_credits = json!(codex_reset_credits(account, usage));
     }
     if windows.is_empty() && reset_credits.is_null() && unavailable.is_none() {
         unavailable = Some("当前账号或 CLI 未提供额度窗口".into());
     }
-    json!({"agentId":agent,"account": if account.is_object() { json!({
+    let plan = account_plan(protocol, account, usage);
+    json!({"agentId":agent,"account": if account.is_object() || plan.is_some() { json!({
         "type":account["type"].as_str().or_else(|| account["apiProvider"].as_str()),
-        "email":account["email"].as_str(),"plan":account["planType"].as_str().or_else(|| account["subscriptionType"].as_str())
+        "email":display_text(&account["email"]),"name":display_text(&account["name"]),"plan":plan
     }) } else { Value::Null }, "windows":windows,"credits":credits,"resetCredits":reset_credits,
     "unavailable":unavailable,
     "checkedAt":chrono::Utc::now().timestamp()})
@@ -531,7 +834,9 @@ mod tests {
         let status = normalize(
             "kimi",
             AccountProtocol::KimiWeb,
-            &Value::Null,
+            &kimi_identity(&json!({"code":0,"data":{"kind":"ok","userInfo":{
+                "nickname":"Test account","userLevelName":"Andante","phone":{"number":"PRIVATE_PHONE"}
+            }}})),
             &payload,
             None,
         );
@@ -541,6 +846,9 @@ mod tests {
         assert_eq!(windows[1]["usedPercent"], 100.0);
         assert_eq!(windows[1]["resetsAt"], "2026-11-28T00:00:00Z");
         assert_eq!(windows[2]["usedPercent"], 25.0);
+        assert_eq!(status["account"]["name"], "Test account");
+        assert_eq!(status["account"]["plan"], "Andante");
+        assert!(!status.to_string().contains("PRIVATE_PHONE"));
 
         let unavailable = normalize(
             "kimi",
@@ -587,13 +895,15 @@ mod tests {
         assert_eq!(status["windows"].as_array().unwrap().len(), 2);
         assert_eq!(status["windows"][0]["usedPercent"], 25.0);
         assert_eq!(status["credits"]["balance"], "42");
+        assert_eq!(status["account"]["plan"], "Pro 20×");
         assert!(!status.to_string().contains("SECRET"));
         assert!(status["unavailable"].is_null());
         let status = normalize(
             "claude",
             AccountProtocol::ClaudeControl,
-            &json!({"subscriptionType":"max"}),
+            &json!({"email":"claude@example.test"}),
             &json!({
+                "subscription_type":"max",
                 "rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":80,"resets_at":"2026-10-23T00:00:00Z"},
                     "seven_day":{"utilization":0,"resets_at":null}, "extra_usage":{"is_enabled":true,"used_credits":7,"monthly_limit":100}}
             }),
@@ -601,10 +911,12 @@ mod tests {
         );
         assert_eq!(status["windows"].as_array().unwrap().len(), 2);
         assert_eq!(status["credits"]["used"], 7.0);
+        assert_eq!(status["account"]["email"], "claude@example.test");
+        assert_eq!(status["account"]["plan"], "max");
         let grok = normalize(
             "grok",
             AccountProtocol::GrokBilling,
-            &Value::Null,
+            &json!({"email":"grok@example.test"}),
             &json!({"config":{"creditUsagePercent":12.5,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY"},
                 "billingPeriodStart":"2026-11-01T00:00:00+00:00","billingPeriodEnd":"2026-11-08T00:00:00+00:00"},
                 "subscription_tier":"SuperGrok Plus"}),
@@ -613,6 +925,7 @@ mod tests {
         assert_eq!(grok["windows"][0]["usedPercent"], 12.5);
         assert_eq!(grok["windows"][0]["windowDurationMins"], 7 * 24 * 60);
         assert_eq!(grok["account"]["plan"], "SuperGrok Plus");
+        assert_eq!(grok["account"]["email"], "grok@example.test");
         let unavailable = normalize(
             "claude",
             AccountProtocol::ClaudeControl,
@@ -622,6 +935,18 @@ mod tests {
         );
         assert!(unavailable["windows"].as_array().unwrap().is_empty());
         assert!(unavailable["unavailable"].is_string());
+    }
+
+    #[test]
+    fn codex_plan_prefers_the_current_codex_quota_over_the_login_token() {
+        let snapshot = normalize(
+            "codex",
+            AccountProtocol::CodexAppServer,
+            &json!({"type":"chatgpt","planType":"pro"}),
+            &json!({"rateLimits":{"planType":"pro"},"rateLimitsByLimitId":{"codex":{"planType":"prolite"},"review":{"planType":"promax"}}}),
+            None,
+        );
+        assert_eq!(snapshot["account"]["plan"], "Pro 100");
     }
 
     #[test]
@@ -635,9 +960,11 @@ mod tests {
                 "rateLimitResetCredits": {
                     "availableCount": 4,
                     "credits": [
-                        {"status":"consumed","expiresAt":100},
-                        {"status":"available","expiresAt":300,"id":"internal-card-id"},
-                        {"status":"available","expiresAt":200}
+                        {"status":"redeemed","expiresAt":100,"id":"used"},
+                        {"status":"available","expiresAt":300,"id":"later"},
+                        {"status":"available","expiresAt":200,"grantedAt":100,"id":"first",
+                         "title":"Weekly reset","description":"Clears eligible windows","resetType":"codexRateLimits"},
+                        {"status":"available","expiresAt":50}
                     ]
                 }
             }),
@@ -645,10 +972,85 @@ mod tests {
         );
         assert_eq!(status["windows"], json!([]));
         assert_eq!(status["credits"]["balance"], "42");
+        let summary = &status["resetCredits"];
+        assert_eq!(summary["availableCount"], 4);
+        assert_eq!(summary["nextExpiresAt"], 200);
+        assert!(summary["accountKey"].is_null());
+        assert_eq!(summary["cards"].as_array().unwrap().len(), 3);
+        assert_eq!(summary["cards"][0]["id"], "first");
+        assert_eq!(summary["cards"][0]["grantedAt"], 100);
         assert_eq!(
-            status["resetCredits"],
-            json!({"availableCount":4,"nextExpiresAt":200})
+            summary["cards"][0]["description"],
+            "Clears eligible windows"
         );
+        assert_eq!(summary["cards"][2]["status"], "redeemed");
         assert!(status["unavailable"].is_null());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_retry_reuses_the_same_credit_and_key_after_an_unconfirmed_reset() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let cwd = fixture.path();
+        let bin = cwd.join("codex-fixture");
+        fs::write(&bin, r#"#!/bin/sh
+while IFS= read -r frame; do
+  case "$frame" in
+    *'"method":"initialize"'*) echo '{"id":1,"result":{}}' ;;
+    *'"method":"account/read"'*) echo '{"id":2,"result":{"account":{"type":"chatgpt","email":"fixture@example.test"}}}' ;;
+    *'"method":"account/rateLimits/read"'*)
+      if [ -f first ]; then
+        echo '{"id":3,"result":{"accountId":"workspace","rateLimitResetCredits":{"availableCount":1,"credits":[{"status":"available","id":"first","expiresAt":4102444800}]}}}'
+      else
+        echo '{"id":3,"result":{"accountId":"workspace","rateLimitResetCredits":{"availableCount":2,"credits":[{"status":"available","id":"first","expiresAt":4102444800},{"status":"available","id":"later","expiresAt":4102444900}]}}}'
+      fi ;;
+    *'"method":"account/rateLimitResetCredit/consume"'*)
+      if [ -f first ]; then
+        printf '%s\n' "$frame" > retry
+        echo '{"id":4,"result":{"outcome":"alreadyRedeemed"}}'
+      else
+        printf '%s\n' "$frame" > first
+        echo '{"id":4,"error":{"code":-32000}}'
+      fi ;;
+  esac
+done
+"#).unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+        let def = super::super::registry::get_agent_def("codex").unwrap();
+        let probe = def.account.unwrap();
+        let snapshots = AccountSnapshots::default();
+        let expected = |card: &str| CodexResetTarget {
+            account_key: codex_reset_credits(
+                &json!({"type":"chatgpt","email":"fixture@example.test"}),
+                &json!({"accountId":"workspace","rateLimitResetCredits":{"availableCount":2}}),
+            )
+            .unwrap()
+            .account_key
+            .unwrap(),
+            credit_id: Some(card.into()),
+        };
+        let mut wrong_account = expected("first");
+        wrong_account.account_key = "different-workspace".into();
+        assert!(snapshots
+            .redeem_codex_reset_credit(def, probe, &bin, cwd, wrong_account, 2)
+            .await
+            .is_err());
+        assert!(!cwd.join("first").exists());
+        assert!(snapshots
+            .redeem_codex_reset_credit(def, probe, &bin, cwd, expected("later"), 2)
+            .await
+            .is_err());
+        let outcome = snapshots
+            .redeem_codex_reset_credit(def, probe, &bin, cwd, expected("later"), 1)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, CodexResetOutcome::AlreadyRedeemed));
+        let issued: Value = serde_json::from_slice(&fs::read(cwd.join("first")).unwrap()).unwrap();
+        let retry: Value = serde_json::from_slice(&fs::read(cwd.join("retry")).unwrap()).unwrap();
+        assert_eq!(issued["params"], retry["params"]);
+        assert_eq!(issued["params"]["creditId"], "later");
+        assert!(Uuid::parse_str(issued["params"]["idempotencyKey"].as_str().unwrap()).is_ok());
     }
 }

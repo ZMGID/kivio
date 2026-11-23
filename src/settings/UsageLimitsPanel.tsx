@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { CircleAlert, Clock, RefreshCw } from 'lucide-react'
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { CircleAlert, Clock, RefreshCw, Ticket, X } from 'lucide-react'
 import { cliCreditAmount, cliRemaining, cliResetTime, cliWindowLabel } from '../api/cliAccountFormat'
 import {
   externalCliSettingsApi,
@@ -9,12 +9,14 @@ import {
 } from '../api/externalCliSettings'
 import { refreshCliAccount, useCliAccounts } from '../api/useCliAccount'
 import { AgentIcon } from '../components/AgentIcon'
-import { Button } from '../components/Button'
+import { Button, IconButton } from '../components/Button'
 import { notifyError } from '../components/appNoticeStore'
+import { confirmDialog } from '../components/dialogQueue'
 import { i18n, type Lang } from '../components/i18n'
 import './UsageLimitsPanel.css'
 
 type QuotaWindow = ExternalCliAccount['windows'][number]
+type ResetCredits = NonNullable<ExternalCliAccount['resetCredits']>
 type AgentRoster = { agents: DetectedExternalAgent[] | null; failed: boolean }
 
 // Follow the desktop availability cache's recheck interval.
@@ -73,7 +75,13 @@ function countdown(milliseconds: number, zh: boolean) {
   ].filter(Boolean).join(' ')
 }
 
-function LimitRow({ window, now, lang, stale }: { window: QuotaWindow; now: number; lang: Lang; stale: boolean }) {
+function LimitRow({ window, now, lang, stale, children }: {
+  window: QuotaWindow
+  now: number
+  lang: Lang
+  stale: boolean
+  children?: ReactNode
+}) {
   const t = i18n[lang]
   const zh = lang === 'zh'
   const name = cliWindowLabel(window, zh)
@@ -111,10 +119,92 @@ function LimitRow({ window, now, lang, stale }: { window: QuotaWindow; now: numb
               <time dateTime={new Date(resetTime).toISOString()} title={resetDetail ?? undefined}>{resetLabel}</time>
             )}
           </span>
-          {timeLabel && <span>{timeLabel}</span>}
+          {children}
+          {timeLabel && <span className="cli-limit-pace">{timeLabel}</span>}
         </div>
       </div>
     </div>
+  )
+}
+
+function ResetCardsDialog({ credits, lang, now, stale, redeeming, result, onClose, onRedeem }: {
+  credits: ResetCredits
+  lang: Lang
+  now: number
+  stale: boolean
+  redeeming: boolean
+  result: string | null
+  onClose: () => void
+  onRedeem: (creditId: string | null) => void
+}) {
+  const t = i18n[lang]
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const titleId = useId()
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const dialog = dialogRef.current
+    dialog?.showModal()
+    return () => { dialog?.close(); if (previous?.isConnected) previous.focus() }
+  }, [])
+  const statuses = {
+    available: t.cliLimitsResetCardReady, redeeming: t.cliLimitsResetCardRedeeming,
+    redeemed: t.cliLimitsResetCardRedeemed, unknown: t.cliLimitsResetCardUnknown,
+  }
+  const cards = credits.cards ?? []
+  const availableDetails = cards.filter(card => card.status === 'available').length
+  const canUse = Boolean(credits.accountKey) && credits.availableCount > 0 && !stale && !redeeming
+  const fullTime = (timestamp: number | null) => {
+    const milliseconds = cliResetTime(timestamp)
+    if (milliseconds === null) return '—'
+    const date = new Date(milliseconds)
+    return <time dateTime={date.toISOString()}>{date.toLocaleString(lang)}</time>
+  }
+  return (
+    <dialog ref={dialogRef} className="kv kv-modal cli-reset-dialog" aria-labelledby={titleId}
+      onKeyDown={event => event.stopPropagation()}
+      onCancel={event => { event.preventDefault(); if (!redeeming) onClose() }}>
+      <header className="cli-reset-dialog-header">
+        <div>
+          <h2 id={titleId}>{t.cliLimitsResetCards}</h2>
+          <p className="cli-limits-message">{t.cliLimitsResetCardsAvailable.replace('{n}', credits.availableCount.toLocaleString(lang))}</p>
+        </div>
+        <IconButton label={lang === 'zh' ? '关闭' : 'Close'} variant="ghost" disabled={redeeming} onClick={onClose}><X size={16} aria-hidden="true" /></IconButton>
+      </header>
+      <div className="cli-reset-dialog-body custom-scrollbar" aria-busy={redeeming || undefined}>
+        {result && <p className="cli-limits-message" role="status">{result}</p>}
+        {stale && <p className="cli-limits-stale" role="status">{t.cliLimitsStale}</p>}
+        {cards.map(card => {
+          const expiresAt = cliResetTime(card.expiresAt)
+          const expired = card.status === 'available' && expiresAt !== null && expiresAt <= now
+          const title = card.title || (card.resetType === 'codexRateLimits' ? t.cliLimitsResetCardWindow : t.cliLimitsResetCards)
+          return (
+            <section key={card.id} className="cli-reset-card" aria-label={title}>
+              <div className="cli-reset-card-heading">
+                <div>
+                  <h3>{title}</h3>
+                  <span className="cli-limits-message">{expired ? t.cliLimitsResetCardExpired : statuses[card.status]}</span>
+                </div>
+                {card.status === 'available' && !expired && (
+                  <Button size="sm" disabled={!canUse} onClick={() => onRedeem(card.id)}>{t.cliLimitsUseResetCard}</Button>
+                )}
+              </div>
+              {card.description && <p>{card.description}</p>}
+              <dl>
+                <dt>{t.cliLimitsResetCardGranted}</dt><dd>{fullTime(card.grantedAt)}</dd>
+                <dt>{t.cliLimitsResetCardExpiry}</dt><dd>{fullTime(card.expiresAt)}</dd>
+              </dl>
+            </section>
+          )
+        })}
+        {credits.availableCount > availableDetails && <p className="cli-limits-message">{t.cliLimitsResetCardDetailsPartial}</p>}
+        {credits.availableCount > 0 && availableDetails === 0 && (
+          <Button size="sm" disabled={!canUse} onClick={() => onRedeem(null)}>{t.cliLimitsUseNextResetCard}</Button>
+        )}
+        {credits.availableCount === 0 && cards.length === 0 && (
+          <p className="cli-limits-message">{t.cliLimitsResetCardNoneLeft}</p>
+        )}
+      </div>
+    </dialog>
   )
 }
 
@@ -126,11 +216,70 @@ function AgentLimits({ agent, account, error, lang, now }: {
   now: number
 }) {
   const t = i18n[lang]
-  const identity = [account.account?.email, account.account?.plan].filter(Boolean).join(' · ')
+  const identity = cliAccountIdentity(account)
   const updatedAt = new Date(account.checkedAt * 1000)
   const resetCredits = account.resetCredits
   const nextExpiry = cliResetTime(resetCredits?.nextExpiresAt ?? null)
   const expiresAt = nextExpiry === null ? null : new Date(nextExpiry)
+  const [showResetCards, setShowResetCards] = useState(false)
+  const [redeeming, setRedeeming] = useState(false)
+  const [redemptionResult, setRedemptionResult] = useState<string | null>(null)
+  const redeem = async (creditId: string | null) => {
+    if (!resetCredits?.accountKey || error || redeeming) return
+    setRedeeming(true)
+    try {
+      const confirmed = await confirmDialog({
+        title: t.cliLimitsConfirmResetCard,
+        message: t.cliLimitsResetCardEffect,
+        confirmLabel: t.cliLimitsUseResetCard,
+        danger: true,
+      })
+      if (!confirmed) return
+      setRedemptionResult(null)
+      const { outcome, refreshed } = await externalCliSettingsApi.redeemCodexResetCredit(
+        { accountKey: resetCredits.accountKey, creditId }, resetCredits.availableCount,
+      )
+      const applied = outcome === 'reset' || outcome === 'alreadyRedeemed'
+      const messages = {
+        reset: t.cliLimitsResetCardUsed,
+        nothingToReset: t.cliLimitsResetCardNothingToReset,
+        noCredit: t.cliLimitsResetCardNoneLeft,
+        alreadyRedeemed: t.cliLimitsResetCardAlreadyUsed,
+      }
+      setRedemptionResult(applied && !refreshed ? t.cliLimitsResetCardRefreshFailed : messages[outcome])
+    } catch (cause) {
+      setRedemptionResult(`${t.cliLimitsResetCardFailed} ${cause instanceof Error ? cause.message : String(cause)}`)
+    } finally {
+      setRedeeming(false)
+    }
+  }
+  const availableLabel = resetCredits
+    ? t.cliLimitsResetCardsAvailable.replace('{n}', resetCredits.availableCount.toLocaleString(lang))
+    : ''
+  const resetSummary = resetCredits && (resetCredits.availableCount > 0 || !!resetCredits.cards?.length) && (
+    <>
+      <Button size="sm" variant="ghost" aria-haspopup="dialog" aria-expanded={showResetCards}
+        title={`${t.cliLimitsResetCards} · ${availableLabel}`}
+        aria-label={`${t.cliLimitsResetCards} · ${availableLabel}`}
+        onClick={() => setShowResetCards(true)}>
+        <Ticket size={14} aria-hidden="true" />
+        <span className="cli-limit-reset-count">{resetCredits.availableCount.toLocaleString(lang)}</span>
+      </Button>
+      {expiresAt && (
+        <time dateTime={expiresAt.toISOString()}>
+          {t.cliLimitsResetCardExpires.replace('{time}', expiresAt.toLocaleDateString(lang, { month: 'long', day: 'numeric' }))}
+        </time>
+      )}
+    </>
+  )
+  const credits = account.credits
+  const codexBalance = agent.id === 'codex' && credits && (
+    <span className="cli-limits-credits">
+      {t.cliLimitsCreditBalance}
+      <strong>{cliCreditAmount(credits, lang === 'zh')}</strong>
+    </span>
+  )
+  const summary = <>{resetSummary}{codexBalance}</>
   return (
     <section className="cli-limits-agent" aria-labelledby={`limits-heading-${agent.id}`}>
       <header className="cli-limits-agent-header">
@@ -146,26 +295,32 @@ function AgentLimits({ agent, account, error, lang, now }: {
         </time>
       </header>
       {error && <p className="cli-limits-stale" role="status" title={error}><CircleAlert size={14} aria-hidden="true" />{t.cliLimitsStale}</p>}
-      {account.windows.length > 0 && <div className="cli-limits-windows">
-        {account.windows.map((window, index) => <LimitRow key={`${window.name}-${index}`} window={window} now={now} lang={lang} stale={Boolean(error)} />)}
+      {(account.windows.length > 0 || resetSummary || codexBalance) && <div className="cli-limits-windows">
+        {account.windows.map((window, index) => (
+          <LimitRow key={`${window.name}-${index}`} window={window} now={now} lang={lang} stale={Boolean(error)}>
+            {index === account.windows.length - 1 && summary}
+          </LimitRow>
+        ))}
+        {account.windows.length === 0 && (
+          <div className="cli-limit-row"><div className="cli-limit-meta">{summary}</div></div>
+        )}
       </div>}
-      {resetCredits && resetCredits.availableCount > 0 && (
-        <div className="cli-limits-reset-cards">
-          <h3>{t.cliLimitsResetCards}</h3>
-          <strong>{t.cliLimitsResetCardsAvailable.replace('{n}', resetCredits.availableCount.toLocaleString(lang))}</strong>
-          {expiresAt && (
-            <time dateTime={expiresAt.toISOString()}>
-              {t.cliLimitsResetCardExpires.replace('{time}', expiresAt.toLocaleString(lang))}
-            </time>
-          )}
-        </div>
-      )}
-      {account.credits && <p className="cli-limits-credits">
-        <span>{account.credits.label}</span>
-        <strong>{cliCreditAmount(account.credits, lang === 'zh')}</strong>
+      {agent.id !== 'codex' && credits && <p className="cli-limits-credits">
+        <span>{credits.label}</span>
+        <strong>{cliCreditAmount(credits, lang === 'zh')}</strong>
       </p>}
+      {showResetCards && resetCredits && (
+        <ResetCardsDialog credits={resetCredits} lang={lang} now={now} stale={Boolean(error)} redeeming={redeeming}
+          result={redemptionResult} onClose={() => { setShowResetCards(false); setRedemptionResult(null) }}
+          onRedeem={creditId => void redeem(creditId)} />
+      )}
     </section>
   )
+}
+
+function cliAccountIdentity(reading: ExternalCliAccount) {
+  const { account } = reading
+  return [account?.email || account?.name, account?.plan].filter(Boolean).join(' · ')
 }
 
 export function UsageLimitsPanel({ lang }: { lang: Lang }) {
@@ -183,7 +338,7 @@ export function UsageLimitsPanel({ lang }: { lang: Lang }) {
   const accounts = useCliAccounts(available)
   const readings = accounts.flatMap(({ agent, view }) => {
     const { account, error } = view
-    return account && (account.windows.length > 0 || (account.resetCredits?.availableCount ?? 0) > 0)
+    return account && (cliAccountIdentity(account) || account.windows.length > 0 || (account.resetCredits?.availableCount ?? 0) > 0 || !!account.resetCredits?.cards?.length)
       ? [<AgentLimits key={agent.id} agent={agent} account={account} error={error} now={now} lang={lang} />]
       : []
   })

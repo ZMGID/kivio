@@ -9,7 +9,7 @@ import {
 import { UsageLimitsPanel } from './UsageLimitsPanel'
 
 vi.mock('../api/externalCliSettings', () => ({
-  externalCliSettingsApi: { detectExternalAgents: vi.fn(), getExternalCliAccount: vi.fn() },
+  externalCliSettingsApi: { detectExternalAgents: vi.fn(), getExternalCliAccount: vi.fn(), redeemCodexResetCredit: vi.fn() },
   onExternalAgentsUpdated: vi.fn(async () => () => {}),
   onExternalCliAccountUpdated: vi.fn(async () => () => {}),
 }))
@@ -114,13 +114,24 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
   expect(detect).toHaveBeenCalledTimes(1)
   expect(get).toHaveBeenCalledTimes(beforeAvailabilityUpdate)
 
+  const expiresAt = Math.floor((Date.now() + 86_400_000) / 1000)
+  const cardDetails = { description: null, resetType: 'codexRateLimits', grantedAt: expiresAt - 172800 }
   get.mockImplementation(async (id, _, mode) => {
-    if (id === 'claude') throw new Error('Account service timed out')
-    if (id === 'codex') {
-      const expiresAt = Math.floor((Date.now() + 86_400_000) / 1000)
+    if (id === 'claude') {
+      if (mode !== 'refresh') throw new Error('Account service timed out')
       return {
-        agentId: id, account: null, credits: null, unavailable: null, checkedAt: 123,
-        resetCredits: { availableCount: 3, nextExpiresAt: expiresAt },
+        agentId: id, account: { type: null, email: 'claude@example.test', plan: 'Max' },
+        credits: null, checkedAt: 123, unavailable: 'No quota windows returned', windows: [],
+      }
+    }
+    if (id === 'codex') {
+      return {
+        agentId: id, account: null, credits: { label: 'Credits', balance: '125' }, unavailable: null, checkedAt: 123,
+        resetCredits: { availableCount: 2, nextExpiresAt: expiresAt, accountKey: 'fixture-account', cards: [
+          { ...cardDetails, id: 'first-card', title: 'Weekly reset', status: 'available', expiresAt },
+          { ...cardDetails, id: 'second-card', title: 'Later reset', status: 'available', expiresAt: expiresAt + 86400 },
+          { ...cardDetails, id: 'used-card', title: 'Past reset', status: 'redeemed', expiresAt: null },
+        ] },
         windows: [],
       }
     }
@@ -135,13 +146,44 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
   expect(screen.queryByText(/Account service timed out|Kimi CLI sign-in required/)).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Refresh usage limits' }))
   expect(await screen.findByRole('progressbar', { name: 'Monthly' })).toBeVisible()
+  const claude = await screen.findByRole('region', { name: 'Claude' })
+  expect(within(claude).getByText('claude@example.test · Max')).toBeVisible()
+  expect(within(claude).queryByRole('progressbar')).not.toBeInTheDocument()
   expect(screen.queryByText(/Account service timed out|Kimi CLI sign-in required/)).not.toBeInTheDocument()
 
   await act(async () => onAvailability([agent('codex', 'Codex', 'native')]))
   fireEvent.click(screen.getByRole('button', { name: 'Refresh usage limits' }))
   const refreshedCodex = await screen.findByRole('region', { name: 'Codex' })
-  expect(await within(refreshedCodex).findByRole('heading', { name: 'Reset cards' })).toBeVisible()
-  expect(within(refreshedCodex).getByText('3 available')).toBeVisible()
-  expect(within(refreshedCodex).getByText(/^Next expires /)).toBeVisible()
+  const ticket = await within(refreshedCodex).findByRole('button', { name: 'Reset cards · 2 available' })
+  expect(ticket).toHaveTextContent('2')
+  const summary = within(refreshedCodex).getByText(/^Next expires /)
+  expect(summary).toHaveAttribute('datetime', new Date(expiresAt * 1000).toISOString())
+  expect(summary).not.toHaveTextContent(String(new Date(expiresAt * 1000).getFullYear()))
+  expect(within(refreshedCodex).getByText('125')).toBeVisible()
   expect(within(refreshedCodex).queryByRole('progressbar')).not.toBeInTheDocument()
+  const redeem = vi.mocked(externalCliSettingsApi.redeemCodexResetCredit)
+  redeem.mockResolvedValue({ outcome: 'reset', refreshed: true })
+  HTMLDialogElement.prototype.showModal ??= function () { this.open = true }
+  HTMLDialogElement.prototype.close ??= function () { this.open = false }
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+  try {
+    await act(async () => fireEvent.click(ticket))
+    expect(redeem).not.toHaveBeenCalled()
+    const details = within(screen.getByRole('dialog', { name: 'Reset cards' }))
+    const later = within(details.getByRole('region', { name: 'Later reset' }))
+    expect(later.getByText(new Date((expiresAt + 86400) * 1000).toLocaleString('en'))).toBeVisible()
+    const used = within(details.getByRole('region', { name: 'Past reset' }))
+    expect(used.getByText('Used')).toBeVisible()
+    expect(used.queryByRole('button', { name: 'Use reset credit' })).not.toBeInTheDocument()
+    const useCard = later.getByRole('button', { name: 'Use reset credit' })
+    await act(async () => fireEvent.click(useCard))
+    expect(redeem).not.toHaveBeenCalled()
+    expect(useCard).toBeEnabled()
+    await act(async () => fireEvent.click(useCard))
+    expect(redeem).toHaveBeenCalledTimes(1)
+    expect(redeem).toHaveBeenCalledWith({ accountKey: 'fixture-account', creditId: 'second-card' }, 2)
+    expect(details.getByText('Reset credit used.')).toBeVisible()
+  } finally {
+    confirm.mockRestore()
+  }
 })

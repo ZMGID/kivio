@@ -745,6 +745,7 @@ pub fn run() {
             external_agents::commands::chat_detect_external_agents,
             external_agents::commands::chat_detect_external_agent_models,
             external_agents::commands::chat_external_cli_account,
+            external_agents::commands::chat_external_cli_redeem_codex_reset_credit,
             external_agents::commands::chat_list_external_cli_slash_commands,
             external_agents::commands::chat_external_cli_pi_agent_dir,
             external_agents::commands::chat_external_cli_scan_cc_switch,

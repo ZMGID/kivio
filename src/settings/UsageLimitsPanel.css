@@ -55,8 +55,7 @@
   overflow-wrap: anywhere;
 }
 
-.cli-limits-windows,
-.cli-limits-reset-cards {
+.cli-limits-windows {
   border: 1px solid var(--theme-surface-border);
   border-radius: 12px;
   background: var(--theme-surface-soft);
@@ -93,8 +92,7 @@
   gap: 3px;
 }
 
-.cli-limit-summary h3,
-.cli-limits-reset-cards h3 {
+.cli-limit-summary h3 {
   margin: 0;
   font-size: 13px;
   font-weight: 600;
@@ -159,7 +157,6 @@
 .cli-limit-meta,
 .cli-limits-message,
 .cli-limits-stale,
-.cli-limits-reset-cards time,
 .cli-limits-credits {
   color: var(--text-muted);
   font-size: 12px;
@@ -176,7 +173,15 @@
 }
 
 .cli-limit-meta {
-  justify-content: space-between;
+  overflow-wrap: anywhere;
+}
+
+.cli-limit-pace {
+  margin-inline-start: auto;
+}
+
+.cli-limit-row > .cli-limit-meta {
+  grid-column: 1 / -1;
 }
 
 .cli-limit-meta > span {
@@ -197,39 +202,64 @@
   color: var(--warn);
 }
 
-.cli-limits-credits strong {
+.cli-limits-credits strong,
+.cli-limit-reset-count {
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
-.cli-limits-reset-cards {
+.kv-modal.cli-reset-dialog {
+  width: calc(100vw - 32px);
+  max-width: 480px;
+  max-height: calc(100dvh - 40px);
+}
+
+.cli-reset-dialog-header,
+.cli-reset-card-heading {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 12px;
-  padding: 11px 18px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.cli-reset-dialog-header h2,
+.cli-reset-card h3 {
+  margin: 0;
+  font-weight: 600;
+}
+
+.cli-reset-dialog-body {
+  display: grid;
+  gap: 12px;
+  max-height: min(460px, calc(100dvh - 130px));
+  overflow-y: auto;
+  padding-top: 12px;
+}
+
+.cli-reset-card {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--theme-surface-border);
+  padding-top: 12px;
   overflow-wrap: anywhere;
 }
 
-.cli-limits-reset-cards strong {
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
+.cli-reset-card-heading {
+  flex-wrap: wrap;
 }
 
-.cli-limits-reset-cards time {
-  margin-inline-start: auto;
+.cli-reset-card dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 12px;
+  font-size: 12px;
+}
+
+.cli-reset-card dt {
+  color: var(--text-muted);
 }
 
 @container (max-width: 480px) {
-  .cli-limits-reset-cards {
-    padding-inline: 13px;
-  }
-
-  .cli-limits-reset-cards time {
-    flex-basis: 100%;
-    margin-inline-start: 0;
-  }
-
   .cli-limit-row {
     grid-template-columns: minmax(0, 1fr);
     padding-inline: 13px;

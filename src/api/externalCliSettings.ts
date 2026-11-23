@@ -240,12 +240,29 @@ export interface ExternalCliInstallInfo {
   source: string | null
 }
 
+type CodexResetCreditTarget = { accountKey: string; creditId: string | null }
+
+export type CodexResetCreditOutcome = 'reset' | 'nothingToReset' | 'noCredit' | 'alreadyRedeemed'
+
 export interface ExternalCliAccount {
   agentId: string
-  account: { type: string | null; email: string | null; plan: string | null } | null
+  account: { type: string | null; email: string | null; name?: string | null; plan: string | null } | null
   windows: Array<{ name: string; usedPercent: number; resetsAt: string | number | null; windowDurationMins: number | null }>
   credits: { label: string; unlimited?: boolean; balance?: string | null; used?: number | null; limit?: number | null; currency?: string | null } | null
-  resetCredits?: { availableCount: number; nextExpiresAt: number | null } | null
+  resetCredits?: {
+    availableCount: number
+    nextExpiresAt: number | null
+    accountKey?: string | null
+    cards?: Array<{
+      id: string
+      title: string | null
+      description: string | null
+      resetType: string | null
+      grantedAt: number | null
+      expiresAt: number | null
+      status: 'available' | 'redeeming' | 'redeemed' | 'unknown'
+    }>
+  } | null
   unavailable: string | null
   refreshError?: string
   checkedAt: number
@@ -259,6 +276,11 @@ export const externalCliSettingsApi = {
   async getExternalCliAccount(agentId: string, conversationId?: string | null, mode: AccountSnapshotMode = 'automatic'): Promise<ExternalCliAccount | null> {
     if (!isTauriRuntime()) throw new Error('Account discovery requires the desktop app')
     return invoke<ExternalCliAccount | null>('chat_external_cli_account', { agentId, conversationId, mode })
+  },
+  async redeemCodexResetCredit(target: CodexResetCreditTarget, availableCount: number) {
+    return invoke<{ outcome: CodexResetCreditOutcome; refreshed: boolean }>(
+      'chat_external_cli_redeem_codex_reset_credit', { target, availableCount },
+    )
   },
   async detectExternalAgents(forceRefresh = false, conversationId?: string | null): Promise<DetectedExternalAgent[]> {
     if (!isTauriRuntime()) {
