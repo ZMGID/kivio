@@ -98,7 +98,10 @@ export function ChatTab({
             options={[
               { value: '', label: t.voiceAutoProvider },
               ...settings.providers
-                .filter((provider) => provider.id && provider.request.oauth?.provider !== 'chatgpt')
+                .filter((provider) => {
+                  const oauth = provider.request.oauth?.provider
+                  return provider.id && oauth !== 'chatgpt' && oauth !== 'codex'
+                })
                 .map((provider) => ({ value: provider.id, label: provider.name })),
             ]}
           />

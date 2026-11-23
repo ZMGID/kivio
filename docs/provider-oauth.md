@@ -2,8 +2,8 @@
 
 ## Connecting a provider
 
-1. In **Settings → Model providers**, add **ChatGPT**, **Kimi OAuth** or **Antigravity OAuth**. You can also choose an authorization method on an existing provider.
-2. Sign in through the system browser. For ChatGPT, choose an account and workspace and grant Kivio permission to use your plan. For Kimi, enter the displayed device code. For Antigravity, complete Google sign-in.
+1. In **Settings → Model providers**, add **ChatGPT**, **Codex OAuth**, **Kimi OAuth** or **Antigravity OAuth**. You can also choose an authorization method on an existing provider.
+2. Sign in through the system browser. For ChatGPT, choose an account and workspace and grant Kivio permission to use your plan. For Codex OAuth or Kimi, enter the displayed device code. For Antigravity, complete Google sign-in.
 3. Choose an available model and enable it. The ChatGPT catalog belongs to the current account. If a previously selected model is unavailable, select another model.
 4. Test the selected model before using it for chat, translation or vision. For ChatGPT, **Manage usage** opens the [ChatGPT usage settings](https://chatgpt.com/settings/usage).
 
@@ -19,6 +19,7 @@ Account eligibility and quota are controlled by the upstream service; an OAuth l
 - All normal model calls use the common model dispatcher. It resolves an ephemeral provider clone immediately before inference; refreshed access tokens are never written into settings or returned to the webview.
 - ChatGPT uses OpenAI's dynamic public-client registration. Each installation keeps a stable host ID. A saved registration binds the issued client ID to the verified OpenID Connect subject. Kivio verifies the signed ID token and checks the plan permission before inference. [Registration and sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) and [accounts and sessions](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions).
 - ChatGPT model discovery and generation use the public `https://api.openai.com/v1` endpoint. Kivio sends the conversation context on each request, requests a stream with `store: false`, and waits for `response.completed`. Eligible models accept local function tools. [Models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) and [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
+- Codex OAuth uses the [Codex device-code flow](https://github.com/openai/codex/blob/main/codex-rs/login/src/device_code_auth.rs) and the Codex backend for model discovery and streamed Responses. Kivio stores this authorization separately from Sign in with ChatGPT and the local Codex CLI session.
 - Kimi uses its device authorization endpoint and the OpenAI-compatible coding endpoint, with Kimi client/device headers. Model lists are fetched from the authenticated provider rather than hard-coded.
 - Antigravity uses Authorization Code + PKCE, an independent random state, and a temporary listener bound to `127.0.0.1:51121`. The browser redirect is `http://localhost:51121/oauth-callback`. Cancellation, a five-minute timeout, and completion release the listener; an occupied port produces a retryable error. Callback errors never echo codes or query strings.
 - Antigravity project metadata is discovered with `loadCodeAssist` and kept with the credentials in the local JSON store. Missing projects require account setup in Antigravity followed by a new login. No project IDs are borrowed or synthesized. Refresh preserves the project and handles refresh-token rotation.
@@ -60,7 +61,7 @@ Historical keyring implementation verification on 2026-09-05: 56 focused fronten
 
 ## OAuth account usage card
 
-Settings shows an account usage card above Configuration for signed-in Kimi providers. Opening the detail page fetches once; Refresh fetches again. There is no background polling or reset-credit redemption. Antigravity usage is supported through dedicated remote quota endpoints.
+Settings shows an account usage card above Configuration for signed-in Codex OAuth and Kimi providers. The Codex backend can return the plan, used percentages and reset times. Opening the detail page fetches once, and Refresh fetches again. Antigravity usage is supported through dedicated remote quota endpoints.
 
 The backend resolves and refreshes Kivio-owned credentials through the existing OAuth flow, validates the original provider endpoint, then makes a bounded GET with redirects disabled. Only normalized quota fields reach the webview. Transport errors never include tokens or raw response bodies. Missing usage percentages remain unavailable rather than appearing as 0% used.
 

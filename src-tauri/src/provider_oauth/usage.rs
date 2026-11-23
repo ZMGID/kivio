@@ -100,6 +100,35 @@ fn parse_usage(kind: &str, value: &Value, fetched: i64) -> AccountUsage {
                 }
             }
         }
+    } else if kind == "codex" {
+        for (group, prefix) in [
+            ("rate_limit", ""),
+            ("code_review_rate_limit", "Code review · "),
+        ] {
+            for (key, fallback) in [
+                ("primary_window", "Session"),
+                ("secondary_window", "Weekly"),
+            ] {
+                let row = &value[group][key];
+                if !row.is_object() {
+                    continue;
+                }
+                let label = match number(&row["limit_window_seconds"]) {
+                    Some(seconds) if seconds >= 3600.0 && seconds % 3600.0 == 0.0 => {
+                        format!("{}h", seconds / 3600.0)
+                    }
+                    _ => fallback.into(),
+                };
+                windows.push(UsageWindow {
+                    label: format!("{prefix}{label}"),
+                    used_percent: number(&row["used_percent"]).map(|n| n.clamp(0.0, 100.0)),
+                    used: None,
+                    limit: None,
+                    resets_at: reset(row, fetched),
+                    reset_hint: None,
+                });
+            }
+        }
     }
     AccountUsage {
         plan: value["plan_type"].as_str().map(str::to_owned),
@@ -197,10 +226,11 @@ pub async fn provider_oauth_usage(
         let resolved = resolve_provider(&state, &provider).await?;
         return antigravity_usage(&resolved).await;
     }
-    if kind != "kimi" {
-        return Err("This provider does not expose account usage here".into());
-    }
-    let url = format!("{KIMI_BASE}/usages");
+    let url = match kind.as_str() {
+        "kimi" => format!("{KIMI_BASE}/usages"),
+        "codex" => "https://chatgpt.com/backend-api/wham/usage".into(),
+        _ => return Err("This provider does not expose account usage here".into()),
+    };
     let resolved = resolve_provider(&state, &provider).await?;
     let client = http(provider.request.use_system_proxy)?;
     let mut request = client
@@ -231,6 +261,23 @@ pub async fn provider_oauth_usage(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn codex_usage_preserves_the_plan_and_reset_windows() {
+        let usage = parse_usage(
+            "codex",
+            &json!({"plan_type":"plus","rate_limit":{
+                "primary_window":{"used_percent":80,"reset_at":200,"limit_window_seconds":18000},
+                "secondary_window":{"used_percent":0,"reset_after_seconds":30}
+            }}),
+            100,
+        );
+        assert_eq!(usage.plan.as_deref(), Some("plus"));
+        assert_eq!(usage.windows[0].label, "5h");
+        assert_eq!(usage.windows[0].used_percent, Some(80.0));
+        assert_eq!(usage.windows[0].resets_at, Some(200));
+        assert_eq!(usage.windows[1].used_percent, Some(0.0));
+        assert_eq!(usage.windows[1].resets_at, Some(130));
+    }
     #[test]
     fn antigravity_grouped_and_model_quota() {
         let grouped = parse_usage(

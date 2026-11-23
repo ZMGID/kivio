@@ -309,6 +309,9 @@ pub fn header_pairs(
         upsert_pair(&mut pairs, header.key.clone(), header.value.clone());
     }
     let oauth = crate::provider_oauth::header_pairs(provider);
+    if crate::provider_oauth::is_codex(provider) {
+        pairs.retain(|(name, _)| !name.eq_ignore_ascii_case("version"));
+    }
     for (name, value) in oauth {
         upsert_pair(&mut pairs, name, value);
     }

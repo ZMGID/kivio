@@ -21,6 +21,7 @@ export type ProviderPreset = {
 /** 顺序：赞助中转 → 国内 Coding / Token 套餐 → 一线实验室 → 云厂商/聚合 → 本地 → 少用的。 */
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   { name: 'ChatGPT', label: { zh: 'ChatGPT 登录', en: 'ChatGPT Sign In' }, baseUrl: 'https://api.openai.com/v1', apiFormat: 'openai_responses', oauth: 'chatgpt' },
+  { name: 'Codex OAuth', baseUrl: 'https://chatgpt.com/backend-api/codex', apiFormat: 'openai_responses', oauth: 'codex' },
   { name: 'Kimi OAuth', baseUrl: 'https://api.kimi.com/coding/v1', oauth: 'kimi' },
   { name: 'Antigravity OAuth', baseUrl: 'https://daily-cloudcode-pa.googleapis.com', apiFormat: 'gemini', oauth: 'antigravity' },
   { name: 'OpenCode Free', baseUrl: 'https://opencode.ai/zen/v1' },

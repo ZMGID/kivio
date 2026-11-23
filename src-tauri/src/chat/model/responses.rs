@@ -158,7 +158,7 @@ impl OpenAiResponsesProvider<'_> {
     }
 
     async fn generate_inner(&self, request: GenerateRequest) -> Result<GenerateOutput, ModelError> {
-        if self.config.chatgpt_plan {
+        if self.config.chatgpt_plan || self.config.codex_oauth {
             return self
                 .stream_inner(
                     request,
@@ -263,6 +263,7 @@ impl OpenAiResponsesProvider<'_> {
         let mut measured_sink = FirstTokenStreamSink::new(sink, started);
         let sink = &mut measured_sink;
         let stream = self.config.chatgpt_plan
+            || self.config.codex_oauth
             || !responses::uses_buffered_delivery(
                 reqwest::Url::parse(self.config.base_url).ok().as_ref(),
                 self.responses_format(),
@@ -441,6 +442,23 @@ impl OpenAiResponsesProvider<'_> {
         let mut body = responses::request_body(request, stream, &options);
         if self.config.chatgpt_plan {
             responses::chatgpt_plan::prepare_body(&mut body)?;
+        } else if self.config.codex_oauth {
+            body["stream"] = Value::Bool(true);
+            body["store"] = Value::Bool(false);
+            if !body["instructions"].is_string() {
+                body["instructions"] = Value::String(String::new());
+            }
+            if let Some(object) = body.as_object_mut() {
+                for key in [
+                    "max_output_tokens",
+                    "temperature",
+                    "top_p",
+                    "prompt_cache_retention",
+                    "previous_response_id",
+                ] {
+                    object.remove(key);
+                }
+            }
         }
         Ok(body)
     }

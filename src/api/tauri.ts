@@ -1014,7 +1014,7 @@ export type ModelInfo = {
 // AI 模型提供商配置
 // apiKeys 是密钥池；activeKeyIndex 是用户点选的当前 Key。
 // 鉴权/配额失败时后端仍会自动切到池里其它 Key。
-export type ProviderOAuthConfig = { provider: 'chatgpt' | 'kimi' | 'antigravity'; credentialId?: string; requiresReauthorization?: boolean }
+export type ProviderOAuthConfig = { provider: 'chatgpt' | 'codex' | 'kimi' | 'antigravity'; credentialId?: string; requiresReauthorization?: boolean }
 export type ChatGPTAccount = { credentialId: string; clientId: string; subject: string | null; email?: string | null; connected: boolean; planEnabled: boolean }
 export const CHATGPT_USAGE_URL = 'https://chatgpt.com/settings/usage'
 export type ProviderOAuthAccount = { email: string | null; name: string | null; accountId: string | null }

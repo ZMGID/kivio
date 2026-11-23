@@ -18,6 +18,18 @@ fn text(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 // Display metadata only. JWT decoding is not used as an authorization decision.
+fn codex_identity(access: &Value) -> AccountIdentity {
+    let profile = &access["https://api.openai.com/profile"];
+    let auth = &access["https://api.openai.com/auth"];
+    AccountIdentity {
+        email: text(&profile["email"]).or_else(|| text(&access["email"])),
+        name: text(&profile["name"]).or_else(|| text(&access["name"])),
+        account_id: text(&auth["chatgpt_account_id"])
+            .or_else(|| text(&auth["chatgpt_user_id"]))
+            .or_else(|| text(&access["sub"])),
+    }
+}
+
 fn identity(access: &Value, refresh: &Value) -> AccountIdentity {
     let account_id = text(&access["user_id"])
         .or_else(|| text(&refresh["user_id"]))
@@ -74,10 +86,11 @@ pub async fn provider_oauth_account(
     if tokens.provider != auth.provider {
         return Err("OAuth credential belongs to another provider".into());
     }
-    Ok(identity(
-        &claims(&tokens.access_token),
-        &claims(&tokens.refresh_token),
-    ))
+    let access = claims(&tokens.access_token);
+    if auth.provider == "codex" {
+        return Ok(codex_identity(&access));
+    }
+    Ok(identity(&access, &claims(&tokens.refresh_token)))
 }
 #[cfg(test)]
 mod tests {
@@ -92,6 +105,12 @@ mod tests {
         assert_eq!(kimi.account_id.as_deref(), Some("kimi-user"));
         assert!(kimi.email.is_none());
         assert!(!serde_json::to_string(&kimi).unwrap().contains("secret"));
+        let codex = codex_identity(&json!({
+            "https://api.openai.com/profile": {"email":"person@example.com"},
+            "https://api.openai.com/auth": {"chatgpt_account_id":"workspace"}
+        }));
+        assert_eq!(codex.email.as_deref(), Some("person@example.com"));
+        assert_eq!(codex.account_id.as_deref(), Some("workspace"));
         let google = identity(
             &json!({"email":"google@example.com","name":"Person","sub":"google-user"}),
             &Value::Null,

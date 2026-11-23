@@ -137,6 +137,7 @@ export function ProviderOAuthPanel({ provider, settings, lang, onUpdateProvider,
         }} options={[
           { value: 'api_key', label: 'API Key' },
           { value: 'chatgpt', label: 'ChatGPT' },
+          { value: 'codex', label: 'Codex OAuth' },
           { value: 'kimi', label: 'Kimi OAuth · Kimi Code' },
           { value: 'antigravity', label: 'Antigravity OAuth · Google' },
         ]} />

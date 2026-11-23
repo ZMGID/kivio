@@ -67,6 +67,7 @@ struct ProviderConfig<'a> {
     compress_request_body: bool,
     claude_code: bool,
     codex_identity: bool,
+    codex_oauth: bool,
     chatgpt_plan: bool,
     antigravity: bool,
     opencode_free: bool,
@@ -85,6 +86,7 @@ impl<'a> ProviderConfig<'a> {
             compress_request_body: provider.compress_request_body,
             claude_code: crate::provider_request::is_claude_code_identity(provider),
             codex_identity: crate::provider_request::is_codex_identity(provider),
+            codex_oauth: crate::provider_oauth::is_codex(provider),
             chatgpt_plan: crate::provider_oauth::is_chatgpt(provider),
             antigravity: crate::provider_oauth::antigravity::is_provider(provider),
             opencode_free: provider.is_opencode_free(),
@@ -301,6 +303,63 @@ mod anonymous_http_tests {
             value: "preserved".into(),
         });
         provider
+    }
+
+    #[tokio::test]
+    async fn codex_oauth_generation_uses_its_account_and_requires_streaming() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use serde_json::{json, Value};
+
+        let reply = format!(
+            "data: {}\n\ndata: {}\n\n",
+            json!({"type":"response.output_text.delta","delta":"answer"}),
+            json!({"type":"response.completed","response":{"status":"completed","output":[]}})
+        );
+        let (url, server) = endpoint(vec![("200 OK", reply)], false).await;
+        let claims = json!({"https://api.openai.com/auth":{"chatgpt_account_id":"workspace"}});
+        let key = format!("test.{}.sig", URL_SAFE_NO_PAD.encode(claims.to_string()));
+        let mut provider = provider("openai_responses", url, vec![key.clone()]);
+        provider.request.oauth = Some(serde_json::from_value(json!({"provider":"codex"})).unwrap());
+        provider.request.cli_identity = "codex".into();
+        let state = crate::state::AppState::new_headless(Default::default(), std::env::temp_dir());
+        let adapter = OpenAiResponsesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
+        let result = adapter
+            .generate(GenerateRequest {
+                model: "local-model".into(),
+                system: "Answer briefly.".into(),
+                messages: vec![ModelMessage::text(ModelRole::User, "hello")],
+                tools: vec![],
+                options: GenerateOptions {
+                    max_tokens: 64,
+                    provider_options: json!({"store":true,"temperature":0.8,"previous_response_id":"stale"}),
+                    ..Default::default()
+                },
+                metadata: RequestMetadata::default(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.text, "answer");
+        let requests = server.await.unwrap();
+        let (headers, body) = requests[0].split_once("\r\n\r\n").unwrap();
+        let headers = headers.to_ascii_lowercase();
+        assert!(headers.contains("chatgpt-account-id: workspace"));
+        assert!(headers.contains("originator: kivio"));
+        assert!(headers.contains("accept: text/event-stream"));
+        assert!(headers.contains(&format!(
+            "authorization: bearer {}",
+            key.to_ascii_lowercase()
+        )));
+        assert!(!headers.contains("\r\nversion:"));
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["store"], false);
+        assert_eq!(body["instructions"], "Answer briefly.");
+        for field in ["max_output_tokens", "temperature", "previous_response_id"] {
+            assert!(body.get(field).is_none());
+        }
     }
 
     #[tokio::test]

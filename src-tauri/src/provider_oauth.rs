@@ -11,7 +11,9 @@ pub mod antigravity;
 pub mod chatgpt;
 pub mod usage;
 
+const CODEX_CLIENT: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const KIMI_CLIENT: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
+const CODEX_BASE: &str = "https://chatgpt.com/backend-api/codex";
 pub const CHATGPT_BASE: &str = "https://api.openai.com/v1";
 pub const KIMI_BASE: &str = "https://api.kimi.com/coding/v1";
 
@@ -45,6 +47,7 @@ struct Tokens {
 struct Pending {
     provider: String,
     device_code: String,
+    user_code: String,
     expires_at: i64,
     next_poll: i64,
     interval: i64,
@@ -140,16 +143,18 @@ fn now() -> i64 {
 }
 fn client_id(provider: &str) -> Result<&'static str, String> {
     match provider {
+        "codex" => Ok(CODEX_CLIENT),
         "kimi" => Ok(KIMI_CLIENT),
         "antigravity" => Ok(antigravity::CLIENT),
         _ => Err("Unsupported OAuth provider".into()),
     }
 }
 fn token_url(provider: &str) -> &'static str {
-    if provider == "antigravity" {
-        return antigravity::TOKEN_URL;
+    match provider {
+        "codex" => "https://auth.openai.com/oauth/token",
+        "antigravity" => antigravity::TOKEN_URL,
+        _ => "https://auth.kimi.com/api/oauth/token",
     }
-    "https://auth.kimi.com/api/oauth/token"
 }
 fn http(use_system_proxy: bool) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
@@ -546,34 +551,63 @@ pub async fn provider_oauth_start(
     }
     let client_id = client_id(&provider)?;
     let client = http(use_system_proxy)?;
-    let request = common_headers(
+    let codex = provider == "codex";
+    let request = if codex {
         client
-            .post("https://auth.kimi.com/api/oauth/device_authorization")
-            .form(&[("client_id", client_id)]),
-        &provider,
-    );
+            .post("https://auth.openai.com/api/accounts/deviceauth/usercode")
+            .json(&json!({"client_id": client_id}))
+    } else {
+        common_headers(
+            client
+                .post("https://auth.kimi.com/api/oauth/device_authorization")
+                .form(&[("client_id", client_id)]),
+            &provider,
+        )
+    };
     let (status, value) = response_json(request).await?;
     if status != 200 {
         return Err(format!(
             "Cannot start OAuth login (HTTP {status}); try again later"
         ));
     }
-    let user_code = field(&value, "user_code")?;
-    let device_code = field(&value, "device_code")?;
-    let verification_url = field(&value, "verification_uri_complete")
-        .or_else(|_| field(&value, "verification_uri"))?;
-    let url =
-        url::Url::parse(&verification_url).map_err(|_| "Invalid verification URL".to_string())?;
-    if url.scheme() != "https"
-        || !matches!(
-            url.host_str(),
-            Some("auth.kimi.com" | "www.kimi.com" | "kimi.com")
+    let (user_code, device_code, verification_url) = if codex {
+        (
+            field(&value, "user_code").or_else(|_| field(&value, "usercode"))?,
+            field(&value, "device_auth_id")?,
+            "https://auth.openai.com/codex/device".into(),
         )
-    {
-        return Err("Unrecognized OAuth verification URL".into());
-    }
+    } else {
+        let verification_url = field(&value, "verification_uri_complete")
+            .or_else(|_| field(&value, "verification_uri"))?;
+        let url = url::Url::parse(&verification_url)
+            .map_err(|_| "Invalid verification URL".to_string())?;
+        if url.scheme() != "https"
+            || !matches!(
+                url.host_str(),
+                Some("auth.kimi.com" | "www.kimi.com" | "kimi.com")
+            )
+        {
+            return Err("Unrecognized OAuth verification URL".into());
+        }
+        (
+            field(&value, "user_code")?,
+            field(&value, "device_code")?,
+            verification_url,
+        )
+    };
     let interval = number(&value, "interval", 5).clamp(3, 60);
-    let expires_at = now() + number(&value, "expires_in", 900).clamp(1, 900);
+    let started_at = now();
+    let timeout = started_at + number(&value, "expires_in", 900).clamp(1, 900);
+    let expires_at = if codex {
+        value["expires_at"]
+            .as_str()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.timestamp())
+            .unwrap_or_else(|| number(&value, "expires_at", timeout))
+            .min(timeout)
+    } else {
+        timeout
+    };
     let login_id = uuid::Uuid::new_v4().to_string();
     let mut sessions = pending().lock().await;
     sessions.retain(|_, p| p.expires_at > now());
@@ -585,6 +619,7 @@ pub async fn provider_oauth_start(
         Pending {
             provider,
             device_code,
+            user_code: user_code.clone(),
             expires_at,
             next_poll: now() + interval,
             interval,
@@ -628,19 +663,31 @@ pub async fn provider_oauth_poll(login_id: String) -> Result<PollResult, String>
         p.clone()
     };
     let client = http(p.use_system_proxy)?;
-    let req = common_headers(
-        client.post(token_url(&p.provider)).form(&[
-            ("client_id", KIMI_CLIENT),
-            ("device_code", &p.device_code),
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-        ]),
-        &p.provider,
-    );
-    let (status, value) = response_json(req).await?;
-    let waiting = matches!(
-        value["error"].as_str(),
-        Some("authorization_pending" | "slow_down")
-    ) || status == 429;
+    let codex = p.provider == "codex";
+    let request = if codex {
+        client
+            .post("https://auth.openai.com/api/accounts/deviceauth/token")
+            .json(&json!({"device_auth_id": p.device_code, "user_code": p.user_code}))
+    } else {
+        common_headers(
+            client.post(token_url(&p.provider)).form(&[
+                ("client_id", KIMI_CLIENT),
+                ("device_code", &p.device_code),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ]),
+            &p.provider,
+        )
+    };
+    let (status, mut value) = response_json(request).await?;
+    let waiting = status == 429
+        || if codex {
+            matches!(status, 403 | 404)
+        } else {
+            matches!(
+                value["error"].as_str(),
+                Some("authorization_pending" | "slow_down")
+            )
+        };
     if waiting {
         let interval = if status == 429 || value["error"] == "slow_down" {
             (p.interval + 5).min(60)
@@ -663,10 +710,37 @@ pub async fn provider_oauth_poll(login_id: String) -> Result<PollResult, String>
             "OAuth authorization failed (HTTP {status}); start again"
         ));
     }
+    if codex {
+        let code = field(&value, "authorization_code")?;
+        let verifier = field(&value, "code_verifier")?;
+        let (status, grant) = response_json(client.post(token_url("codex")).form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", CODEX_CLIENT),
+            ("code", &code),
+            ("code_verifier", &verifier),
+            (
+                "redirect_uri",
+                "https://auth.openai.com/deviceauth/callback",
+            ),
+        ]))
+        .await?;
+        if status != 200 {
+            pending().lock().await.remove(&login_id);
+            return Err(format!(
+                "Codex token exchange failed (HTTP {status}); start again"
+            ));
+        }
+        value = grant;
+    }
     let tokens = tokens_from(&value, &p.provider, "")?;
     let mut sessions = pending().lock().await;
-    if !sessions.contains_key(&login_id) {
-        return Err("Login cancelled".into());
+    match sessions.get(&login_id) {
+        None => return Err("Login cancelled".into()),
+        Some(login) if login.expires_at <= now() => {
+            sessions.remove(&login_id);
+            return Err("Login expired; start again".into());
+        }
+        Some(_) => {}
     }
     save_tokens(&login_id, &tokens)?;
     sessions.remove(&login_id);
@@ -730,6 +804,7 @@ pub fn validate_provider(provider: &ModelProvider) -> Result<(), String> {
         return Ok(());
     };
     let (base, format) = match auth.provider.as_str() {
+        "codex" => (CODEX_BASE, "openai_responses"),
         "chatgpt" => (CHATGPT_BASE, "openai_responses"),
         "kimi" => (KIMI_BASE, "openai_chat"),
         "antigravity" => (antigravity::BASE, "gemini"),
@@ -821,12 +896,34 @@ pub fn is_chatgpt(provider: &ModelProvider) -> bool {
         .is_some_and(|a| a.provider == "chatgpt")
 }
 
+pub fn is_codex(provider: &ModelProvider) -> bool {
+    provider
+        .request
+        .oauth
+        .as_ref()
+        .is_some_and(|auth| auth.provider == "codex")
+}
+
 pub fn header_pairs(provider: &ModelProvider) -> Vec<(String, String)> {
     let Some(auth) = &provider.request.oauth else {
         return vec![];
     };
     let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
-    if auth.provider == "antigravity" {
+    if auth.provider == "codex" {
+        let mut pairs = vec![
+            pair("originator", "kivio"),
+            pair("User-Agent", concat!("Kivio/", env!("CARGO_PKG_VERSION"))),
+            pair("OpenAI-Beta", "responses=experimental"),
+        ];
+        if let Some(token) = provider.preferred_api_key() {
+            if let Some(id) =
+                claims(token)["https://api.openai.com/auth"]["chatgpt_account_id"].as_str()
+            {
+                pairs.push(pair("ChatGPT-Account-Id", id));
+            }
+        }
+        pairs
+    } else if auth.provider == "antigravity" {
         let mut pairs = vec![pair("User-Agent", &antigravity::user_agent())];
         if let Some(token) = provider.preferred_api_key() {
             pairs.push(pair("Authorization", &format!("Bearer {token}")));
@@ -877,6 +974,8 @@ pub async fn models(
     let client = http(provider.request.use_system_proxy)?;
     let url = if is_chatgpt(&provider) {
         format!("{CHATGPT_BASE}/models")
+    } else if is_codex(&provider) {
+        format!("{CODEX_BASE}/models?client_version=1.0.0")
     } else {
         format!("{KIMI_BASE}/models")
     };
@@ -1067,6 +1166,10 @@ mod tests {
             assert!(validate_provider(&p).is_err());
         }
         p.base_url = CHATGPT_BASE.into();
+        p.request.oauth.as_mut().unwrap().provider = "codex".into();
+        assert!(validate_provider(&p).is_err());
+        p.base_url = CODEX_BASE.into();
+        assert!(validate_provider(&p).is_ok());
         p.api_format = "openai_chat".into();
         assert!(validate_provider(&p).is_err());
         p.request.oauth.as_mut().unwrap().credential_id = None;

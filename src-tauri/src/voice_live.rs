@@ -60,6 +60,7 @@ fn select_live_provider(settings: &Settings) -> Result<&ModelProvider, String> {
             .iter()
             .find(|provider| {
                 !crate::provider_oauth::is_chatgpt(provider)
+                    && !crate::provider_oauth::is_codex(provider)
                     && provider.preferred_api_key().is_some()
                     && reqwest::Url::parse(provider.base_url.trim())
                         .ok()
@@ -71,6 +72,9 @@ fn select_live_provider(settings: &Settings) -> Result<&ModelProvider, String> {
     };
     if crate::provider_oauth::is_chatgpt(provider) {
         return Err("ChatGPT 套餐授权不支持 GPT-Live，请选择使用 API 密钥的提供商。".into());
+    }
+    if crate::provider_oauth::is_codex(provider) {
+        return Err("Codex OAuth 不支持 GPT-Live，请选择使用 API 密钥的提供商。".into());
     }
     if provider.preferred_api_key().is_none() {
         return Err("所选语音提供商未配置 API 密钥。".into());

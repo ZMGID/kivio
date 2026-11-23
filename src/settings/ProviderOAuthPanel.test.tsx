@@ -14,9 +14,9 @@ vi.mock('../api/tauri', async () => {
   } }
 })
 const login: ProviderOAuthLogin = { loginId: 'login-1', userCode: 'ABCD-1234', verificationUrl: 'https://example.com/device', interval: 3, expiresAt: 1900000000 }
-function setup() {
+function setup(kind: 'kimi' | 'codex' = 'kimi') {
   const base = makeProvider()
-  const provider = { ...base, request: { ...base.request, oauth: { provider: 'kimi' as const } } }
+  const provider = { ...base, request: { ...base.request, oauth: { provider: kind } } }
   const update = vi.fn()
   return { ...render(<ProviderOAuthPanel settings={makeSettings()} onFetchModels={vi.fn()} provider={provider} lang="zh" onUpdateProvider={update} />), update, provider }
 }
@@ -52,11 +52,13 @@ describe('model OAuth onboarding', () => {
     expect(api.openExternal).toHaveBeenCalledWith(login.verificationUrl)
     expect(api.providerOAuthStart).toHaveBeenCalledWith('kimi', true, undefined)
   })
-  it('saves only the credential reference after authorization', async () => {
-    const { update, provider } = setup()
-    vi.mocked(api.providerOAuthPoll).mockResolvedValue({ status: 'authorized', interval: 0, auth: { provider: 'kimi', credentialId: 'credential-1' } })
+  it.each(['kimi', 'codex'] as const)('opens device authorization and saves the credential reference for %s', async (kind) => {
+    const { update, provider } = setup(kind)
+    const auth = { provider: kind, credentialId: 'credential-1' }
+    vi.mocked(api.providerOAuthPoll).mockResolvedValue({ status: 'authorized', interval: 0, auth })
     await start(); await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
-    expect(update).toHaveBeenCalledWith(provider.id, { request: { ...provider.request, oauth: { provider: 'kimi', credentialId: 'credential-1' } } })
+    expect(api.providerOAuthStart).toHaveBeenCalledWith(kind, true, undefined)
+    expect(update).toHaveBeenCalledWith(provider.id, { request: { ...provider.request, oauth: auth } })
     expect(screen.queryByText('ABCD-1234')).toBeNull()
     expect(JSON.stringify(update.mock.calls)).not.toContain('access_token')
   })
