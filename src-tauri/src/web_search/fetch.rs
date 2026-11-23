@@ -16,8 +16,8 @@ use crate::{
 };
 
 use super::{
-    deepseek_tool_url, exa_mcp_server, kimi_search_url, map_tinyfish_mcp_error,
-    normalized_base_url, provider_label, read_search_json, tinyfish_mcp_server,
+    deepseek_api_url, exa_mcp_server, kimi_search_url, map_tinyfish_mcp_error, normalized_base_url,
+    provider_label, read_search_json, tinyfish_mcp_server,
 };
 
 /// Extract/contents/fetch can be slower than a SERP call (JS render, livecrawl).
@@ -194,7 +194,7 @@ async fn fetch_deepseek(
     if api_key.is_empty() {
         return Err("DeepSeek API key is not configured".to_string());
     }
-    let endpoint = deepseek_tool_url(&config.deepseek_base_url, "fetch");
+    let endpoint = deepseek_api_url(&config.deepseek_base_url, "tools/fetch");
     let body = serde_json::json!({ "url": url });
     let response = send_with_retry("DeepSeek fetch", retry_attempts, || {
         with_fetch_timeout(state.http.post(&endpoint).bearer_auth(api_key).json(&body)).send()

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { AlertCircle, CheckCircle2, Eye, EyeOff, ExternalLink, Globe, Loader2, Search, SlidersHorizontal } from 'lucide-react'
+import { open } from '@tauri-apps/plugin-dialog'
+import { ImagePlus, X, AlertCircle, CheckCircle2, Eye, EyeOff, ExternalLink, Globe, Loader2, Search, SlidersHorizontal } from 'lucide-react'
 import { api, type Settings, type WebSearchMcpAuth, type WebSearchProviderId } from '../api/tauri'
 import type { I18n } from '../components/i18n'
 import { Input, Select, SettingRow, Toggle } from './components'
@@ -492,23 +493,24 @@ function authFromOauthHeader(headers: Record<string, string>): WebSearchMcpAuth 
 type TestState =
   | { status: 'idle' }
   | { status: 'running' }
-  | { status: 'ok'; count: number; results: { title: string; url: string }[] }
+  | { status: 'ok'; count: number; results: { title: string; url: string; imageUrl?: string }[] }
   | { status: 'error'; message: string }
 
 /** 测试搜索：用当前（可能未保存的）配置真实跑一次搜索，展示结果或错误。 */
 function TestSearch({ t, config, desc }: { t: I18n; config: WebSearchConfig; desc?: string }) {
   const [query, setQuery] = useState('')
+  const [imagePath, setImagePath] = useState<string | null>(null)
   const [state, setState] = useState<TestState>({ status: 'idle' })
   const running = state.status === 'running'
 
   const run = async () => {
     const q = query.trim()
-    if (!q || running) return
+    if ((!q && !imagePath) || running) return
     setState({ status: 'running' })
     try {
-      const res = await api.testWebSearch(config, q)
+      const res = await api.testWebSearch(config, q, imagePath ?? undefined)
       if (res.success) {
-        const results = (res.results ?? []).map((r) => ({ title: r.title, url: r.url }))
+        const results = res.results ?? []
         setState({ status: 'ok', count: results.length, results: results.slice(0, 5) })
       } else {
         setState({ status: 'error', message: res.error || 'Unknown error' })
@@ -518,15 +520,40 @@ function TestSearch({ t, config, desc }: { t: I18n; config: WebSearchConfig; des
     }
   }
 
+  const chooseImage = async () => {
+    try {
+      const selected = await open({ multiple: false, filters: [{ name: t.webSearchChooseImage, extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] })
+      if (selected) {
+        setImagePath(selected)
+        setState({ status: 'idle' })
+      }
+    } catch (err) {
+      setState({ status: 'error', message: String(err) })
+    }
+  }
+
   return (
     <Section title={t.webSearchTestSection} desc={desc}>
       <div className="kv-cli-card">
+        {config.provider === 'deepseek' && (
+          <div className="flex min-w-0 items-center gap-2 pt-3">
+            <Button size="sm" onClick={() => void chooseImage()} disabled={running}>
+              <ImagePlus size={14} />{t.webSearchChooseImage}
+            </Button>
+            {imagePath && <>
+              <span className="min-w-0 truncate text-xs">{imagePath.split(/[\\/]/).pop()}</span>
+              <IconButton size="xs" label={t.webSearchRemoveImage} disabled={running} onClick={() => { setImagePath(null); setState({ status: 'idle' }) }}>
+                <X size={13} />
+              </IconButton>
+            </>}
+          </div>
+        )}
         <div className="flex items-center gap-2 py-3">
           <Input
             value={query}
             onChange={setQuery}
-            placeholder={t.webSearchTestPlaceholder}
-            aria-label={t.webSearchTestPlaceholder}
+            placeholder={imagePath ? t.webSearchImageQuery : t.webSearchTestPlaceholder}
+            aria-label={imagePath ? t.webSearchImageQuery : t.webSearchTestPlaceholder}
             className="min-w-0 flex-1"
             onKeyDown={(event) => {
               if (event.nativeEvent.isComposing || event.key !== 'Enter') return
@@ -536,7 +563,7 @@ function TestSearch({ t, config, desc }: { t: I18n; config: WebSearchConfig; des
           />
           <Button
             onClick={() => void run()}
-            disabled={!query.trim() || running}
+            disabled={(!query.trim() && !imagePath) || running}
             data-tauri-drag-region="false"
           >
             {running ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
@@ -563,7 +590,18 @@ function TestSearch({ t, config, desc }: { t: I18n; config: WebSearchConfig; des
                 {state.results.map((r, i) => (
                   <li key={`${r.url}-${i}`} className="flex min-w-0 items-baseline gap-2 text-[12px]">
                     <span className="w-3 shrink-0 text-right tabular-nums text-[var(--text-faint)]">{i + 1}</span>
-                    <span className="min-w-0 flex-1 truncate text-[var(--text)]">{r.title || r.url}</span>
+                    {imagePath ? (
+                      <a href={r.url} className="min-w-0 flex-1 truncate" onClick={(event) => {
+                        event.preventDefault()
+                        void api.openExternal(r.url)
+                      }}>{r.title || r.url}</a>
+                    ) : <span className="min-w-0 flex-1 truncate text-[var(--text)]">{r.title || r.url}</span>}
+                    {r.imageUrl && (
+                      <a href={r.imageUrl} onClick={(event) => {
+                        event.preventDefault()
+                        void api.openExternal(event.currentTarget.href)
+                      }}>{t.webSearchOpenImage}</a>
+                    )}
                     <span className="max-w-[40%] shrink-0 truncate font-mono text-[11px] text-[var(--text-faint)]">
                       {hostname(r.url)}
                     </span>
@@ -722,7 +760,7 @@ function DefaultsPage({
         </div>
       </Section>
 
-      <TestSearch key="defaults" t={t} config={config} desc={t.webSearchTestDefaultsHint} />
+      <TestSearch key={config.provider} t={t} config={config} desc={t.webSearchTestDefaultsHint} />
     </>
   )
 }

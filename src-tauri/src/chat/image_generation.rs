@@ -1625,7 +1625,7 @@ fn reject_excess_reference_images(
     }
 }
 
-fn load_input_image_from_path(path: &Path) -> Result<InputImage, String> {
+pub(crate) fn load_input_image_from_path(path: &Path) -> Result<InputImage, String> {
     let bytes = fs::read(path).map_err(|err| format!("Read input image failed: {err}"))?;
     if bytes.is_empty() {
         return Err("Input image is empty".to_string());

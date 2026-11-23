@@ -313,6 +313,7 @@ pub(super) fn apply_web_search_mode_tool_filter(
     tools: &mut Vec<ChatToolDefinition>,
     mode: crate::chat::types::WebSearchMode,
     settings: &crate::settings::Settings,
+    attachments: &[crate::chat::types::Attachment],
 ) {
     const SEARCH_WEB_ID: &str = "native__web_search";
     match mode {
@@ -320,6 +321,24 @@ pub(super) fn apply_web_search_mode_tool_filter(
             let present = tools.iter().any(|t| t.id == SEARCH_WEB_ID);
             if !present && crate::mcp::registry::web_search_configured(settings) {
                 tools.push(crate::mcp::types::native_web_search_tool());
+            }
+            if settings.lens.web_search.provider == crate::settings::WebSearchProvider::Deepseek {
+                if let Some(tool) = tools.iter_mut().find(|tool| tool.id == SEARCH_WEB_ID) {
+                    let images: Vec<_> = attachments
+                        .iter()
+                        .filter(|a| a.attachment_type == "image")
+                        .map(|a| &a.path)
+                        .collect();
+                    if !images.is_empty() {
+                        tool.input_schema["properties"]["image_attachment"] = serde_json::json!({
+                            "type": "string", "enum": images,
+                            "description": "For reverse image search, select the image from the current user message. Omit for a text search."
+                        });
+                        tool.description.push_str(
+                            " Use image_attachment to find the source of an attached picture.",
+                        );
+                    }
+                }
             }
         }
         crate::chat::types::WebSearchMode::Builtin | crate::chat::types::WebSearchMode::Off => {
@@ -524,7 +543,7 @@ mod web_search_filter_tests {
                 crate::mcp::types::native_web_search_tool(),
                 crate::mcp::types::native_web_fetch_tool(),
             ];
-            apply_web_search_mode_tool_filter(&mut tools, mode, &settings);
+            apply_web_search_mode_tool_filter(&mut tools, mode, &settings, &[]);
             assert!(
                 !tools.iter().any(|t| t.id == "native__web_search"),
                 "search_web should be stripped in {mode:?}"
@@ -540,7 +559,7 @@ mod web_search_filter_tests {
     fn third_party_keeps_existing_search_web() {
         let settings = crate::settings::Settings::default();
         let mut tools = vec![crate::mcp::types::native_web_search_tool()];
-        apply_web_search_mode_tool_filter(&mut tools, WebSearchMode::ThirdParty, &settings);
+        apply_web_search_mode_tool_filter(&mut tools, WebSearchMode::ThirdParty, &settings, &[]);
         assert!(tools.iter().any(|t| t.id == "native__web_search"));
     }
 }

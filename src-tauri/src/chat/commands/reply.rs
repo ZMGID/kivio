@@ -725,7 +725,10 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             crate::chat::types::WebSearchMode::resolve(conversation.web_search_mode, &settings)
                 .for_provider(&provider);
         if !builder_mode {
-            apply_web_search_mode_tool_filter(&mut tools, web_search_mode, &settings);
+            let attachments = last_user_idx
+                .map(|index| conversation.messages[index].attachments.as_slice())
+                .unwrap_or_default();
+            apply_web_search_mode_tool_filter(&mut tools, web_search_mode, &settings, attachments);
         }
         append_voice_orchestration_tools(&mut tools, is_brain);
         crate::chat::plan_document::append_tools(&mut tools, plan_mode && !builder_mode);

@@ -1984,13 +1984,13 @@ export const api = {
     invoke<{ success: boolean; error?: string }>('test_provider_connection', { providerId, provider }),
 
   // 测试网络搜索：用传入的（可能未保存的）配置真实跑一次搜索
-  testWebSearch: (config: NonNullable<Settings['lens']['webSearch']>, query: string) =>
+  testWebSearch: (config: NonNullable<Settings['lens']['webSearch']>, query: string, imagePath?: string) =>
     invoke<{
       success: boolean
       provider?: string
-      results?: { title: string; url: string; content: string }[]
+      results?: { title: string; url: string; content: string; imageUrl?: string }[]
       error?: string
-    }>('test_web_search', { config, query }),
+    }>('test_web_search', { config, query, imagePath }),
 
   // 权限相关（macOS）
   getPermissionStatus: () => invoke<PermissionStatus>('get_permission_status'),

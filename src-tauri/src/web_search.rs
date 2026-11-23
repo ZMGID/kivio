@@ -23,6 +23,8 @@ pub struct WebSearchResult {
     pub content: String,
     pub published_date: Option<String>,
     pub score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,10 +310,17 @@ pub async fn search_web(
     state: &AppState,
     config: &LensWebSearchConfig,
     query: &str,
+    image: Option<&std::path::Path>,
     retry_attempts: usize,
     app: Option<&tauri::AppHandle>,
 ) -> Result<Vec<WebSearchResult>, String> {
     let query = query.trim();
+    if let Some(image) = image {
+        if config.provider != WebSearchProvider::Deepseek {
+            return Err("Image search requires the DeepSeek search provider".into());
+        }
+        return search_deepseek_image(state, config, query, image, retry_attempts).await;
+    }
     if query.is_empty() {
         return Ok(Vec::new());
     }
@@ -407,6 +416,7 @@ async fn search_ollama(
             content: result.content.trim().to_string(),
             published_date: None,
             score: None,
+            image_url: None,
         })
         .collect())
 }
@@ -488,6 +498,7 @@ fn parse_exa_mcp_results(content: &str, max_results: usize) -> Vec<WebSearchResu
                     content: content.trim().to_string(),
                     published_date: result.published_date,
                     score: result.score,
+                    image_url: None,
                 }
             })
             .take(max_results)
@@ -508,6 +519,7 @@ fn parse_exa_mcp_results(content: &str, max_results: usize) -> Vec<WebSearchResu
         content: trimmed.chars().take(4000).collect(),
         published_date: None,
         score: None,
+        image_url: None,
     }]
 }
 
@@ -557,6 +569,7 @@ fn parse_exa_mcp_text_blocks(text: &str, max_results: usize) -> Vec<WebSearchRes
             content: content.trim().to_string(),
             published_date: published,
             score: None,
+            image_url: None,
         });
     }
     results
@@ -617,6 +630,7 @@ async fn search_brave(
                 content,
                 published_date: result.page_age.filter(|age| !age.trim().is_empty()),
                 score: None,
+                image_url: None,
             }
         })
         .collect())
@@ -678,6 +692,7 @@ fn keenable_web_results(
                     .collect(),
                 published_date: result.published_at.filter(|d| !d.trim().is_empty()),
                 score: None,
+                image_url: None,
             }
         })
         .collect()
@@ -753,6 +768,7 @@ fn specstream_web_results(
             content: source.snippet.trim().to_string(),
             published_date: source.published.filter(|d| !d.trim().is_empty()),
             score: None,
+            image_url: None,
         })
         .collect()
 }
@@ -1002,6 +1018,7 @@ fn tinyfish_web_results(
             content: result.snippet.trim().to_string(),
             published_date: result.date.filter(|date| !date.trim().is_empty()),
             score: None,
+            image_url: None,
         })
         .collect()
 }
@@ -1033,6 +1050,7 @@ fn parse_tinyfish_mcp_payload(
         content: trimmed.chars().take(4000).collect(),
         published_date: None,
         score: None,
+        image_url: None,
     }]
 }
 
@@ -1110,6 +1128,7 @@ async fn search_serper(
                 content,
                 published_date: None,
                 score: None,
+                image_url: None,
             });
         }
     }
@@ -1124,6 +1143,7 @@ async fn search_serper(
                 content: result.snippet.trim().to_string(),
                 published_date: result.date.filter(|date| !date.trim().is_empty()),
                 score: None,
+                image_url: None,
             }),
     );
     Ok(results)
@@ -1174,6 +1194,7 @@ async fn search_bocha(
                 content: content.trim().to_string(),
                 published_date: page.date_published.filter(|date| !date.trim().is_empty()),
                 score: None,
+                image_url: None,
             }
         })
         .collect())
@@ -1218,6 +1239,7 @@ async fn search_zhipu(
             content: result.content.trim().to_string(),
             published_date: result.publish_date.filter(|date| !date.trim().is_empty()),
             score: None,
+            image_url: None,
         })
         .collect())
 }
@@ -1319,6 +1341,7 @@ async fn search_kimi(
                 content: content.trim().to_string(),
                 published_date: result.date.filter(|date| !date.trim().is_empty()),
                 score: None,
+                image_url: None,
             }
         })
         .collect())
@@ -1358,6 +1381,7 @@ async fn search_searxng(
             content: result.content.trim().to_string(),
             published_date: result.published_date.filter(|date| !date.trim().is_empty()),
             score: None,
+            image_url: None,
         })
         .collect())
 }
@@ -1418,6 +1442,7 @@ async fn search_tavily(
             content: result.content.trim().to_string(),
             published_date: result.published_date,
             score: result.score,
+            image_url: None,
         })
         .collect();
 
@@ -1434,6 +1459,7 @@ async fn search_tavily(
                 content: answer.trim().to_string(),
                 published_date: None,
                 score: None,
+                image_url: None,
             },
         );
     }
@@ -1506,6 +1532,7 @@ async fn search_exa(
                 content: content.trim().to_string(),
                 published_date: result.published_date,
                 score: result.score,
+                image_url: None,
             }
         })
         .collect())
@@ -1584,6 +1611,7 @@ async fn search_grok(
             content: answer,
             published_date: None,
             score: None,
+            image_url: None,
         });
     }
     let max_results = config.max_results.clamp(1, 10) as usize;
@@ -1594,6 +1622,7 @@ async fn search_grok(
             content: String::new(),
             published_date: None,
             score: None,
+            image_url: None,
         });
     }
     Ok(results)
@@ -1601,11 +1630,11 @@ async fn search_grok(
 
 /// Accept existing API bases, including the old Responses endpoint, without
 /// duplicating `/v1`. Custom gateway prefixes remain intact.
-fn deepseek_tool_url(base: &str, tool: &str) -> String {
+fn deepseek_api_url(base: &str, route: &str) -> String {
     let base = normalized_base_url(base, "https://api.deepseek.com");
     let base = base.strip_suffix("/responses").unwrap_or(base);
     let base = base.strip_suffix("/v1").unwrap_or(base);
-    format!("{base}/v1/tools/{tool}")
+    format!("{base}/v1/{route}")
 }
 
 #[derive(Debug, Deserialize)]
@@ -1642,7 +1671,7 @@ async fn search_deepseek(
     if query.chars().count() > 128 {
         return Err("DeepSeek search query must contain 1 to 128 Unicode characters".to_string());
     }
-    let url = deepseek_tool_url(&config.deepseek_base_url, "search");
+    let url = deepseek_api_url(&config.deepseek_base_url, "tools/search");
     let count = config.max_results.clamp(1, 10);
     let body = serde_json::json!({
         "query": query,
@@ -1669,9 +1698,90 @@ async fn search_deepseek(
                 content,
                 published_date: item.date,
                 score: item.rerank_score,
+                image_url: None,
             }
         })
         .collect())
+}
+
+/// The raw Search API only accepts text. Flash returns visual matches in hosted
+/// search calls, including optional source image URLs that citations alone omit.
+async fn search_deepseek_image(
+    state: &AppState,
+    config: &LensWebSearchConfig,
+    query: &str,
+    image: &std::path::Path,
+    retry_attempts: usize,
+) -> Result<Vec<WebSearchResult>, String> {
+    let key = config.deepseek_api_key.trim();
+    if key.is_empty() {
+        return Err("DeepSeek API key is not configured".into());
+    }
+    let path = image.to_owned();
+    let image = tokio::task::spawn_blocking(move || {
+        crate::chat::image_generation::load_input_image_from_path(&path)
+    })
+    .await
+    .map_err(|err| err.to_string())??;
+    let url = deepseek_api_url(&config.deepseek_base_url, "responses");
+    let body = serde_json::json!({
+        "model": "deepseek-flash",
+        "reasoning": {"effort": "none"},
+        "tools": [{"type": "deepseek_web_search"}],
+        "input": [{"role": "user", "content": [
+            {"type": "input_text", "text": format!("Use reverse image search to find online sources for the attached image. {query}")},
+            {"type": "input_image", "image_url": image.data_url()}
+        ]}]
+    });
+    let response = send_with_retry("DeepSeek image search", retry_attempts, || {
+        crate::api::with_chat_request_timeout(state.http.post(&url).bearer_auth(key).json(&body))
+            .send()
+    })
+    .await?;
+    let response: serde_json::Value = read_search_json("DeepSeek image search", response).await?;
+    if response["status"] != "completed" {
+        return Err(response["error"]["message"]
+            .as_str()
+            .unwrap_or("DeepSeek image search did not complete")
+            .into());
+    }
+    let mut results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for call in response["output"].as_array().into_iter().flatten() {
+        if call["type"] != "web_search_call"
+            || !matches!(
+                call["kind"].as_str(),
+                Some("image_search" | "deep_image_search")
+            )
+        {
+            continue;
+        }
+        for source in call["action"]["sources"].as_array().into_iter().flatten() {
+            let http_url = |field: &str| {
+                source[field].as_str().filter(|value| {
+                    reqwest::Url::parse(value)
+                        .is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+                })
+            };
+            let Some(url) = http_url("url") else { continue };
+            let image_url = http_url("image_url");
+            if !seen.insert((url, image_url)) {
+                continue;
+            }
+            results.push(WebSearchResult {
+                title: source["title"].as_str().unwrap_or(url).to_owned(),
+                url: url.to_owned(),
+                content: source["snippet"].as_str().unwrap_or_default().to_owned(),
+                published_date: source["published_at"].as_str().map(str::to_owned),
+                score: None,
+                image_url: image_url.map(str::to_owned),
+            });
+            if results.len() == config.max_results.clamp(1, 10) as usize {
+                return Ok(results);
+            }
+        }
+    }
+    Ok(results)
 }
 
 fn normalize_citation_url(url: &str) -> &str {
@@ -1826,6 +1936,9 @@ pub fn format_web_context(results: &[WebSearchResult]) -> String {
         };
         lines.push(format!("[{}] {}", idx + 1, title));
         lines.push(format!("URL: {}", result.url));
+        if let Some(image) = &result.image_url {
+            lines.push(format!("Image: {image}"));
+        }
         if let Some(date) = result
             .published_date
             .as_deref()
@@ -1921,6 +2034,7 @@ mod tests {
             content: "Helpful snippet".to_string(),
             published_date: Some("2026-03-03".to_string()),
             score: Some(0.5),
+            image_url: None,
         }]);
         assert!(context.contains("Web search context:"));
         assert!(context.contains("[1] Docs"));

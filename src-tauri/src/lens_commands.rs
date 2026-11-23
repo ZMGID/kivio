@@ -940,7 +940,10 @@ pub(crate) async fn lens_ask(
             .find(|message| message.role == "user")
             .map(|message| message.content.trim())
             .unwrap_or_default();
-        let explicit_search = explicitly_requests_web_search(user_question);
+        let image_search = has_image
+            && settings.lens.web_search.provider == crate::settings::WebSearchProvider::Deepseek
+            && explicitly_requests_image_search(user_question);
+        let explicit_search = image_search || explicitly_requests_web_search(user_question);
         let mut plan = if explicit_search {
             WebSearchToolPlan {
                 should_search: true,
@@ -1015,10 +1018,16 @@ pub(crate) async fn lens_ask(
                 &[],
                 None,
             );
+            let search_image = if image_search {
+                Some(resolve_explain_image_path(&app, &state, &image_id)?)
+            } else {
+                None
+            };
             match search_web(
                 &state,
                 &settings.lens.web_search,
                 &plan.query,
+                search_image.as_deref(),
                 retry_attempts,
                 Some(&app),
             )
@@ -1296,6 +1305,23 @@ fn emit_lens_web_search(
             "error": error,
         }),
     );
+}
+
+fn explicitly_requests_image_search(text: &str) -> bool {
+    let query = text.to_lowercase();
+    [
+        "以图搜",
+        "识图搜索",
+        "搜图",
+        "搜这张图",
+        "这张图的来源",
+        "这张图的出处",
+        "reverse image search",
+        "search by image",
+        "find the source of this image",
+    ]
+    .iter()
+    .any(|phrase| query.contains(phrase))
 }
 
 fn explicitly_requests_web_search(text: &str) -> bool {

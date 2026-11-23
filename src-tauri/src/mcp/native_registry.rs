@@ -1159,10 +1159,45 @@ fn call_web_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         } else {
             1
         };
+        let image = match ctx
+            .arguments
+            .get("image_attachment")
+            .filter(|value| !value.is_null())
+        {
+            None => None,
+            Some(value) => {
+                let name = value.as_str().ok_or("Expected an image attachment name")?;
+                let native = ctx
+                    .native_ctx
+                    .ok_or("Image search requires a conversation")?;
+                let allowed = native
+                    .run_tools
+                    .iter()
+                    .find(|tool| tool.id == "native__web_search")
+                    .and_then(|tool| {
+                        tool.input_schema["properties"]["image_attachment"]["enum"].as_array()
+                    })
+                    .is_some_and(|images| images.contains(value));
+                if !allowed
+                    || std::path::Path::new(name)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        != Some(name)
+                {
+                    return Err("Select an image attached to the current message".into());
+                }
+                Some(crate::chat::attachments::resolve_attachment_file_path(
+                    ctx.app,
+                    Some(&native.conversation_id),
+                    name,
+                )?)
+            }
+        };
         let results = crate::web_search::search_web(
             ctx.state,
             &ctx.settings.lens.web_search,
             &query,
+            image.as_deref(),
             retry_attempts,
             Some(ctx.app),
         )

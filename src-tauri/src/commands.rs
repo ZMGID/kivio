@@ -1330,14 +1330,24 @@ pub(crate) async fn test_web_search(
     state: State<'_, AppState>,
     config: crate::settings::LensWebSearchConfig,
     query: String,
+    image_path: Option<std::path::PathBuf>,
 ) -> Result<serde_json::Value, String> {
     let query = query.trim();
-    if query.is_empty() {
+    if query.is_empty() && image_path.is_none() {
         return Ok(serde_json::json!({ "success": false, "error": "Empty query" }));
     }
     let settings = state.settings_read().clone();
     let retry_attempts = effective_retry_attempts(&settings);
-    match crate::web_search::search_web(&state, &config, query, retry_attempts, Some(&app)).await {
+    match crate::web_search::search_web(
+        &state,
+        &config,
+        query,
+        image_path.as_deref(),
+        retry_attempts,
+        Some(&app),
+    )
+    .await
+    {
         Ok(results) => Ok(serde_json::json!({
             "success": true,
             "provider": crate::web_search::provider_label(config.provider),

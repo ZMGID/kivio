@@ -1,8 +1,12 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import { open } from '@tauri-apps/plugin-dialog'
+import { invoke } from '@tauri-apps/api/core'
+
 import { i18n } from '../components/i18n'
 import { WebSearchPanel } from './WebSearchPanel'
 
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
   Channel: class { onmessage = () => {} },
@@ -27,6 +31,23 @@ describe('DeepSeek search settings', () => {
     fireEvent.click(screen.getByRole('button', { name: i18n.zh.webSearchFetchFollow.replace('{name}', 'Exa') }))
     fireEvent.click(screen.getByRole('option', { name: 'DeepSeek' }))
     expect(onChange).toHaveBeenLastCalledWith({ fetchProvider: 'deepseek' })
+  })
+
+  it('searches with the selected image alone and clears it when the default provider changes', async () => {
+    const config = { enabled: true, provider: 'deepseek' as const, tavilyApiKey: '', exaApiKey: '', maxResults: 5, searchDepth: 'basic' as const }
+    const { rerender } = render(<WebSearchPanel t={i18n.zh} onChange={vi.fn()} webSearch={config} />)
+    vi.mocked(open).mockResolvedValueOnce('/tmp/logo.png')
+    vi.mocked(invoke).mockResolvedValueOnce({ success: true, results: [
+      { title: 'Logo source', url: 'https://example.com/logo', imageUrl: 'https://example.com/logo.png' },
+    ] })
+    fireEvent.click(screen.getByRole('button', { name: i18n.zh.webSearchChooseImage }))
+    await screen.findByText('logo.png')
+    fireEvent.click(screen.getByRole('button', { name: i18n.zh.webSearchTestRun }))
+    expect((await screen.findByRole('link', { name: i18n.zh.webSearchOpenImage })).getAttribute('href')).toBe('https://example.com/logo.png')
+    expect(invoke).toHaveBeenCalledWith('test_web_search', expect.objectContaining({ query: '', imagePath: '/tmp/logo.png' }))
+    rerender(<WebSearchPanel t={i18n.zh} onChange={vi.fn()} webSearch={{ ...config, provider: 'exa' }} />)
+    expect(screen.queryByText('logo.png')).toBeNull()
+    expect(screen.getByRole('button', { name: i18n.zh.webSearchTestRun })).toHaveProperty('disabled', true)
   })
 
   it('assigns a provider to search or fetch from its detail page', () => {

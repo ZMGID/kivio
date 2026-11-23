@@ -59,7 +59,7 @@ async fn deepseek_search_uses_raw_api_and_preserves_sources() {
             "maxResults": 2
         }))
         .unwrap();
-        let results = search_web(&state, &config, " Rust site:example.com ", 1, None)
+        let results = search_web(&state, &config, " Rust site:example.com ", None, 1, None)
             .await
             .unwrap();
         let request = request.await.unwrap();
@@ -90,6 +90,53 @@ async fn deepseek_search_uses_raw_api_and_preserves_sources() {
 }
 
 #[tokio::test]
+async fn image_lookup_returns_visual_matches_and_keeps_the_source_page_without_an_image_url() {
+    let photo = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
+    image::RgbImage::new(3, 3).save(photo.path()).unwrap();
+    let source = serde_json::json!({"url": "https://example.com/source", "image_url": "https://example.com/photo.jpg", "title":"Photo"});
+    let (base, request) = server("200 OK", serde_json::json!({
+        "status": "completed", "output": [
+            {"type":"web_search_call", "kind":"search", "action":{"sources":[{"url":"https://example.com/text"}]}},
+            {"type":"web_search_call", "kind":"image_search", "action":{"sources":[
+                source, source, {"url":"https://example.com/page-only"}, {"url":"https://example.com/extra"}
+            ]}}
+        ]
+    })).await;
+    let config = LensWebSearchConfig {
+        provider: WebSearchProvider::Deepseek,
+        deepseek_api_key: "test-key".into(),
+        deepseek_base_url: format!("{base}/v1/responses"),
+        max_results: 2,
+        ..Default::default()
+    };
+    let results = search_web(
+        &crate::state::test_app_state(),
+        &config,
+        "",
+        Some(photo.path()),
+        1,
+        None,
+    )
+    .await
+    .unwrap();
+    let request = request.await.unwrap();
+    assert!(request.starts_with("POST /v1/responses "));
+    let body: serde_json::Value =
+        serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert!(body["input"][0]["content"][1]["image_url"]
+        .as_str()
+        .unwrap()
+        .starts_with("data:image/png;base64,"));
+    assert_eq!(results.len(), 2);
+    assert_eq!(
+        results[0].image_url.as_deref(),
+        Some("https://example.com/photo.jpg")
+    );
+    assert_eq!(results[1].url, "https://example.com/page-only");
+    assert!(results[1].image_url.is_none());
+}
+
+#[tokio::test]
 async fn deepseek_empty_search_is_success_and_errors_are_reported() {
     for (status, body, expected) in [
         ("200 OK", serde_json::json!({"results":[]}), None),
@@ -111,7 +158,15 @@ async fn deepseek_empty_search_is_success_and_errors_are_reported() {
             deepseek_base_url: base,
             ..Default::default()
         };
-        let result = search_web(&crate::state::test_app_state(), &config, "Rust", 1, None).await;
+        let result = search_web(
+            &crate::state::test_app_state(),
+            &config,
+            "Rust",
+            None,
+            1,
+            None,
+        )
+        .await;
         request.await.unwrap();
         match expected {
             None => assert!(result.unwrap().is_empty()),
