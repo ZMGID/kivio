@@ -55,7 +55,8 @@
   overflow-wrap: anywhere;
 }
 
-.cli-limits-windows {
+.cli-limits-windows,
+.cli-limits-reset-cards {
   border: 1px solid var(--theme-surface-border);
   border-radius: 12px;
   background: var(--theme-surface-soft);
@@ -92,7 +93,8 @@
   gap: 3px;
 }
 
-.cli-limit-summary h3 {
+.cli-limit-summary h3,
+.cli-limits-reset-cards h3 {
   margin: 0;
   font-size: 13px;
   font-weight: 600;
@@ -157,6 +159,7 @@
 .cli-limit-meta,
 .cli-limits-message,
 .cli-limits-stale,
+.cli-limits-reset-cards time,
 .cli-limits-credits {
   color: var(--text-muted);
   font-size: 12px;
@@ -199,7 +202,34 @@
   font-variant-numeric: tabular-nums;
 }
 
+.cli-limits-reset-cards {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 11px 18px;
+  overflow-wrap: anywhere;
+}
+
+.cli-limits-reset-cards strong {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cli-limits-reset-cards time {
+  margin-inline-start: auto;
+}
+
 @container (max-width: 480px) {
+  .cli-limits-reset-cards {
+    padding-inline: 13px;
+  }
+
+  .cli-limits-reset-cards time {
+    flex-basis: 100%;
+    margin-inline-start: 0;
+  }
+
   .cli-limit-row {
     grid-template-columns: minmax(0, 1fr);
     padding-inline: 13px;

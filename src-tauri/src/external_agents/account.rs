@@ -310,6 +310,7 @@ fn normalize(
     };
     let mut windows = Vec::new();
     let mut credits = Value::Null;
+    let mut reset_credits = Value::Null;
     let mut add_window = |name: String, window: &Value, claude: bool| {
         let used = window[if claude { "utilization" } else { "usedPercent" }].as_f64();
         if let Some(used) = used.filter(|value| value.is_finite()) {
@@ -409,14 +410,26 @@ fn normalize(
         } else {
             collect("Codex", &usage["rateLimits"]);
         }
+        let summary = &usage["rateLimitResetCredits"];
+        if let Some(count) = summary["availableCount"].as_u64() {
+            let next_expiry = summary["credits"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|credit| credit["status"] == "available")
+                .filter_map(|credit| credit["expiresAt"].as_i64().filter(|expiry| *expiry > 0))
+                .min();
+            reset_credits = json!({"availableCount":count,"nextExpiresAt":next_expiry});
+        }
     }
-    if windows.is_empty() && unavailable.is_none() {
+    if windows.is_empty() && reset_credits.is_null() && unavailable.is_none() {
         unavailable = Some("当前账号或 CLI 未提供额度窗口".into());
     }
     json!({"agentId":agent,"account": if account.is_object() { json!({
         "type":account["type"].as_str().or_else(|| account["apiProvider"].as_str()),
         "email":account["email"].as_str(),"plan":account["planType"].as_str().or_else(|| account["subscriptionType"].as_str())
-    }) } else { Value::Null }, "windows":windows,"credits":credits,"unavailable":unavailable,
+    }) } else { Value::Null }, "windows":windows,"credits":credits,"resetCredits":reset_credits,
+    "unavailable":unavailable,
     "checkedAt":chrono::Utc::now().timestamp()})
 }
 
@@ -609,5 +622,33 @@ mod tests {
         );
         assert!(unavailable["windows"].as_array().unwrap().is_empty());
         assert!(unavailable["unavailable"].is_string());
+    }
+
+    #[test]
+    fn codex_reset_cards_are_read_independently_of_quota_windows() {
+        let status = normalize(
+            "codex",
+            AccountProtocol::CodexAppServer,
+            &json!({"type":"chatgpt"}),
+            &json!({
+                "rateLimits": {"credits": {"balance": "42", "unlimited": false}},
+                "rateLimitResetCredits": {
+                    "availableCount": 4,
+                    "credits": [
+                        {"status":"consumed","expiresAt":100},
+                        {"status":"available","expiresAt":300,"id":"internal-card-id"},
+                        {"status":"available","expiresAt":200}
+                    ]
+                }
+            }),
+            None,
+        );
+        assert_eq!(status["windows"], json!([]));
+        assert_eq!(status["credits"]["balance"], "42");
+        assert_eq!(
+            status["resetCredits"],
+            json!({"availableCount":4,"nextExpiresAt":200})
+        );
+        assert!(status["unavailable"].is_null());
     }
 }

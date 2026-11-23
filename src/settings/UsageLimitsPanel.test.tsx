@@ -81,6 +81,7 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
   const cached = screen.getByRole('progressbar', { name: 'Gemini Models · 5h' })
   expect(cached).toHaveAttribute('aria-valuenow', '72')
   expect(screen.queryByRole('region', { name: 'Kimi' })).not.toBeInTheDocument()
+  expect(screen.queryByText(/Kimi CLI sign-in required/)).not.toBeInTheDocument()
   await act(async () => {})
   expect(detect).toHaveBeenCalledTimes(1)
   expect(get).toHaveBeenCalledTimes(beforeReopen)
@@ -115,6 +116,14 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
 
   get.mockImplementation(async (id, _, mode) => {
     if (id === 'claude') throw new Error('Account service timed out')
+    if (id === 'codex') {
+      const expiresAt = Math.floor((Date.now() + 86_400_000) / 1000)
+      return {
+        agentId: id, account: null, credits: null, unavailable: null, checkedAt: 123,
+        resetCredits: { availableCount: 3, nextExpiresAt: expiresAt },
+        windows: [],
+      }
+    }
     return {
       agentId: id, account: null, credits: null, checkedAt: 123,
       unavailable: mode === 'refresh' ? null : 'Kimi CLI sign-in required',
@@ -122,10 +131,17 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
     }
   })
   await act(async () => onAvailability([agent('kimi', 'Kimi', 'native'), agent('claude', 'Claude', 'native')]))
-  expect(await screen.findByText(/Account service timed out/)).toBeVisible()
-  expect(screen.getByText(/Kimi CLI sign-in required/)).toBeVisible()
+  expect(await screen.findByText(/^Usage limits are unavailable/)).toBeVisible()
+  expect(screen.queryByText(/Account service timed out|Kimi CLI sign-in required/)).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Refresh usage limits' }))
   expect(await screen.findByRole('progressbar', { name: 'Monthly' })).toBeVisible()
-  expect(screen.getByText(/Claude.*Account service timed out/)).toBeVisible()
-  expect(screen.queryByText(/Kimi CLI sign-in required/)).not.toBeInTheDocument()
+  expect(screen.queryByText(/Account service timed out|Kimi CLI sign-in required/)).not.toBeInTheDocument()
+
+  await act(async () => onAvailability([agent('codex', 'Codex', 'native')]))
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh usage limits' }))
+  const refreshedCodex = await screen.findByRole('region', { name: 'Codex' })
+  expect(await within(refreshedCodex).findByRole('heading', { name: 'Reset cards' })).toBeVisible()
+  expect(within(refreshedCodex).getByText('3 available')).toBeVisible()
+  expect(within(refreshedCodex).getByText(/^Next expires /)).toBeVisible()
+  expect(within(refreshedCodex).queryByRole('progressbar')).not.toBeInTheDocument()
 })

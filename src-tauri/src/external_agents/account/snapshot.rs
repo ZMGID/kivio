@@ -77,9 +77,12 @@ impl Slot {
                     .as_ref()
                     .map(|reading| &reading.value)
                     .filter(|previous| {
-                        previous["windows"]
+                        (previous["windows"]
                             .as_array()
                             .is_some_and(|w| !w.is_empty())
+                            || previous["resetCredits"]["availableCount"]
+                                .as_u64()
+                                .is_some_and(|count| count > 0))
                             && same_reported_account(previous, &next)
                     })
             {

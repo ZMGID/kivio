@@ -128,6 +128,9 @@ function AgentLimits({ agent, account, error, lang, now }: {
   const t = i18n[lang]
   const identity = [account.account?.email, account.account?.plan].filter(Boolean).join(' · ')
   const updatedAt = new Date(account.checkedAt * 1000)
+  const resetCredits = account.resetCredits
+  const nextExpiry = cliResetTime(resetCredits?.nextExpiresAt ?? null)
+  const expiresAt = nextExpiry === null ? null : new Date(nextExpiry)
   return (
     <section className="cli-limits-agent" aria-labelledby={`limits-heading-${agent.id}`}>
       <header className="cli-limits-agent-header">
@@ -143,9 +146,20 @@ function AgentLimits({ agent, account, error, lang, now }: {
         </time>
       </header>
       {error && <p className="cli-limits-stale" role="status" title={error}><CircleAlert size={14} aria-hidden="true" />{t.cliLimitsStale}</p>}
-      <div className="cli-limits-windows">
+      {account.windows.length > 0 && <div className="cli-limits-windows">
         {account.windows.map((window, index) => <LimitRow key={`${window.name}-${index}`} window={window} now={now} lang={lang} stale={Boolean(error)} />)}
-      </div>
+      </div>}
+      {resetCredits && resetCredits.availableCount > 0 && (
+        <div className="cli-limits-reset-cards">
+          <h3>{t.cliLimitsResetCards}</h3>
+          <strong>{t.cliLimitsResetCardsAvailable.replace('{n}', resetCredits.availableCount.toLocaleString(lang))}</strong>
+          {expiresAt && (
+            <time dateTime={expiresAt.toISOString()}>
+              {t.cliLimitsResetCardExpires.replace('{time}', expiresAt.toLocaleString(lang))}
+            </time>
+          )}
+        </div>
+      )}
       {account.credits && <p className="cli-limits-credits">
         <span>{account.credits.label}</span>
         <strong>{cliCreditAmount(account.credits, lang === 'zh')}</strong>
@@ -167,13 +181,10 @@ export function UsageLimitsPanel({ lang }: { lang: Lang }) {
 
   const available = useMemo(() => agents?.filter(agent => agent.available && agent.capabilities.account === 'native') ?? [], [agents])
   const accounts = useCliAccounts(available)
-  const readings = accounts.flatMap(({ agent, view }) => view.account?.windows.length
-    ? [<AgentLimits key={agent.id} agent={agent} account={view.account} error={view.error} now={now} lang={lang} />]
-    : [])
-  const notices = accounts.flatMap(({ agent, view }) => {
-    const reason = view.error || view.account?.unavailable
-    return reason && !view.account?.windows.length
-      ? [<p key={agent.id}>{agent.name} · {reason}</p>]
+  const readings = accounts.flatMap(({ agent, view }) => {
+    const { account, error } = view
+    return account && (account.windows.length > 0 || (account.resetCredits?.availableCount ?? 0) > 0)
+      ? [<AgentLimits key={agent.id} agent={agent} account={account} error={error} now={now} lang={lang} />]
       : []
   })
   const checking = accounts.some(account => account.checking)
@@ -204,10 +215,9 @@ export function UsageLimitsPanel({ lang }: { lang: Lang }) {
       {available.length
         ? <div className="cli-limits-list">
             {readings}
-            {(!readings.length || notices.length > 0) && <div className="cli-limits-message" role="status">
-              {!readings.length && <p>{checking ? t.cliLimitsChecking : t.cliLimitsNoReadings}</p>}
-              {notices}
-            </div>}
+            {!readings.length && <p className="cli-limits-message" role="status">
+              {checking ? t.cliLimitsChecking : t.cliLimitsNoReadings}
+            </p>}
           </div>
         : <p className="cli-limits-message" role="status">{scanFailed ? t.cliLimitsScanFailed : agents ? t.cliLimitsEmpty : t.cliLimitsScanning}</p>}
     </div>

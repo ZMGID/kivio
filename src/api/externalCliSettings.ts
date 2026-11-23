@@ -245,6 +245,7 @@ export interface ExternalCliAccount {
   account: { type: string | null; email: string | null; plan: string | null } | null
   windows: Array<{ name: string; usedPercent: number; resetsAt: string | number | null; windowDurationMins: number | null }>
   credits: { label: string; unlimited?: boolean; balance?: string | null; used?: number | null; limit?: number | null; currency?: string | null } | null
+  resetCredits?: { availableCount: number; nextExpiresAt: number | null } | null
   unavailable: string | null
   refreshError?: string
   checkedAt: number
