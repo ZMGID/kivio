@@ -3446,14 +3446,22 @@ async fn recovery_followed_by_success_drops_stale_degraded_card() {
     assert_eq!(result.content, "final answer");
     assert!(result.degraded.is_none());
     assert_eq!(server.captured_bodies().len(), 3);
-    let recovery_note = result.api_messages.iter()
+    let recovery_note = result
+        .api_messages
+        .iter()
         .filter(|message| message["role"] == "assistant")
         .filter_map(crate::chat::model::openai_message_text_content)
         .find(|text| text.contains("请求被拒绝"))
         .expect("recovery reason is available to the next model step");
     assert!(!recovery_note.contains("result:read"));
-    assert!(!result.segments.iter().any(|segment| segment.text.as_deref() == Some(recovery_note.as_str())));
-    assert!(!host.recorded_deltas().iter().any(|delta| delta.delta == recovery_note));
+    assert!(!result
+        .segments
+        .iter()
+        .any(|segment| segment.text.as_deref() == Some(recovery_note.as_str())));
+    assert!(!host
+        .recorded_deltas()
+        .iter()
+        .any(|delta| delta.delta == recovery_note));
     assert!(result.tool_records.iter().any(|r| r.id == "call_read"));
 }
 
