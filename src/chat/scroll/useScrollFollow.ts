@@ -66,7 +66,7 @@ export type ScrollFollowHandle = {
   isFollowing: () => boolean
   // 跟随中且正在主动贴底：按住指针（拖选文本）时跟随仍在，但缓动暂停、正文会落后。
   isPinningBottom: () => boolean
-  // isPinningBottom 变化时通知（不经 React 渲染）；返回取消订阅。
+  // isPinningBottom 变化时通知（配合 useSyncExternalStore）；返回取消订阅。
   subscribePinning: (listener: () => void) => () => void
   markLayoutCompensation: () => void
   // 仅在仍跟随时钉底（不 force re-attach）。live 行测高 / 代码块 hydrate 用。

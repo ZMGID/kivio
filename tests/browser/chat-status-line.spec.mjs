@@ -1,20 +1,13 @@
 import { expect, test } from '@playwright/test'
 
-// The trailing status line (墨墨) during and after generation: it follows the answer
-// smoothly while there is room, stays fixed in its slot once the answer reaches the
-// bottom, never covers the newest text, and does not jump when the turn settles.
-// Frame-timing assertions: a starved CPU can drop a frame and look like a jump, while a
-// real regression fails on every attempt.
-test.describe.configure({ retries: 2 })
+// The trailing status line (墨墨) during generation: once the answer reaches the bottom
+// while following, it stays fixed in its bottom slot and the text scrolls up past it,
+// never covering the newest line. Leaving the bottom or holding the pointer lets go of
+// the slot, so it never floats over history. Finishing at the bottom does not move it.
 
 const fixture = '/scripts/fixtures/chat-status-line.html'
 const MASCOT_PX = 28
-// One painted frame may move at most this far while following (a new paragraph lands
-// ~54px at once; the gap above the mascot absorbs most of it).
-const MAX_FRAME_MOVE_PX = 18
-// Settling may ease across a longer distance (gap removed, row handed to history); an
-// ease-out's first frame moves a bit further, but an unsmoothed snap (≥40px) must not happen.
-const MAX_SETTLE_FRAME_MOVE_PX = 24
+const LONG_REPLY = 14
 
 async function open(page) {
   await page.goto(fixture)
@@ -22,47 +15,39 @@ async function open(page) {
   await page.evaluate(() => document.fonts.ready)
 }
 
-// Frames (after `from`) where the mascot moved further than smooth easing allows. The
-// limit is per 60Hz frame and scales with elapsed time, so a dropped frame is not a jump.
-function jumps(samples, from = 0, limit = MAX_FRAME_MOVE_PX) {
-  const found = []
-  for (let index = 1; index < samples.length; index++) {
-    const [a, b] = [samples[index - 1], samples[index]]
-    if (b.t < from || a.height !== b.height) continue
-    const move = Math.abs(b.y - a.y)
-    const allowed = limit * Math.max(1, (b.t - a.t) / (1000 / 60) - 0.5)
-    if (move > allowed) found.push({ t: Math.round(b.t), dt: Math.round(b.t - a.t), from: a.y, to: b.y, scroll: [a.scrollTop, b.scrollTop], transform: b.transform })
-  }
-  return found
+// The answer has reached the bottom and the list is scrolling with it. The baseline is the
+// first frame with answer text (the send and its reserve have settled by then), not a fixed
+// time, so a slow page start cannot shift it.
+const scrollingWithAnswer = () => {
+  const samples = window.statusLine.samples
+  const sent = samples.find(s => s.textBottom != null)
+  return Boolean(sent) && samples.at(-1).sticky && samples.at(-1).scrollTop > sent.scrollTop + 50
 }
 
 async function streamToBottomAndPause(page) {
   await open(page)
   await page.evaluate(() => window.statusLine.startSampling())
-  const streaming = page.evaluate(() => window.statusLine.stream())
-  await page.waitForFunction(() => {
-    const samples = window.statusLine.samples
-    const sent = samples.find(s => s.t > 450)
-    return sent && samples.at(-1).sticky && samples.at(-1).scrollTop > sent.scrollTop + 50
-  })
+  const streaming = page.evaluate(p => window.statusLine.stream({ paragraphs: p }), LONG_REPLY)
+  await page.waitForFunction(scrollingWithAnswer)
   await page.evaluate(() => window.statusLine.pause())
   await streaming
   await page.waitForTimeout(600)
 }
 
+const now = page => page.evaluate(() => performance.now() - window.statusLine.t0)
+const samplesSince = (page, from) => page.evaluate(start => window.statusLine.samples.filter(s => s.t >= start), from)
 const overlaps = samples => samples.filter(s => s.textBottom != null && s.y < s.height && s.textBottom > s.y + 1)
 
-test('follows the answer smoothly, then stays fixed at the bottom without covering text', async ({ page }) => {
+for (const [pace, chunk] of [['steady', 12], ['bursty', 160]]) test(`stays fixed at the bottom while a ${pace} answer scrolls up, without covering text`, async ({ page }) => {
   await open(page)
   await page.evaluate(() => window.statusLine.startSampling())
-  await page.evaluate(() => window.statusLine.stream())
+  // Bursts land several lines at once, so the list's scroll glide falls furthest behind.
+  await page.evaluate(([p, c]) => window.statusLine.stream({ paragraphs: p, chunk: c, interval: c > 12 ? 120 : 40 }), [LONG_REPLY * (chunk > 12 ? 2 : 1), chunk])
   const samples = await page.evaluate(() => window.statusLine.stopSampling())
-  // Skip the send itself (new question + reserve snap into place).
-  expect(jumps(samples, 450)).toEqual([])
   expect(overlaps(samples)).toEqual([])
-  // Once the answer reaches the bottom the list starts scrolling; from then on the mascot holds its slot.
-  const sent = samples.find(s => s.t > 450).scrollTop
-  const scrolling = samples.findIndex(s => s.t > 450 && s.scrollTop > sent + 50)
+  const first = samples.findIndex(s => s.textBottom != null)
+  expect(first).toBeGreaterThanOrEqual(0)
+  const scrolling = samples.findIndex((s, index) => index > first && s.scrollTop > samples[first].scrollTop + 50)
   expect(scrolling).toBeGreaterThan(0)
   const pinned = samples.slice(scrolling)
   expect(pinned.length).toBeGreaterThan(30)
@@ -73,54 +58,39 @@ test('follows the answer smoothly, then stays fixed at the bottom without coveri
 })
 
 for (const stopped of [false, true]) {
-  test(`does not jump when a ${stopped ? 'stopped reply is persisted late' : 'short reply settles after a pause'}`, async ({ page }) => {
-    await open(page)
-    await page.evaluate(() => window.statusLine.startSampling())
-    // Short enough to stay in the open space below the question, where removing the
-    // breathing gap at handoff would visibly move the mascot if it were not eased.
-    const streaming = page.evaluate(() => window.statusLine.stream({ paragraphs: 1 }))
+  test(`does not move when a ${stopped ? 'stopped' : 'finished'} reply at the bottom is persisted`, async ({ page }) => {
+    await streamToBottomAndPause(page)
     if (stopped) {
-      await page.waitForTimeout(700)
       await page.evaluate(() => window.statusLine.cancel())
+      await page.waitForTimeout(1200)
     }
-    await streaming
-    // Longer than any settle window measured from the last movement.
-    await page.waitForTimeout(2200)
+    const before = await page.evaluate(() => window.statusLine.samples.at(-1))
     const settledAt = await page.evaluate(() => window.statusLine.persist())
     await page.waitForTimeout(800)
-    const samples = await page.evaluate(() => window.statusLine.stopSampling())
-    expect(jumps(samples, settledAt - 50, MAX_SETTLE_FRAME_MOVE_PX)).toEqual([])
-    const settled = samples.filter(s => s.t >= settledAt)
-    expect(settled[0].scrollTop).toBe(settled.at(-1).scrollTop)
-    // The handoff really moves the mascot here (the gap above it is removed), so the check is not vacuous.
-    if (!stopped) expect(Math.abs(settled.at(-1).y - settled[0].y)).toBeGreaterThan(MAX_SETTLE_FRAME_MOVE_PX)
-    const last = samples.at(-1)
-    expect(last.sticky).toBe(false)
-    expect(last.transform).toBe('')
+    const after = await samplesSince(page, settledAt)
+    for (const sample of after) expect(Math.abs(sample.y - before.y)).toBeLessThanOrEqual(1)
+    expect(after.at(-1).sticky).toBe(false)
   })
 }
 
 test('lets go of the bottom slot while the pointer is held and when the reader scrolls up', async ({ page }) => {
   await open(page)
   await page.evaluate(() => window.statusLine.startSampling())
-  const streaming = page.evaluate(() => window.statusLine.stream())
-  // Wait until the answer has reached the bottom and the list is scrolling with it.
-  await page.waitForFunction(() => {
-    const samples = window.statusLine.samples
-    const sent = samples.find(s => s.t > 450)
-    return sent && samples.at(-1).sticky && samples.at(-1).scrollTop > sent.scrollTop + 50
-  })
+  const streaming = page.evaluate(p => window.statusLine.stream({ paragraphs: p }), LONG_REPLY)
+  await page.waitForFunction(scrollingWithAnswer)
   await page.mouse.move(640, 300)
   await page.mouse.down()
-  await page.waitForTimeout(800)
-  const held = await page.evaluate(() => window.statusLine.samples.slice(-30))
+  await page.waitForTimeout(100)
+  const from = await now(page)
+  await page.waitForTimeout(700)
+  const held = await samplesSince(page, from)
+  expect(held.every(s => !s.sticky)).toBe(true)
   expect(overlaps(held)).toEqual([])
   await page.mouse.up()
   await page.mouse.wheel(0, -600)
   await page.waitForTimeout(400)
-  const detached = await page.evaluate(() => window.statusLine.samples.at(-1))
-  expect(detached.sticky).toBe(false)
-  expect(detached.transform).toBe('')
+  expect(await page.evaluate(() => window.statusLine.samples.at(-1).sticky)).toBe(false)
+  await page.evaluate(() => window.statusLine.pause())
   await streaming
 })
 
@@ -130,7 +100,7 @@ test('a pointer pressed during a pause releases the slot before new text arrives
   await page.mouse.down()
   await page.waitForTimeout(100)
   expect(await page.evaluate(() => window.statusLine.samples.at(-1).sticky)).toBe(false)
-  const from = await page.evaluate(() => performance.now() - window.statusLine.t0)
+  const from = await now(page)
   await page.evaluate(async () => {
     for (let i = 0; i < 6; i++) {
       window.statusLine.append(`\n\nHeld paragraph ${i}: more text keeps arriving while the reader holds the pointer down.`)
@@ -139,8 +109,7 @@ test('a pointer pressed during a pause releases the slot before new text arrives
     window.statusLine.status('Upstream is slow, retrying the request with a longer timeout so that this status note wraps onto a second line in the reading column, then a third.')
     await new Promise(resolve => setTimeout(resolve, 600))
   })
-  const held = await page.evaluate(start => window.statusLine.samples.filter(s => s.t >= start), from)
-  expect(overlaps(held)).toEqual([])
+  expect(overlaps(await samplesSince(page, from))).toEqual([])
   await page.mouse.up()
 })
 
@@ -153,8 +122,7 @@ test('a wrapping status note does not move the mascot out of its bottom slot', a
     return performance.now() - window.statusLine.t0
   })
   await page.waitForTimeout(900)
-  const after = await page.evaluate(start => window.statusLine.samples.filter(s => s.t >= start), from)
-  for (const sample of after) expect(Math.abs(sample.y - before.y)).toBeLessThanOrEqual(1)
+  for (const sample of await samplesSince(page, from)) expect(Math.abs(sample.y - before.y)).toBeLessThanOrEqual(1)
 })
 
 // Trackpad-like swipe: small deltas with a momentum tail.
@@ -165,43 +133,24 @@ async function swipe(page, direction) {
   }
 }
 
-for (const [where, paragraphs] of [['in the open space', 3], ['at the bottom', 14]]) {
-  test(`scrolling ${where} moves the mascot with the text instead of chasing it`, async ({ page }) => {
-    await open(page)
-    await page.evaluate(() => window.statusLine.startSampling())
-    const streaming = page.evaluate(p => window.statusLine.stream({ paragraphs: p }), paragraphs)
-    if (paragraphs > 3) {
-      await page.waitForFunction(() => {
-        const samples = window.statusLine.samples
-        const sent = samples.find(s => s.t > 450)
-        return sent && samples.at(-1).sticky && samples.at(-1).scrollTop > sent.scrollTop + 50
-      })
-    } else {
-      await page.waitForTimeout(1500)
-    }
-    // Output pauses (turn still live): from here on only scrolling moves anything.
-    await page.evaluate(() => window.statusLine.pause())
-    await streaming
-    await page.waitForTimeout(600)
-    const from = await page.evaluate(() => performance.now() - window.statusLine.t0)
-    await page.mouse.move(640, 400)
-    await swipe(page, -1)
-    await page.waitForTimeout(250)
-    await swipe(page, 1)
-    await swipe(page, 1)
-    await page.waitForTimeout(500)
-    const samples = (await page.evaluate(() => window.statusLine.stopSampling())).filter(s => s.t >= from)
-    expect(samples.some(s => s.scrollTop !== samples[0].scrollTop)).toBe(true)
-    const drift = []
-    for (let index = 1; index < samples.length; index++) {
-      const [a, b] = [samples[index - 1], samples[index]]
-      if (b.y > b.height || a.height !== b.height) continue
-      // Position within the content (y + scrollTop) changes only if the mascot lags the scroll.
-      const moved = (b.y + b.scrollTop) - (a.y + a.scrollTop)
-      // At the bottom slot the mascot is held by sticky while the list settles; that is not a chase.
-      if (Math.abs(moved) > 0.5 && !(a.sticky && b.sticky && !b.transform)) drift.push({ t: Math.round(b.t), moved, transform: b.transform })
-    }
-    expect(drift).toEqual([])
-    expect(samples.at(-1).transform).toBe('')
-  })
-}
+test('scrolling at the bottom moves the mascot with the text instead of chasing it', async ({ page }) => {
+  await streamToBottomAndPause(page)
+  const from = await now(page)
+  await page.mouse.move(640, 400)
+  await swipe(page, -1)
+  await page.waitForTimeout(250)
+  await swipe(page, 1)
+  await swipe(page, 1)
+  await page.waitForTimeout(500)
+  const samples = await samplesSince(page, from)
+  expect(samples.some(s => s.scrollTop !== samples[0].scrollTop)).toBe(true)
+  const drift = []
+  for (let index = 1; index < samples.length; index++) {
+    const [a, b] = [samples[index - 1], samples[index]]
+    if (b.y > b.height || a.height !== b.height || (a.sticky && b.sticky)) continue
+    // Position within the content (y + scrollTop) changes only if the mascot lags the scroll.
+    const moved = (b.y + b.scrollTop) - (a.y + a.scrollTop)
+    if (Math.abs(moved) > 0.5) drift.push({ t: Math.round(b.t), moved })
+  }
+  expect(drift).toEqual([])
+})

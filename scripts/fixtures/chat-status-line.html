@@ -49,7 +49,6 @@ window.statusLine = {
       const logo = document.querySelector('.kv-stream-logo');
       if (!view || !logo) return;
       const top = view.getBoundingClientRect().top;
-      const marker = logo.closest('.chat-reading-content');
       const live = document.querySelector('[data-chat-message-list-item="streaming"]');
       let textBottom = null;
       if (live) {
@@ -59,7 +58,7 @@ window.statusLine = {
       }
       this.samples.push({ t: performance.now() - t0, y: logo.getBoundingClientRect().top - top, textBottom,
         scrollTop: view.scrollTop, gap: view.scrollHeight - view.clientHeight - view.scrollTop, height: view.clientHeight,
-        sticky: marker.style.position === 'sticky', transform: marker.style.transform });
+        sticky: Boolean(logo.closest('[style*="sticky"]')) });
     };
     let observer = null;
     const frame = () => {

@@ -3,7 +3,7 @@ import { Button } from '../components/Button'
 import { chatApi } from './api'
 import { notifyError } from '../components/appNoticeStore'
 import {
-  memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore,
   type ComponentProps,
 } from 'react'
 import { flushSync } from 'react-dom'
@@ -51,7 +51,6 @@ import type { ConversationStreamSnapshot } from './conversationRuns'
 import { StreamStatusLine } from './StreamStatusLine'
 import { getActiveGroup, useGroupVersion } from './groupStreamingStore'
 import { ScrollFollowingContext, useScrollFollow } from './scroll/useScrollFollow'
-import { useTrailingMarkerGlide } from './scroll/useTrailingMarkerGlide'
 import { usePresence } from './dock/workspacePanelMotion'
 import {
   chatMessageLayoutRevision,
@@ -162,11 +161,12 @@ export interface MessageListProps {
 }
 
 const LIST_EDGE_PADDING_PX = 16
-// 生成中状态行（墨墨）上方的空行：新字先长进这里。
+// 生成中状态行（墨墨）上方的空行：贴底时正文随跟随缓动落后的那一截长进这里，碰不到墨墨。
 const STATUS_LINE_LIVE_GAP_PX = 40
-// 墨墨与跟随滚动最多落后这么多：空行 + 状态行自身的上内边距（StreamStatusLine 的 py-2），
-// 新长出的正文最多压进这段空白，碰不到墨墨。
+// 跟随缓动最多落后这么多：空行 + 状态行自身的上内边距（StreamStatusLine 的 py-2）。
 const STATUS_LINE_MAX_LAG_PX = STATUS_LINE_LIVE_GAP_PX + 8
+// 尾部容器的下内边距（tail 的 pb-0.5）；贴底固定时墨墨停在完全滚到底时的同一位置。
+const TAIL_BOTTOM_PADDING_PX = 2
 // Per-frame cap on pre-paint row corrections; React's own limit is 50 nested updates.
 const MAX_COMMIT_ROW_CORRECTIONS = 4
 const MESSAGE_NAVIGATOR_MIN_TURNS = 2
@@ -2818,20 +2818,12 @@ function MessageListBase({
     return () => observer.disconnect()
   }, [conversationId, streaming, streamFrozen, messages, historyItems, viewportEl, reserveEpoch, followHandle, virtualizer, historySize])
 
-  // 墨墨状态行：有空间时平滑下移，贴底跟随时停在底部不动。放在预留与钉底之后，
-  // 每次提交读到的是本帧最终布局。
-  const [statusLineEl, setStatusLineEl] = useState<HTMLDivElement | null>(null)
-  useTrailingMarkerGlide({
-    marker: statusLineEl,
-    viewport: viewportEl,
-    active: streaming && !streamFrozen,
-    live: streaming || streamFrozen,
-    isFollowing: followHandle.isFollowing,
-    isPinningBottom: followHandle.isPinningBottom,
-    subscribePinning: followHandle.subscribePinning,
-    maxLagPx: STATUS_LINE_MAX_LAG_PX,
-    resetKey: conversationId,
-  })
+  // 墨墨状态行：生成中贴底跟随时固定在底部（sticky），正文从它上方滚上去，不再被一行行往下挤。
+  // 离开底部、按住指针（跟随暂停）或生成结束时松开，贴着内容走。
+  const pinStatusLine = useSyncExternalStore(
+    followHandle.subscribePinning,
+    () => streaming && !streamFrozen && followHandle.isPinningBottom(),
+  )
 
   const renderItem = useCallback(
     (item: RenderItem) => {
@@ -3090,22 +3082,25 @@ function MessageListBase({
           {renderItem(errorItem)}
         </div>
       )}
-      {/* 生成中留一行空（外边距，位移可被平滑跟踪）：新一行字长进这段空里，墨墨再平滑跟下去，滑行中不压到正文。
-          与发送预留同寿命（含停止后冻结）：落库交接时由预留 effect 一并补偿并重新钉底，
-          不在冻结那一刻单独缩高——那会和停止标记的增高叠在同一帧，被跟随判成用户上滚。 */}
-      {(messages.length > 0 || streaming) && (
-        <div ref={setStatusLineEl} className="chat-reading-content"
-          style={streaming || streamFrozen ? { marginTop: STATUS_LINE_LIVE_GAP_PX } : undefined}>
-          <StreamStatusLine conversationId={conversationId} active={streaming && !streamFrozen && !liveGroup}
-            waitingInBackground={!streaming && !streamFrozen && waitingForBackgroundTasks} lang={lang} />
+      {/* 墨墨、排队消息和尾部留白一起贴底固定：槽位就是完全滚到底时的位置，排队消息变高也不用另算。 */}
+      <div style={pinStatusLine ? { position: 'sticky', bottom: TAIL_BOTTOM_PADDING_PX } : undefined}>
+        {/* 生成中留一行空：贴底时正文的缓动落后长进这段空里，不压到墨墨。
+            与发送预留同寿命（含停止后冻结）：落库交接时由预留 effect 一并补偿并重新钉底，
+            不在冻结那一刻单独缩高——那会和停止标记的增高叠在同一帧，被跟随判成用户上滚。 */}
+        {(messages.length > 0 || streaming) && (
+          <div className="chat-reading-content"
+            style={streaming || streamFrozen ? { marginTop: STATUS_LINE_LIVE_GAP_PX } : undefined}>
+            <StreamStatusLine conversationId={conversationId} active={streaming && !streamFrozen && !liveGroup}
+              waitingInBackground={!streaming && !streamFrozen && waitingForBackgroundTasks} lang={lang} />
+          </div>
+        )}
+        <div className="chat-reading-content">
+          <QueuedMessages messages={visibleInjections} conversationId={conversationId} lang={lang}
+            canInsert={canInsertQueuedMessage} onInsert={onInsertQueuedMessage}
+            onRemove={onRemoveQueuedMessage} onRestore={onRestoreQueuedMessage} />
         </div>
-      )}
-      <div className="chat-reading-content">
-        <QueuedMessages messages={visibleInjections} conversationId={conversationId} lang={lang}
-          canInsert={canInsertQueuedMessage} onInsert={onInsertQueuedMessage}
-          onRemove={onRemoveQueuedMessage} onRestore={onRestoreQueuedMessage} />
+        <div ref={tailSpacerRef} aria-hidden="true" style={{ height: LIST_EDGE_PADDING_PX }} />
       </div>
-      <div ref={tailSpacerRef} aria-hidden="true" style={{ height: LIST_EDGE_PADDING_PX }} />
     </div>
   )
 
@@ -3156,7 +3151,7 @@ function MessageListBase({
         <div ref={setContentEl} className={`chat-message-list-inner mx-auto w-full px-6 ${hasWideGroups ? 'chat-message-list-inner--wide' : 'max-w-4xl'}`}>
           <div data-chat-rows-root className="relative w-full">
             <div aria-hidden="true" style={{ height: historySize }} />
-            <div data-chat-message-list-item="tail" className="w-full pb-0.5">
+            <div data-chat-message-list-item="tail" className="w-full" style={{ paddingBottom: TAIL_BOTTOM_PADDING_PX }}>
               {renderTail()}
             </div>
           </div>

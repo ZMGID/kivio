@@ -534,7 +534,7 @@ it.each([0, 40])('keeps reserve independent of mounted history and clears it on 
   rerender(<MessageList conversationId="reserve-rewind" messages={[...earlier, question,
     { id: 'new-answer', role: 'assistant', content: 'Short answer', timestamp: 4 },
   ]} />)
-  const spacer = container.querySelector<HTMLElement>('[data-chat-message-list-item="tail"] > div > div:last-child')!
+  const spacer = container.querySelector<HTMLElement>('[data-chat-message-list-item="tail"] > div > div:last-child > div:last-child')!
   expect(parseFloat(spacer.style.height)).toBeGreaterThan(16)
   rerender(<MessageList conversationId="reserve-rewind" messages={earlier} />)
   expect(spacer.style.height).toBe('16px')
