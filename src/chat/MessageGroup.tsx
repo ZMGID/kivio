@@ -8,6 +8,7 @@ import type { MarkdownOutlineSourceUpdate } from './ChatMarkdown'
 import { ModelIcon } from '../components/ModelIcon'
 import { getActiveGroup, useGroupVersion, type GroupColumnSnapshot } from './groupStreamingStore'
 import { useMultiAnswerViewMode } from './multiAnswerViewMode'
+import { useScrollFollow } from './scroll/useScrollFollow'
 import { IconButton } from '../components/Button'
 import { useT } from '../components/i18n'
 
@@ -82,10 +83,12 @@ function streamColumnToMessage(column: GroupColumnSnapshot): ChatMessage {
 
 // 列内滚动框：用原生滚动 + CSS `overscroll-contain`（滚到列边界不串联到外层列表）。
 // 不要用 JS wheel 监听手动改 scrollTop——那会绕过浏览器合成器的平滑/惯性滚动，导致掉帧。
-function ColumnScrollBody({ children }: { children: ReactNode }) {
+function ColumnScrollBody({ live, children }: { live: boolean; children: ReactNode }) {
+  const [viewport, setViewport] = useState<HTMLDivElement | null>(null)
+  useScrollFollow({ viewport, enabled: live, trackKeys: true })
   return (
-    <div className="chat-message-group-col-body custom-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
-      {children}
+    <div ref={setViewport} className="chat-message-group-col-body custom-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div>{children}</div>
     </div>
   )
 }
@@ -185,7 +188,7 @@ function GroupColumnView({
         </div>
       )}
       {showColumnChrome ? (
-        <ColumnScrollBody>
+        <ColumnScrollBody live={live}>
           <MessageBubble
             message={message}
             conversationId={conversationId}

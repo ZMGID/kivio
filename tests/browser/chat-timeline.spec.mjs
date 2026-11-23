@@ -89,7 +89,12 @@ for (const transition of ['completion', 'stop and resume']) {
   test(`preserves the visible Work paragraph across ${transition}`, async ({ page }) => {
     await open(page)
     await page.evaluate(() => chatTimeline.beginLong(true))
-    await expect(page.locator('[data-message-id=active-assistant]')).toContainText('Live paragraph 115')
+    const live = page.locator('[data-message-id=active-assistant]')
+    await expect(live).toContainText('Live paragraph 115')
+    // Measure the reading position after the entrance transform stops moving the paragraph.
+    await live.evaluate(row => Promise.all(row.getAnimations({ subtree: true })
+      .filter(animation => animation.animationName === 'chat-motion-bubble-in')
+      .map(animation => animation.finished)))
     await page.mouse.move(18, 480)
     await page.mouse.wheel(0, -1300)
     await expect(page.getByRole('button', { name: '回到底部' })).toBeVisible()

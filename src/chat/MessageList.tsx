@@ -50,7 +50,7 @@ import { getSnapshot, useLiveStreamSnapshot, useStreamCoarse, useStreamSelector 
 import type { ConversationStreamSnapshot } from './conversationRuns'
 import { StreamStatusLine } from './StreamStatusLine'
 import { getActiveGroup, useGroupVersion } from './groupStreamingStore'
-import { ScrollFollowingContext, useScrollFollow } from './scroll/useScrollFollow'
+import { isNestedColumnInput, ScrollFollowingContext, useScrollFollow } from './scroll/useScrollFollow'
 import { usePresence } from './dock/workspacePanelMotion'
 import {
   chatMessageLayoutRevision,
@@ -2522,17 +2522,19 @@ function MessageListBase({
   // 阅读位置恢复也在触摸、拖动滚动条和翻页键时立即让出控制权。
   useEffect(() => {
     if (!viewportEl) return
-    const takeOver = () => {
+    const takeOver = (event: Event) => {
+      if (isNestedColumnInput(event.target, viewportEl)) return false
       wheelHistoryEdgeRef.current = null
       cancelHistoryNavigation()
       if (navigatorHoldRef.current?.rowOffset != null) {
         clearNavigatorPrepare()
         endMessageNavigationHydrate(navigatorSettleGenerationRef.current)
       }
+      return true
     }
     const handleWheel = (event: WheelEvent) => {
-      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
-      takeOver()
+      if (event.ctrlKey || event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+      if (!takeOver(event)) return
       wheelHistoryEdgeRef.current = event.deltaY > 0 ? 'gap-start' : 'gap-end'
       const sessionActive = navigationLockRef.current
         || navigatorSettleRafRef.current !== null
@@ -2565,7 +2567,7 @@ function MessageListBase({
     const handleKey = (event: KeyboardEvent) => {
       const target = event.target
       if (target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'))) return
-      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) takeOver()
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) takeOver(event)
     }
     window.addEventListener('keydown', handleKey)
     return () => {
@@ -2580,6 +2582,9 @@ function MessageListBase({
   const handleDisclosureClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const button = (event.target as Element).closest<HTMLElement>('[data-chat-disclosure]')
     if (!button) return
+    // A live disclosure changes content height. Keep the current follow intent
+    // so inspecting a tool at the tail does not silently detach the next reply.
+    if (streaming && !streamFrozen && followHandle.isFollowing()) return
     cancelHistoryNavigation()
     // Capture runs before the toggle changes height, including keyboard clicks.
     // Reading details takes over from stream following and navigation holds.
@@ -2591,7 +2596,7 @@ function MessageListBase({
     disclosureAnchorRef.current = index >= 0
       ? { key: virtualizer.options.getItemKey(index), button }
       : null
-  }, [cancelHistoryNavigation, clearNavigatorPrepare, followHandle, virtualizer])
+  }, [cancelHistoryNavigation, clearNavigatorPrepare, followHandle, streamFrozen, streaming, virtualizer])
 
   // 消息区右键：读取当前选中文本 + 命中的消息，弹内置菜单。两者都空则不弹（放行给全局屏蔽）。
   const handleContextMenu = useCallback((e: React.MouseEvent) => {

@@ -45,6 +45,7 @@ export type FollowState = {
   latchUntil: number
   lastGap: number
   userDetached: boolean
+  smallWheelUp: { distance: number; time: number } | null
 }
 
 export function createFollowState(): FollowState {
@@ -54,6 +55,7 @@ export function createFollowState(): FollowState {
     latchUntil: 0,
     lastGap: 0,
     userDetached: false,
+    smallWheelUp: null,
   }
 }
 
@@ -61,10 +63,12 @@ export function createFollowState(): FollowState {
  * 滚动事件的来源。
  * - `self`：本 hook 自己写的 scrollTop（钉底 / 回到底部动画），或内容尺寸变化引起的滚动。
  *   这类只做"纠正"，绝不能当成用户离开意图。
+ * - `userUp`：已确认用户向上移动了此视口，可直接脱离跟随。
+ * - `wheelJitter`：未超过贴底容差的滚轮手势带来的位移。
  * - `user`：其余一切 —— 滚轮、触摸、拖原生滚动条、页内查找、focus 滚动、iframe 滚动链。
  *   其中滚轮/触摸/键盘另有专门事件，走到这里的通常是**拿不到手势事件**的那些。
  */
-export type ScrollSource = 'self' | 'user'
+export type ScrollSource = 'self' | 'user' | 'userUp' | 'wheelJitter'
 
 
 export type FollowEvent =
@@ -86,9 +90,9 @@ export type FollowEvent =
     }
   | { type: 'scroll'; gap: number; now: number; source: ScrollSource }
   | { type: 'pointerDown' }
-  | { type: 'pointerRelease'; gap: number }
+  | { type: 'pointerRelease'; gap: number; navigated: boolean }
   | { type: 'historyKey'; hasOverflow: boolean; now: number }
-  | { type: 'followKey'; now: number }
+  | { type: 'followKey'; gap: number; now: number }
   | { type: 'contentGrowth'; gap: number }
   | { type: 'forceFollow' }
   | { type: 'release' }
@@ -115,18 +119,23 @@ export function reduceFollowEvent(
 ): FollowStep {
   switch (event.type) {
     case 'wheel': {
-      if (!isDominantVerticalWheel(event.deltaX, event.deltaY)) {
-        return { state, pin: false }
+      if (!isDominantVerticalWheel(event.deltaX, event.deltaY) || event.nestedCanConsume) {
+        return { state: state.smallWheelUp ? { ...state, smallWheelUp: null } : state, pin: false }
       }
       if (event.deltaY < 0) {
-        const next = { ...state, latchUntil: 0 }
-        if (event.hasOverflow && !event.nestedCanConsume) {
+        const next = { ...state, lastGap: event.gap, latchUntil: 0, smallWheelUp: null }
+        if (event.hasOverflow) {
+          const previous = state.smallWheelUp
+          const distance = -event.deltaY + (previous && event.now - previous.time <= config.latchMs ? previous.distance : 0)
+          if (distance <= config.attachThresholdPx) {
+            return { state: { ...next, smallWheelUp: { distance, time: event.now } }, pin: false }
+          }
           next.following = false
           next.userDetached = true
         }
         return { state: next, pin: false }
       }
-      const next = { ...state, latchUntil: event.now + config.latchMs }
+      const next = { ...state, smallWheelUp: null, latchUntil: event.now + config.latchMs }
       if (!state.following && isAtBottom(event.gap, config)) {
         next.following = true
         next.userDetached = false
@@ -152,6 +161,12 @@ export function reduceFollowEvent(
       const { gap, now } = event
       const previousGap = state.lastGap
       const next = { ...state, lastGap: gap }
+      if (event.source === 'userUp') {
+        return { state: { ...next, following: false, userDetached: true, latchUntil: 0 }, pin: false }
+      }
+      if (event.source === 'wheelJitter' && state.following) {
+        return { state: next, pin: !state.pointerHeld && gap > config.directionSlopPx }
+      }
 
       if (isAtBottom(gap, config)) {
         // 重新跟随的三条路：本来就在跟随 / 刚有过向下手势（latch）/ 用户自己把视口带回了底部。
@@ -205,6 +220,10 @@ export function reduceFollowEvent(
         return { state, pin: false }
       }
       const next = { ...state, pointerHeld: false }
+      // A click pauses pinning until release. Streaming can grow the gap without moving the reader.
+      if (!event.navigated) {
+        return { state: next, pin: next.following && event.gap > config.directionSlopPx }
+      }
       // 按住期间（拖选文本带出的自动滚动）不接跟随，松手时补判一次。
       // 不补的话有个卡死路径：拖上去 → 解除跟随 → 拖回底部（被 pointerHeld 挡住不接）→
       // 松手，此后不再有 scroll 事件，跟随就永远回不来了。
@@ -235,6 +254,9 @@ export function reduceFollowEvent(
     }
 
     case 'followKey': {
+      if (!state.pointerHeld && !state.following && isAtBottom(event.gap, config)) {
+        return { state: { ...state, following: true, userDetached: false, latchUntil: 0 }, pin: true }
+      }
       return { state: { ...state, latchUntil: event.now + config.latchMs }, pin: false }
     }
 

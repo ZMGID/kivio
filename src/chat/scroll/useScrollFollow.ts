@@ -21,6 +21,11 @@ export const ScrollFollowingContext = createContext({
 // 低于此高度元素无法有效滚动；其上的 wheel/touch 不应改变跟随状态。
 const SCROLLABLE_OVERFLOW_MIN_PX = 4
 
+export function isNestedColumnInput(target: EventTarget | null, viewport: HTMLElement): boolean {
+  const column = target instanceof Element ? target.closest('.chat-message-group-col-body') : null
+  return column !== null && viewport.contains(column) && column !== viewport
+}
+
 function isEditableEventTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false
   return (
@@ -271,7 +276,7 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
         // 流式增长：缓动到底。缓动自身产生的 scroll 事件仍处于离底状态，reducer 会要求
         // 「纠正钉底」，此时交给正在进行的缓动，而不是瞬间打断它。
         const glide = glideGrowthRef.current
-          && (event.type === 'contentGrowth' || (event.type === 'scroll' && glideRef.current !== null))
+          && (event.type === 'contentGrowth' || (event.type === 'scroll' && event.source !== 'wheelJitter' && glideRef.current !== null))
         if (glide) glideToBottom()
         else pinToBottom()
       } else if (!step.state.following) {
@@ -299,7 +304,7 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
   }, [dispatch])
 
   const pinIfFollowing = useCallback(() => {
-    if (!stateRef.current.following) return
+    if (!stateRef.current.following || stateRef.current.pointerHeld) return
     pinToBottom()
   }, [pinToBottom])
 
@@ -380,6 +385,8 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
       return false
     }
 
+    let arrowUp: { top: number; expires: number } | null = null
+    let pointerScrolled = false
     const handleScroll = () => {
       // token **读一次就作废**：一次写入只授权一个 scroll 事件。不作废的话会卡死 ——
       // 「底部」这个数值是稳定的（我们 pin 写 scrollHeight，浏览器 clamp 成 max；
@@ -408,27 +415,43 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
         && previousScrollTop !== null
         && scrollTop > previousScrollTop + 1
       const selfInduced = scrollTop === token || contentGrewBeforeScroll || (layoutCompensation && !userReturnedDuringLayout)
+      const now = Date.now()
+      const slop = configRef.current.directionSlopPx
+      // A body key may scroll another element or do nothing. Claim it only once this viewport moves.
+      const arrowMovedUp = arrowUp !== null && now <= arrowUp.expires && scrollTop !== token
+        && Math.min(arrowUp.top, viewport.scrollHeight - viewport.clientHeight) - scrollTop > slop
+      if (stateRef.current.pointerHeld && !selfInduced && previousScrollTop !== null
+        && Math.abs(scrollTop - previousScrollTop) > slop) pointerScrolled = true
       // WebKit can deliver a native scroll without a DOM wheel event. Rows
       // entering the virtual window may also change height in that same frame.
       // Only movement beyond the possible layout adjustment releases follow.
-      if (!selfInduced && previousScrollTop !== null && previousScrollHeight !== null &&
-        previousScrollTop - scrollTop > Math.abs(viewport.scrollHeight - previousScrollHeight) + 1 &&
-        gap > configRef.current.attachThresholdPx) {
-        dispatch({ type: 'release' })
-      }
+      const up = previousScrollTop === null ? 0 : previousScrollTop - scrollTop
+      const pendingWheel = stateRef.current.smallWheelUp
+      // Initial glide lag contributes to the gap, but is not part of a small wheel gesture.
+      const wheelJitter = pendingWheel !== null && now - pendingWheel.time <= configRef.current.latchMs
+        && scrollTop !== token && up > 0 && up <= configRef.current.attachThresholdPx
+      const nativeMovedUp = !selfInduced && !wheelJitter && previousScrollHeight !== null
+        && up > Math.abs(viewport.scrollHeight - previousScrollHeight) + slop
+        && gap > configRef.current.attachThresholdPx
+      const userMovedUp = arrowMovedUp || nativeMovedUp
+      if (userMovedUp) arrowUp = null
       dispatch({
         type: 'scroll',
         gap,
-        now: Date.now(),
-        source: selfInduced ? 'self' : 'user',
+        now,
+        source: userMovedUp ? 'userUp' : wheelJitter ? 'wheelJitter' : selfInduced ? 'self' : 'user',
       })
     }
 
     const handleWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.shiftKey || isNestedColumnInput(event.target, viewport)) return
+      // Fractional jitter is measured in pixels. A single line or page is deliberate navigation.
+      const unit = event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? viewport.clientHeight
+        : event.deltaMode === WheelEvent.DOM_DELTA_LINE ? parseFloat(getComputedStyle(viewport).lineHeight) || 16 : 1
       dispatch({
         type: 'wheel',
-        deltaX: event.deltaX,
-        deltaY: event.deltaY,
+        deltaX: event.deltaX * unit,
+        deltaY: event.deltaY * unit,
         gap: getGap(),
         hasOverflow: hasOverflow(),
         nestedCanConsume: event.deltaY < 0 && nestedCanConsumeWheelUp(event.target),
@@ -438,9 +461,11 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
 
     let touchY: number | null = null
     const handleTouchStart = (event: TouchEvent) => {
+      if (isNestedColumnInput(event.target, viewport)) return
       touchY = event.touches[0]?.clientY ?? null
     }
     const handleTouchMove = (event: TouchEvent) => {
+      if (isNestedColumnInput(event.target, viewport)) return
       const nextY = event.touches[0]?.clientY ?? null
       const previousY = touchY
       touchY = nextY
@@ -458,14 +483,27 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     // 整个 src/ 里没有任何组件渲染（是从自定义滚动条组件那边搬过来时留下的），聊天列表用的是
     // .custom-scrollbar 原生滚动条，永远命中不了。原生滚动条既不派发 DOM 指针事件也没有 wheel，
     // 现在由 scroll 事件的 source 判定统一接管，这条分支连同 pointerDragging 一起删掉了。
+    const selectedRange = () => {
+      const selection = window.getSelection()
+      return selection && !selection.isCollapsed && selection.rangeCount > 0
+        && (viewport.contains(selection.anchorNode) || viewport.contains(selection.focusNode))
+        ? selection.getRangeAt(0) : null
+    }
+    let selectionAtPress: Range | null = null
     const handlePointerDown = (event: PointerEvent) => {
-      if (event.pointerType === 'mouse' && event.button === 2) {
-        return
-      }
+      if ((event.pointerType === 'mouse' && event.button === 2) || isNestedColumnInput(event.target, viewport)) return
+      selectionAtPress = selectedRange()?.cloneRange() ?? null
+      pointerScrolled = false
       dispatch({ type: 'pointerDown' })
     }
     const handlePointerRelease = () => {
-      dispatch({ type: 'pointerRelease', gap: getGap() })
+      if (!stateRef.current.pointerHeld) return
+      const selection = selectedRange()
+      const selectedText = selection !== null && (!selectionAtPress
+        || selection.compareBoundaryPoints(Range.START_TO_START, selectionAtPress) !== 0
+        || selection.compareBoundaryPoints(Range.END_TO_END, selectionAtPress) !== 0)
+      selectionAtPress = null
+      dispatch({ type: 'pointerRelease', gap: getGap(), navigated: pointerScrolled || selectedText })
     }
     const handlePointerMove = (event: PointerEvent) => {
       if (!stateRef.current.pointerHeld) {
@@ -479,16 +517,25 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return
       const target = event.target
-      if (!(target instanceof Node) || (target !== document.body && target !== document.documentElement && !root.contains(target))) return
+      if (!(target instanceof Node) || isNestedColumnInput(target, viewport)) return
+      const bodyKey = target === document.body || target === document.documentElement
+      if (!root.contains(target) && (!bodyKey || viewport.matches('.chat-message-group-col-body'))) return
       if (isHistoryScrollKey(event)) {
-        dispatch({ type: 'historyKey', hasOverflow: hasOverflow(), now: Date.now() })
+        const now = Date.now()
+        if (event.key === 'ArrowUp') {
+          arrowUp = { top: viewport.scrollTop, expires: now + configRef.current.latchMs }
+        } else {
+          arrowUp = null
+          dispatch({ type: 'historyKey', hasOverflow: hasOverflow(), now })
+        }
       } else if (isFollowScrollKey(event)) {
-        dispatch({ type: 'followKey', now: Date.now() })
+        arrowUp = null
+        dispatch({ type: 'followKey', gap: getGap(), now: Date.now() })
       }
     }
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && stateRef.current.following) {
+      if (document.visibilityState === 'visible' && stateRef.current.following && !stateRef.current.pointerHeld) {
         pinToBottom()
       }
     }

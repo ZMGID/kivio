@@ -86,7 +86,7 @@ describe('scrollFollowCore', () => {
 
   // 以下三条是子代理审查发现的卡死路径，各自兜一条「跟随再也回不来」的死路。
   it('松手时若已贴底则补接跟随（拖选文本回到底部后不再有 scroll 事件）', () => {
-    const { state, pin } = run([{ type: 'pointerRelease', gap: 4 }], {
+    const { state, pin } = run([{ type: 'pointerRelease', navigated: true, gap: 4 }], {
       ...createFollowState(),
       following: false,
       pointerHeld: true,
@@ -97,7 +97,7 @@ describe('scrollFollowCore', () => {
   })
 
   it('松手时没贴底则不接', () => {
-    const { state } = run([{ type: 'pointerRelease', gap: 300 }], {
+    const { state } = run([{ type: 'pointerRelease', navigated: true, gap: 300 }], {
       ...createFollowState(),
       following: false,
       pointerHeld: true,
@@ -228,7 +228,7 @@ describe('scrollFollowCore', () => {
   })
 
   it('拖选离底后松手：明确脱离跟随，不把选区拽回底部', () => {
-    const { state, pin } = run([{ type: 'pointerRelease', gap: 300 }], {
+    const { state, pin } = run([{ type: 'pointerRelease', navigated: true, gap: 300 }], {
       ...createFollowState(),
       pointerHeld: true,
       lastGap: 300,
@@ -239,7 +239,7 @@ describe('scrollFollowCore', () => {
   })
 
   it('拖选后在底部松手：重新钉底继续跟随', () => {
-    const { state, pin } = run([{ type: 'pointerRelease', gap: 4 }], {
+    const { state, pin } = run([{ type: 'pointerRelease', navigated: true, gap: 4 }], {
       ...createFollowState(),
       pointerHeld: true,
       lastGap: 4,

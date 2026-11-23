@@ -134,6 +134,58 @@ test('a pointer pressed during a pause releases the slot before new text arrives
   })
   expect(overlaps(await samplesSince(page, from))).toEqual([])
   await page.mouse.up()
+  await expect.poll(() => page.evaluate(() => window.statusLine.samples.at(-1).gap)).toBeLessThanOrEqual(1)
+})
+
+test('parallel answers follow independently when the reader scrolls one column', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kivio.chat.multiAnswerView', 'columns'))
+  await open(page)
+  await page.evaluate(() => {
+    window.statusLine.beginColumns()
+    window.statusLine.appendColumns('A paragraph in both answers.\n\n'.repeat(48))
+  })
+  const columns = page.locator('.chat-message-group-col-body')
+  const first = columns.nth(0)
+  const second = columns.nth(1)
+  const bottomGap = element => element.scrollHeight - element.clientHeight - element.scrollTop
+  await expect.poll(() => second.evaluate(el => el.scrollTop)).toBeGreaterThan(500)
+  await first.hover()
+  await page.mouse.wheel(0, -5000)
+  await expect.poll(() => first.evaluate(bottomGap)).toBeGreaterThan(250)
+  await expect.poll(() => first.evaluate(el => el.scrollTop)).toBe(0)
+  await page.mouse.wheel(0, -120)
+  await page.evaluate(() => window.statusLine.appendColumns('More output.\n\n'.repeat(12) + 'Last line'))
+  await expect(first).toContainText('Last line')
+  await expect(second).toContainText('Last line')
+  await expect.poll(() => second.evaluate(bottomGap)).toBeLessThanOrEqual(1)
+  expect(await first.evaluate(el => el.scrollTop)).toBe(0)
+  await expect.poll(() => page.locator('.kv-stream-logo').last()
+    .evaluate(el => Boolean(el.closest('[style*="sticky"]')))).toBe(true)
+  await page.mouse.wheel(0, 5000)
+  await expect.poll(() => first.evaluate(bottomGap)).toBeLessThanOrEqual(1)
+  await page.evaluate(() => window.statusLine.appendColumns('\n\nFollowing again'))
+  await expect(first).toContainText('Following again')
+  await expect.poll(() => first.evaluate(bottomGap)).toBeLessThanOrEqual(1)
+  await page.evaluate(() => window.statusLine.persistColumns())
+  await expect(page.locator('[data-chat-message-list-item="group"]')).toBeVisible()
+  await expect.poll(() => first.evaluate(bottomGap)).toBeLessThanOrEqual(1)
+  await expect.poll(() => second.evaluate(bottomGap)).toBeLessThanOrEqual(1)
+})
+
+test('toggling Working at the live end keeps the arriving answer in view', async ({ page }) => {
+  await open(page)
+  await page.evaluate(() => {
+    window.statusLine.begin()
+    window.statusLine.append('Checking a file.', {id: 'step', kind: 'text', phase: 'tool_loop', order: 0})
+    window.statusLine.completeTool()
+  })
+  await page.getByRole('button', {name: /^Working/}).click()
+  await page.evaluate(() => {
+    window.statusLine.append('A finding.\n\n'.repeat(40) + 'Final finding.', {
+      id: 'findings', kind: 'text', phase: 'synthesis', order: 2,
+    })
+  })
+  await expect(page.getByText('Final finding.', {exact: true})).toBeInViewport()
 })
 
 test('a wrapping status note does not move the mascot out of its bottom slot', async ({ page }) => {

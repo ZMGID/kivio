@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import { MessageList } from '/src/chat/MessageList.tsx';
 import { createStreamPreviewOwner } from '/src/chat/streamPreviewOwner.ts';
+import { beginGroup, endGroup, getActiveGroup } from '/src/chat/groupStreamingStore.ts';
 import '/src/styles/app.css';
 import 'streamdown/styles.css';
 
@@ -76,9 +77,31 @@ window.statusLine = {
     answer = ''; stop = false; this.seq = 0;
     owner.activate(conv); owner.begin(conv, Date.now());
   },
-  append(text) {
+  append(text, segment = null) {
     answer += text;
-    owner.receive({ ...runBase, seq: this.seq++, type: 'text_delta', delta: text, segment: null });
+    owner.receive({ ...runBase, seq: this.seq++, type: 'text_delta', delta: text, segment });
+  },
+  completeTool() {
+    owner.projectDisplay({kind: 'tool', payload: {...runBase, toolCallId: 'read-1', name: 'read',
+      source: 'native', status: 'completed', resultPreview: 'Read one file.', artifacts: []}});
+  },
+  beginColumns() {
+    owner.activate(conv);
+    beginGroup(conv, 'group', ['A', 'B'].map(model => ({providerId: 'fixture', model, messageId: model})));
+    owner.begin(conv, Date.now(), 'group');
+  },
+  appendColumns(delta) {
+    for (const model of ['A', 'B']) {
+      owner.receive({ type: 'text_delta', conversationId: conv, messageId: model, runId: 'run-' + model, delta });
+    }
+  },
+  persistColumns() {
+    const {groupId, columns} = getActiveGroup(conv);
+    const messages = [...history, {...question, group_id: groupId}, ...columns.map(column => ({
+      id: column.messageId, role: 'assistant', group_id: groupId, provider_id: column.providerId,
+      model: column.model, content: column.content, timestamp: 101,
+    }))];
+    flushSync(() => { setMessages(messages); endGroup(conv); owner.complete(conv, {kind: 'persisted', committedMessages: messages}); });
   },
   status(note) { owner.projectDisplay({ kind: 'status', payload: { conversationId: conv, runId: runBase.runId, note } }); },
   /** Streams `paragraphs` in small deltas; resolves early after `pause()`. */

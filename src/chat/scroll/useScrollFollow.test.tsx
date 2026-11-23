@@ -139,6 +139,55 @@ describe('useScrollFollow scroll source timing', () => {
     expect(screen.getByTestId('following')).toHaveTextContent('false')
   })
 
+  it('keeps following after a body ArrowUp that does not scroll, and follows End at the bottom', () => {
+    const viewport = mount()
+    viewport.scrollTop = 500
+    fireEvent.scroll(viewport)
+    fireEvent.keyDown(document.body, { key: 'ArrowUp' })
+    expect(screen.getByTestId('following')).toHaveTextContent('true')
+
+    viewport.scrollTop = 495
+    fireEvent.scroll(viewport)
+    expect(screen.getByTestId('following')).toHaveTextContent('false')
+    fireEvent.keyDown(document.body, { key: 'End' })
+    expect(screen.getByTestId('following')).toHaveTextContent('true')
+  })
+
+  it('ignores trackpad jitter but lets successive small upward ticks take over during growth', () => {
+    const viewport = mount()
+    viewport.scrollTop = 492
+    fireEvent.scroll(viewport)
+    fireEvent.wheel(viewport, { deltaY: -1 })
+    fireEvent.wheel(viewport, { deltaY: -3 })
+    viewport.scrollTop = 488
+    fireEvent.scroll(viewport)
+    expect(viewport.scrollTop).toBe(1000)
+    act(() => { observers[0].callback([], {} as ResizeObserver) })
+    expect(screen.getByTestId('following')).toHaveTextContent('true')
+    for (let i = 0; i < 3; i++) fireEvent.wheel(viewport, { deltaY: -3 })
+    expect(screen.getByTestId('following')).toHaveTextContent('false')
+  })
+
+  it.each([false, true])('resumes growth after clicking unless the reader selected text (selection: %s)', selectText => {
+    const viewport = mount()
+    const content = viewport.firstElementChild!
+    content.textContent = 'Read this response'
+    viewport.scrollTop = 500
+    fireEvent.pointerDown(content)
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1200 })
+    act(() => { observers[0].callback([], {} as ResizeObserver) })
+    expect(viewport.scrollTop).toBe(500)
+    if (selectText) {
+      const range = document.createRange()
+      range.selectNodeContents(content)
+      window.getSelection()!.addRange(range)
+    }
+    fireEvent.pointerUp(content)
+    expect(screen.getByTestId('following')).toHaveTextContent(String(!selectText))
+    expect(viewport.scrollTop).toBe(selectText ? 500 : 1200)
+    window.getSelection()!.removeAllRanges()
+  })
+
   it('classifies an ordinary wheel-up as user detach', () => {
     const viewport = mount()
 
@@ -359,7 +408,7 @@ describe('useScrollFollow scroll source timing', () => {
   it('does not self-heal after a near-bottom upward wheel gesture', () => {
     const viewport = mount()
     viewport.scrollTop = 495
-    fireEvent.wheel(viewport, { deltaY: -8, deltaX: 0 })
+    fireEvent.wheel(viewport, { deltaY: -16, deltaX: 0 })
     expect(screen.getByTestId('following')).toHaveTextContent('false')
 
     act(() => {
