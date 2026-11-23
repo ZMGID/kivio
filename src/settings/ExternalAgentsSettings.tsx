@@ -93,7 +93,7 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
     if (activeKey) void checkCliInstallInfoBatch(activeKey.split(','))
   }, [activeKey])
 
-  // 已安装的排前面，其余保持探测顺序。停用的不挪位置：开关就在行上，拨一下不该让它跳走。
+  // 已启用、已停用、未安装依次排列，同一状态保留探测顺序。
   const rows = useMemo<AgentRow[]>(() => {
     const needle = query.trim().toLowerCase()
     const summarize = (agent: DetectedExternalAgent, disabled: boolean) => {
@@ -120,7 +120,10 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
         const disabled = isDisabled(agent)
         return { agent, disabled, ...summarize(agent, disabled) }
       })
-      .sort((a, b) => Number(b.agent.available) - Number(a.agent.available))
+      .sort((a, b) => {
+        if (a.agent.available && b.agent.available) return Number(a.disabled) - Number(b.disabled)
+        return Number(b.agent.available) - Number(a.agent.available)
+      })
   }, [agents, isDisabled, overrides, query, t])
 
   const updatableIds = agents

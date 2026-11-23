@@ -15,12 +15,10 @@ const t = i18n.zh
 
 type Props = Parameters<typeof ChatTab>[0]
 /** 回调字段替换成 vi.fn Mock，测试里才能用 mockClear / mock.calls。 */
-type MockedProps = Omit<Props, 'onUpdateChatTools' | 'onUpdateChat' | 'onUpdateVoice' | 'onUpdateNativeTools' | 'onNavigateTab'> & {
-  onUpdateChatTools: ReturnType<typeof vi.fn>
+type MockedProps = Omit<Props, 'onUpdateChat' | 'onUpdateVoice' | 'onUpdateNativeTools'> & {
   onUpdateChat: ReturnType<typeof vi.fn>
   onUpdateVoice: Mock
   onUpdateNativeTools: ReturnType<typeof vi.fn>
-  onNavigateTab: ReturnType<typeof vi.fn>
 }
 
 /**
@@ -42,35 +40,35 @@ function renderTab(overrides: Partial<MockedProps> = {}) {
       userDisplayName: '小明',
       userAvatar: '',
       systemPrompt: '',
-      chatMode: { systemPrompt: '' },
     } as Props['chatConfig'],
     chatTools: { enabled: false, servers: [], nativeTools: { workingDirectory: '/w' } } as unknown as Props['chatTools'],
     chatDefaults: 'You are the AI assistant inside Kivio.',
-    chatRuntimeDefaults: 'Chat runtime (internal runtime mode): this conversation uses Kivio Chat.',
     effectiveChatMaxOutput: { maxOutput: 131072, source: 'override' },
     chatMaxOutputSourceLabel: '来自模型覆盖',
     chatMaxOutputModelLabel: 'p1 / gpt-4o',
-    onUpdateChatTools: vi.fn(),
     onUpdateChat: vi.fn(),
     onUpdateVoice: vi.fn(),
     onUpdateNativeTools: vi.fn(),
-    onNavigateTab: vi.fn(),
     ...overrides,
   }
   render(<ChatTab {...props} />)
   return props
 }
 
+function getAgentPromptRestoreButton() {
+  const row = screen.getByText(t.kivioChatAgentSystemPrompt).closest<HTMLElement>('.kv-row')
+  if (!row) throw new Error('Agent 系统提示词设置行未找到')
+  return within(row).getByRole('button', { name: t.restoreDefaultPrompt })
+}
+
 describe('ChatTab', () => {
-  it('defaults on-demand tools on and saves the toggle through chat tools settings', async () => {
-    const props = renderTab()
-    const toggle = screen.getByRole('switch', { name: t.toolsOnDemand })
-    expect(toggle).toHaveAttribute('aria-checked', 'true')
-    await userEvent.click(toggle)
-    expect(props.onUpdateChatTools).toHaveBeenCalledWith({ toolsOnDemand: false })
-    expect(screen.queryByText('MCP 工具')).toBeNull()
-    expect(screen.queryByText('Skill 运行时')).toBeNull()
-    expect(screen.queryByText('内置工具')).toBeNull()
+  it('隐藏工具与扩展和 Kivio Chat 设置，保留 Agent 系统提示词', () => {
+    renderTab()
+    expect(screen.getByText(t.kivioChatAgentSystemPrompt)).toBeInTheDocument()
+    expect(screen.queryByText(t.chatToolsSection)).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: t.toolsOnDemand })).not.toBeInTheDocument()
+    expect(screen.queryByText(t.kivioChatSection)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: `${t.promptEdit} ${t.kivioChatSystemPrompt}` })).not.toBeInTheDocument()
   })
 
 
@@ -119,14 +117,6 @@ describe('ChatTab', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('Chat runtime 提示词为空时弹窗显示内置 defaultText（英文原文）', async () => {
-    renderTab()
-    await userEvent.click(screen.getByRole('button', { name: `${t.promptEdit} ${t.kivioChatSystemPrompt}` }))
-    expect(
-      within(screen.getByRole('dialog')).getByDisplayValue('Chat runtime (internal runtime mode): this conversation uses Kivio Chat.'),
-    ).toBeTruthy()
-  })
-
   it('恢复默认写回空字符串', async () => {
     const props = renderTab({
       chatConfig: {
@@ -137,29 +127,15 @@ describe('ChatTab', () => {
         userDisplayName: '小明',
         userAvatar: '',
         systemPrompt: '自定义 Agent 提示',
-        chatMode: { systemPrompt: '自定义 Chat 提示' },
       } as Props['chatConfig'],
     })
-    const restores = screen.getAllByRole('button', { name: t.restoreDefaultPrompt })
-    for (const btn of restores) {
-      if ((btn as HTMLButtonElement).disabled) continue
-      props.onUpdateChat.mockClear()
-      await userEvent.click(btn)
-      if (
-        props.onUpdateChat.mock.calls.some(
-          (call) => call[0] && 'systemPrompt' in call[0] && call[0].systemPrompt === '',
-        )
-      ) {
-        break
-      }
-    }
+    await userEvent.click(getAgentPromptRestoreButton())
     expect(props.onUpdateChat).toHaveBeenCalledWith({ systemPrompt: '' })
   })
 
   it('无默认提示词时 Agent 恢复默认按钮禁用', () => {
-    renderTab({ chatDefaults: undefined, chatRuntimeDefaults: undefined })
-    const restores = screen.getAllByRole('button', { name: t.restoreDefaultPrompt })
-    expect(restores.some((btn) => (btn as HTMLButtonElement).disabled)).toBe(true)
+    renderTab({ chatDefaults: undefined })
+    expect(getAgentPromptRestoreButton()).toBeDisabled()
   })
 
   it('编辑 Agent 提示词写回 onUpdateChat', async () => {
@@ -172,7 +148,6 @@ describe('ChatTab', () => {
         userDisplayName: '小明',
         userAvatar: '',
         systemPrompt: '自定义 Agent 提示',
-        chatMode: { systemPrompt: '' },
       } as Props['chatConfig'],
     })
     await userEvent.click(screen.getByRole('button', { name: `${t.promptEdit} ${t.kivioChatAgentSystemPrompt}` }))
@@ -191,12 +166,5 @@ describe('ChatTab', () => {
     await userEvent.click(within(dialog).getByText(t.cancel))
     expect(props.onUpdateChat).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).toBeNull()
-  })
-
-
-  it('跳转按钮把目标 tab 传给 onNavigateTab', async () => {
-    const props = renderTab()
-    await userEvent.click(screen.getByRole('button', { name: t.chatOpenProviders }))
-    expect(props.onNavigateTab).toHaveBeenCalledWith('providers')
   })
 })

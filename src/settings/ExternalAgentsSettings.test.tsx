@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
@@ -6,6 +7,7 @@ import { resetCliInstallJobsForTests } from './cliInstallJobs'
 import { resetCliInstallInfoForTests } from './externalAgents/cliMaintenance'
 import type { Settings as SettingsData } from '../api/tauri'
 import type { ProviderCapabilities } from '../generated/chatProtocol'
+import { makeSettings } from './tabs/testFixtures'
 
 const preparedInstall = vi.hoisted(() => ({
   planId: 'prepared-plan',
@@ -604,18 +606,39 @@ describe('ExternalAgentsSettings', () => {
     expect(screen.getByText('可执行文件')).toBeInTheDocument()
   })
 
-  it('toggles a CLI from its list row without moving it', async () => {
-    const { updateChat } = renderPanel({ externalCliAgents: { claude: { disabled: true } } })
+  it('moves a CLI below enabled CLIs when disabled and back when enabled', async () => {
+    mockDetect.mockResolvedValue([
+      { id: 'claude', name: 'Claude Code', available: true, capabilities, models: [] },
+      { id: 'codex', name: 'Codex', available: false, capabilities, models: [] },
+      { id: 'pi', name: 'Pi', available: true, capabilities, models: [] },
+    ])
+    function Panel() {
+      const [settings, setSettings] = useState(() => makeSettings())
+      return (
+        <ExternalAgentsSettings
+          lang="zh"
+          settings={settings}
+          updateChat={(updates) => setSettings((current) => ({ ...current, chat: { ...current.chat, ...updates } }))}
+        />
+      )
+    }
+    render(<Panel />)
 
-    expect(await screen.findByText('已停用')).toBeInTheDocument()
-    const toggle = screen.getByRole('switch', { name: 'Claude Code 启用' })
-    expect(toggle).toHaveAttribute('aria-checked', 'false')
-    // 停用的仍排在没装的前面。
-    const names = [...document.querySelectorAll('.kv-cli-nav-name')].map((node) => node.textContent)
-    expect(names).toEqual(['Claude Code', 'Codex'])
+    const list = within(screen.getByRole('navigation', { name: '搜索 CLI' }))
+    const toggle = await list.findByRole('switch', { name: 'Claude Code 启用' })
+    const claude = list.getByRole('button', { name: /^Claude Code/ })
+    const pi = list.getByRole('button', { name: /^Pi\b/ })
+    const codex = list.getByRole('button', { name: /^Codex/ })
+    const rows = () => list.getAllByRole('button', { name: /^(Claude Code|Codex|Pi\b)/ })
+    expect(rows()).toEqual([claude, pi, codex])
 
     fireEvent.click(toggle)
-    expect(updateChat).toHaveBeenCalledWith({ externalCliAgents: { claude: { disabled: false } } })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(rows()).toEqual([pi, claude, codex])
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    expect(rows()).toEqual([claude, pi, codex])
   })
 
   it('activating a provider writes currentProvider', async () => {

@@ -142,23 +142,17 @@ export function AppearanceGroup({
   )
 }
 
-/** 启动与窗口（开机自启 / 最小化到托盘 / 关闭时保持窗口）和对话（完成通知 / 失败重试）两组。 */
+/** 启动与窗口设置、对话完成通知。 */
 export function BehaviorGroup({
   settings,
   t,
   lang,
-  retryAttemptsInput,
   onUpdateSettings,
-  onRetryAttemptsChange,
-  onRetryAttemptsBlur,
 }: {
   settings: SettingsData
   t: I18n
   lang: Lang
-  retryAttemptsInput: string
   onUpdateSettings: (updates: Partial<SettingsData>) => void
-  onRetryAttemptsChange: (value: string) => void
-  onRetryAttemptsBlur: () => void
 }) {
   return (
     <>
@@ -194,27 +188,6 @@ export function BehaviorGroup({
           ariaLabel={t.chatCompletionNotifications}
         />
       </SettingRow>
-      <SettingRow label={t.retryEnabled}>
-        <Toggle
-          checked={settings.retryEnabled}
-          onChange={(v) => onUpdateSettings({ retryEnabled: v })}
-          ariaLabel={t.retryEnabled}
-        />
-      </SettingRow>
-      {settings.retryEnabled && (
-        <SettingRow label={t.retryAttempts}>
-          <Input
-            type="number"
-            value={retryAttemptsInput}
-            onChange={onRetryAttemptsChange}
-            onBlur={onRetryAttemptsBlur}
-            placeholder="10"
-            min={0}
-            max={10}
-            className="kv-ctl-num"
-          />
-        </SettingRow>
-      )}
     </SettingsGroup>
     </>
   )

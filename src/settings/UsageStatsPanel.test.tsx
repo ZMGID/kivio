@@ -13,7 +13,7 @@ it('ignores a failed older query while the current range is still loading', asyn
   vi.mocked(api.usageGetStats)
     .mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject }))
     .mockImplementationOnce(() => new Promise((_, reject) => { rejectCurrent = reject }))
-  render(<UsageStatsPanel lang="zh" view="calls" />)
+  render(<UsageStatsPanel lang="zh" view="calls" providers={[]} />)
   fireEvent.click(screen.getByRole('button', { name: '近 30 日' }))
   await waitFor(() => expect(api.usageGetStats).toHaveBeenCalledTimes(2))
   await act(async () => { rejectOld(new Error('过时查询失败')) })
@@ -31,10 +31,39 @@ const report: UsageStatsResponse = {
   logs: [], providerStats: [{ id: 'cli:codex', label: 'Codex', providerId: 'cli:codex', providerName: 'Codex', requestCount: 2, successCount: 2, totalTokens: 1100, inputTokens: 1000, outputTokens: 100, cachedInputTokens: 800, cacheCreationInputTokens: 0, costUsd: 1.25, sessionCount: 1, unpricedRequests: 1 }], modelStats: [], totalLogs: 2, skippedRecords: 0,
 }
 
+it('shows configured provider logos in the overview and provider breakdown', async () => {
+  const [codex] = report.providerStats
+  vi.mocked(api.usageGetStats).mockResolvedValue({
+    ...report,
+    providerStats: [
+      codex,
+      { ...codex, id: 'dsivio-id', providerId: 'dsivio-id', label: 'Dsivio API', providerName: 'Dsivio API' },
+      { ...codex, id: 'relay-id', providerId: 'relay-id', label: 'Relay', providerName: 'Relay' },
+    ],
+  })
+  vi.mocked(api.usageSyncCli).mockResolvedValue({ sources: [] })
+  render(<UsageStatsPanel
+    lang="zh"
+    view="app"
+    providers={[
+      { id: 'dsivio-id', name: 'Dsivio API', baseUrl: 'https://relay.example/v1' },
+      { id: 'relay-id', name: 'Relay', baseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
+    ]}
+    providerIcons={{ 'dsivio-id': 'OpenAI' }}
+  />)
+
+  expect((await screen.findByTitle('筛选 Dsivio API')).querySelector('svg title')?.textContent).toBe('OpenAI')
+  expect(screen.getByTitle('筛选 Relay').querySelector('svg title')?.textContent).toBe('Google')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Provider' }))
+  expect(screen.getByRole('row', { name: /Dsivio API/ }).querySelector('svg title')?.textContent).toBe('OpenAI')
+  expect(screen.getByRole('row', { name: /Relay/ }).querySelector('svg title')?.textContent).toBe('Google')
+})
+
 it('syncs native history, labels estimates and unpriced records, and switches metrics', async () => {
   vi.mocked(api.usageGetStats).mockResolvedValue(report)
   vi.mocked(api.usageSyncCli).mockResolvedValue({ sources: [{ id: 'codex', label: 'Codex', files: 1, records: 2, skipped: 0, errors: [] }] })
-  render(<UsageStatsPanel lang="zh" view="app" />)
+  render(<UsageStatsPanel lang="zh" view="app" providers={[]} />)
   await waitFor(() => expect(api.usageSyncCli).toHaveBeenCalledTimes(1))
   await waitFor(() => expect(screen.getByRole('button', { name: '刷新' })).not.toBeDisabled())
   expect(screen.getByText('不代表订阅账单或实际扣费。')).toBeTruthy()
@@ -50,7 +79,7 @@ it('syncs native history, labels estimates and unpriced records, and switches me
 it('filters provider details without rescanning CLI history on each query', async () => {
   vi.mocked(api.usageGetStats).mockResolvedValue(report)
   vi.mocked(api.usageSyncCli).mockResolvedValue({ sources: [] })
-  render(<UsageStatsPanel lang="zh" view="app" />)
+  render(<UsageStatsPanel lang="zh" view="app" providers={[]} />)
   await waitFor(() => expect(screen.getByRole('button', { name: '刷新' })).not.toBeDisabled())
   fireEvent.click(screen.getByTitle('筛选 Codex'))
   await waitFor(() => expect(api.usageGetStats).toHaveBeenLastCalledWith(expect.objectContaining({ providerSearch: 'cli:codex' })))
@@ -61,9 +90,9 @@ it('releases syncing when leaving overview before the scan completes', async () 
   let finish!: (value: Awaited<ReturnType<typeof api.usageSyncCli>>) => void
   vi.mocked(api.usageGetStats).mockResolvedValue(report)
   vi.mocked(api.usageSyncCli).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-  const { rerender } = render(<UsageStatsPanel lang="en" view="app" />)
+  const { rerender } = render(<UsageStatsPanel lang="en" view="app" providers={[]} />)
   await waitFor(() => expect(api.usageGetStats).toHaveBeenCalled())
-  rerender(<UsageStatsPanel lang="en" view="calls" />)
+  rerender(<UsageStatsPanel lang="en" view="calls" providers={[]} />)
   await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).not.toBeDisabled())
   await act(async () => { finish({ sources: [] }) })
   expect(screen.getByRole('button', { name: 'Refresh' })).not.toBeDisabled()

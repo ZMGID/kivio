@@ -181,7 +181,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const hotkeyRecorder = useSettingsHotkeyRecorder((update) => editorController.edit(update))
   const recordingTarget = hotkeyRecorder.target
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
-  const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
   const [uiFontPxInput, setUiFontPxInput] = useState('')
   const [systemFonts, setSystemFonts] = useState<string[]>([])
   const permissions = useSettingsPermissions()
@@ -383,13 +382,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     }
   }, [loadError, loading, onReady, settings])
 
-  const retryAttempts = settings?.retryAttempts
-
-  useEffect(() => {
-    if (retryAttempts === undefined) return
-    setRetryAttemptsInput(String(Math.max(0, retryAttempts - 1)))
-  }, [retryAttempts])
-
   const uiFontScale = settings?.uiFontScale
   useEffect(() => {
     if (uiFontScale === undefined) return
@@ -524,35 +516,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     hasUnsavedChanges,
     persistSettingsNow,
   ])
-
-  // 重试次数输入处理
-  const handleRetryAttemptsChange = (value: string) => {
-    if (!settings) return
-    setRetryAttemptsInput(value)
-    if (value.trim() === '') return
-    const parsed = Number.parseInt(value, 10)
-    if (Number.isNaN(parsed)) return
-    const clamped = Math.min(10, Math.max(0, parsed))
-    updateSettings({ retryAttempts: clamped + 1 })
-  }
-
-  const handleRetryAttemptsBlur = () => {
-    if (!settings) return
-    if (retryAttemptsInput.trim() === '') {
-      setRetryAttemptsInput(String(Math.max(0, settings.retryAttempts - 1)))
-      return
-    }
-    const parsed = Number.parseInt(retryAttemptsInput, 10)
-    if (Number.isNaN(parsed)) {
-      setRetryAttemptsInput(String(Math.max(0, settings.retryAttempts - 1)))
-      return
-    }
-    const clamped = Math.min(10, Math.max(0, parsed))
-    setRetryAttemptsInput(String(clamped))
-    if (clamped + 1 !== settings.retryAttempts) {
-      updateSettings({ retryAttempts: clamped + 1 })
-    }
-  }
 
   /**
    * 更新设置字段
@@ -854,7 +817,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const lensDefaults = defaultPrompts?.lensPrompts?.[settings.lens.defaultLanguage === 'en' ? 'en' : 'zh']
   const chatLangKey = settings.chat.defaultLanguage === 'en' ? 'en' : 'zh'
   const chatDefaults = defaultPrompts?.chatPrompts?.[chatLangKey]
-  const chatRuntimeDefaults = defaultPrompts?.chatRuntimePrompt
   const chatConfig = settings.chat
   const chatMemory = settings.chatMemory
   const effectiveChatMaxOutput = resolveEffectiveChatMaxOutput(settings, chatConfig.maxOutputTokens)
@@ -954,8 +916,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     chat: {
       title: t.tabChatClient,
       subtitle: lang === 'zh'
-        ? '内置运行时的工作目录、输出上限、工具与系统提示词。'
-        : 'Workspace, output limit, tools, and system prompts for the built-in runtime.',
+        ? '内置运行时的工作目录、输出上限和系统提示词。'
+        : 'Workspace, output limit, and system prompt for the built-in runtime.',
     },
     memory: {
       title: t.tabMemory,
@@ -1136,10 +1098,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   settings={settings}
                   t={t}
                   lang={lang}
-                  retryAttemptsInput={retryAttemptsInput}
                   onUpdateSettings={updateSettings}
-                  onRetryAttemptsChange={handleRetryAttemptsChange}
-                  onRetryAttemptsBlur={handleRetryAttemptsBlur}
                 />
 
                 <SettingsGroup title={lang === 'zh' ? '其他' : 'Other'}>
@@ -1241,15 +1200,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 chatConfig={chatConfig}
                 chatTools={settings.chatTools}
                 chatDefaults={chatDefaults}
-                chatRuntimeDefaults={chatRuntimeDefaults}
                 effectiveChatMaxOutput={effectiveChatMaxOutput}
                 chatMaxOutputSourceLabel={chatMaxOutputSourceLabel}
                 chatMaxOutputModelLabel={chatMaxOutputModelLabel}
                 onUpdateChat={updateChat}
                 onUpdateVoice={updateVoice}
                 onUpdateNativeTools={updateNativeTools}
-                onUpdateChatTools={updateChatTools}
-                onNavigateTab={setActiveTab}
               />
             )}
 
@@ -1332,7 +1288,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               ) : usageView === 'limits' ? (
                 <UsageLimitsPanel lang={lang} />
               ) : (
-                <UsageStatsPanel lang={lang} view={usageView} />
+                <UsageStatsPanel
+                  lang={lang}
+                  view={usageView}
+                  providers={settings.providers}
+                  providerIcons={settings.providerIcons}
+                />
               )
             )}
 

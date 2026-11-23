@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { AppearanceGroup, BehaviorGroup, PermissionsGroup } from './GeneralTab'
@@ -11,7 +11,6 @@ const t = i18n.zh
  * 回归重点：
  *   1. 字号输入的「边打字不 clamp、失焦才 clamp」两段行为（commit 标志位）
  *   2. 两个 FontPicker 各写 uiFontFamily / uiFontMono（同类型，接错不报错）
- *   3. retryEnabled 关闭时隐藏重试次数行
  */
 describe('AppearanceGroup', () => {
   type Props = Parameters<typeof AppearanceGroup>[0]
@@ -61,31 +60,24 @@ describe('BehaviorGroup', () => {
       settings: makeSettings(),
       t,
       lang: 'zh' as const,
-      retryAttemptsInput: '3',
       onUpdateSettings: vi.fn(),
-      onRetryAttemptsChange: vi.fn(),
-      onRetryAttemptsBlur: vi.fn(),
       ...overrides,
     }
     render(<BehaviorGroup {...props} />)
     return props
   }
 
-  it('retryEnabled 决定是否显示重试次数行', () => {
+  it('对话设置只显示回复完成通知', () => {
     renderGroup()
-    expect(screen.getByText(t.retryAttempts)).toBeTruthy()
-    cleanup()
-    renderGroup({ settings: makeSettings({ retryEnabled: false }) })
-    expect(screen.queryByText(t.retryAttempts)).toBeNull()
+    expect(screen.getByRole('switch', { name: t.chatCompletionNotifications })).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: '自动重试' })).not.toBeInTheDocument()
+    expect(screen.queryByText('重试次数')).not.toBeInTheDocument()
   })
 
-  it('两个开关分别写 launchAtStartup / retryEnabled', async () => {
+  it('开机自启开关写 launchAtStartup', async () => {
     const props = renderGroup()
-    const toggles = screen.getAllByRole('switch')
-    await userEvent.click(toggles[0])
+    await userEvent.click(screen.getByRole('switch', { name: t.launchAtStartup }))
     expect(props.onUpdateSettings).toHaveBeenCalledWith({ launchAtStartup: true })
-    await userEvent.click(screen.getByRole('switch', { name: t.retryEnabled }))
-    expect(props.onUpdateSettings).toHaveBeenCalledWith({ retryEnabled: false })
   })
 
   it('启动后最小化到托盘开关写 launchMinimizedToTray', async () => {

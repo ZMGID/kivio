@@ -2,19 +2,16 @@ import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 import { RefreshCw } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { homeDir, join } from '@tauri-apps/api/path'
-import { Select, Input, Toggle } from '../public/controls'
+import { Select, Input } from '../public/controls'
 import { SettingRow, SettingsGroup } from '../components'
 import { ModelPairSelect } from '../ModelPairSelect'
 import { Button } from '../../components/Button'
 import { PromptField } from '../ScreenshotTranslationSettings'
 import type { I18n, Lang } from '../../components/i18n'
-import type { SettingsTab } from '../SettingsShell'
 import { AvatarField } from './AvatarField'
-import { MemoryIcon, AgentIcon, ProvidersIcon } from '../NavIcons'
 import type {
   Settings as SettingsData,
   ChatToolsConfig,
-  ChatModeConfig,
 } from '../../api/tauri'
 
 /** 对齐 Pi：自定义模型未填 maxTokens 时的缺省，也是唯一的协议兜底。 */
@@ -25,17 +22,6 @@ function formatTokenCount(tokens?: number): string {
   return `${tokens.toLocaleString()} tokens`
 }
 
-function resolveChatMode(config?: ChatModeConfig | null): Required<ChatModeConfig> {
-  return {
-    systemPrompt: config?.systemPrompt ?? '',
-    webSearch: config?.webSearch ?? true,
-    webFetch: config?.webFetch ?? true,
-    knowledgeSearch: config?.knowledgeSearch ?? true,
-    memoryTools: config?.memoryTools ?? true,
-    mcpReadOnly: config?.mcpReadOnly ?? true,
-  }
-}
-
 interface ChatTabProps {
   settings: SettingsData
   t: I18n
@@ -44,19 +30,15 @@ interface ChatTabProps {
   chatTools: ChatToolsConfig
   /** Built-in Agent system prompt (exact string used when systemPrompt is empty). */
   chatDefaults: string | undefined
-  /** Built-in Chat runtime prompt (exact string used when chatMode.systemPrompt is empty). */
-  chatRuntimeDefaults: string | undefined
   effectiveChatMaxOutput: { maxOutput: number; source: string }
   chatMaxOutputSourceLabel: string
   chatMaxOutputModelLabel: string
   onUpdateChat: (updates: Partial<NonNullable<SettingsData['chat']>>) => void
   onUpdateVoice: (updates: Partial<NonNullable<SettingsData['voice']>>) => void
   onUpdateNativeTools: (updates: Partial<NonNullable<ChatToolsConfig['nativeTools']>>) => void
-  onNavigateTab: (tab: SettingsTab) => void
-  onUpdateChatTools: (updates: Partial<ChatToolsConfig>) => void
 }
 
-/** AI 客户端（聊天）标签页：共用资料 + Kivio Agent / Kivio Chat 两套设置。 */
+/** Kivio Agent 设置页：个人资料、语音和 Agent 配置。 */
 export function ChatTab({
   settings,
   t,
@@ -64,28 +46,13 @@ export function ChatTab({
   chatConfig,
   chatTools,
   chatDefaults,
-  chatRuntimeDefaults,
   effectiveChatMaxOutput,
   chatMaxOutputSourceLabel,
   chatMaxOutputModelLabel,
   onUpdateChat,
   onUpdateVoice,
   onUpdateNativeTools,
-  onUpdateChatTools,
-  onNavigateTab,
 }: ChatTabProps) {
-  const chatMode = resolveChatMode(chatConfig.chatMode)
-
-  const updateChatMode = (updates: Partial<ChatModeConfig>) => {
-    onUpdateChat({
-      chatMode: {
-        ...chatMode,
-        ...updates,
-      },
-    })
-  }
-
-
   return (
     <>
       <SettingsGroup title={lang === 'zh' ? '个人资料' : 'Profile'}>
@@ -228,96 +195,6 @@ export function ChatTab({
           t={t}
           onChange={(systemPrompt) => onUpdateChat({ systemPrompt })}
         />
-      </SettingsGroup>
-
-      <SettingsGroup
-        title={t.chatToolsSection}
-        actions={
-          <>
-            <Button size="sm" variant="ghost" onClick={() => onNavigateTab('memory')} data-tauri-drag-region="false">
-              <MemoryIcon size={11} />
-              {t.tabMemory}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => onNavigateTab('externalAgents')} data-tauri-drag-region="false">
-              <AgentIcon size={11} />
-              {t.chatOpenExternalAgents}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => onNavigateTab('providers')} data-tauri-drag-region="false">
-              <ProvidersIcon size={11} />
-              {t.chatOpenProviders}
-            </Button>
-          </>
-        }
-      >
-        <SettingRow label={t.toolsOnDemand} description={t.toolsOnDemandHint}>
-          <Toggle
-            ariaLabel={t.toolsOnDemand}
-            checked={chatTools.toolsOnDemand ?? true}
-            onChange={(toolsOnDemand) => onUpdateChatTools({ toolsOnDemand })}
-          />
-        </SettingRow>
-      </SettingsGroup>
-
-      {/* ─── Kivio Chat ─── */}
-      <SettingsGroup title={t.kivioChatSection} description={t.kivioChatSectionHint || undefined}>
-        <SettingRow
-          label={t.kivioChatWebSearch}
-          description={t.kivioChatWebSearchHint}
-        >
-          <Toggle
-            checked={Boolean(chatMode.webSearch)}
-            onChange={(webSearch) => updateChatMode({ webSearch })}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t.kivioChatWebFetch}
-          description={t.kivioChatWebFetchHint}
-        >
-          <Toggle
-            checked={Boolean(chatMode.webFetch)}
-            onChange={(webFetch) => updateChatMode({ webFetch })}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t.kivioChatKnowledge}
-          description={t.kivioChatKnowledgeHint}
-        >
-          <Toggle
-            checked={Boolean(chatMode.knowledgeSearch)}
-            onChange={(knowledgeSearch) => updateChatMode({ knowledgeSearch })}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t.kivioChatMemory}
-          description={t.kivioChatMemoryHint}
-        >
-          <Toggle
-            checked={Boolean(chatMode.memoryTools)}
-            onChange={(memoryTools) => updateChatMode({ memoryTools })}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t.kivioChatMcpReadonly}
-          description={t.kivioChatMcpReadonlyHint}
-        >
-          <Toggle
-            checked={Boolean(chatMode.mcpReadOnly)}
-            onChange={(mcpReadOnly) => updateChatMode({ mcpReadOnly })}
-          />
-        </SettingRow>
-        <PromptField
-          label={t.kivioChatSystemPrompt}
-          description={t.kivioChatSystemPromptHint}
-          value={chatMode.systemPrompt || ''}
-          defaultText={chatRuntimeDefaults || ''}
-          t={t}
-          onChange={(systemPrompt) => updateChatMode({ systemPrompt })}
-        />
-        <p className="kv-group-note">
-          {lang === 'zh'
-            ? '以上开关仅影响 Kivio Chat。写文件 / Shell / Subagent 始终只在 Kivio Agent 中可用。'
-            : 'These toggles only affect Kivio Chat. Write / shell / sub-agents stay Agent-only.'}
-        </p>
       </SettingsGroup>
     </>
   )

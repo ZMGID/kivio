@@ -14,6 +14,8 @@ import {
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Database, Info, RefreshCw, SlidersHorizontal, Trash2 } from 'lucide-react'
 import {
   api,
+  type ModelProvider,
+  type Settings,
   type UsageGroupStats,
   type UsageRange,
   type UsageRecord,
@@ -30,10 +32,16 @@ import { useDocumentDark } from '../theme/useDocumentDark'
 
 type UsageView = 'logs' | 'providers' | 'models'
 type UsageMetric = 'cost' | 'tokens'
+type UsageSourceRow = UsageGroupStats & {
+  provider?: Pick<ModelProvider, 'name' | 'baseUrl'>
+  iconKey?: string
+}
 
 export type UsageStatsPanelProps = {
   lang: string
   view: 'app' | 'calls'
+  providers: readonly Pick<ModelProvider, 'id' | 'name' | 'baseUrl'>[]
+  providerIcons?: Settings['providerIcons']
 }
 
 const SOURCE_OPTIONS = [
@@ -54,7 +62,7 @@ const SOURCE_OPTIONS = [
 const STATUS_OPTIONS = ['all', 'success', 'error', 'cancelled', 'missing_usage']
 const LOG_PAGE_SIZE = 15
 const SEARCH_DEBOUNCE_MS = 250
-/** 概览左侧最多单列的来源数，其余并入「其他」。 */
+/** 用量概览单列的最多来源数。 */
 const SOURCE_ROW_LIMIT = 5
 
 function sourceLabel(source: string, lang: string) {
@@ -780,10 +788,17 @@ function Seg<T extends string>({ options, value, onChange, ariaLabel }: {
   )
 }
 
-function SourceIcon({ row, size = 16 }: { row: UsageGroupStats; size?: number }) {
+function SourceIcon({ row, size = 16 }: { row: UsageSourceRow; size?: number }) {
   const id = row.providerId ?? row.id
   if (id.startsWith('cli:')) return <AgentIcon id={id.slice(4)} size={size} className="shrink-0" />
-  return <ProviderIcon name={row.providerName || row.label} size={size} />
+  return (
+    <ProviderIcon
+      name={row.provider?.name || row.providerName || row.label}
+      baseUrl={row.provider?.baseUrl}
+      iconKey={row.iconKey}
+      size={size}
+    />
+  )
 }
 
 function isUnpriced(row: UsageGroupStats) {
@@ -803,7 +818,7 @@ const SWATCH = 'h-2 w-2 shrink-0 rounded-[2px]'
 
 /** 概览左栏：一条份额条 + 按份额排序的来源列表，点击某一来源即按它筛选整页。 */
 function SourceShare({ rows, metric, lang, activeId, onToggle, onHover }: {
-  rows: UsageGroupStats[]
+  rows: UsageSourceRow[]
   metric: UsageMetric
   lang: string
   activeId: string
@@ -815,9 +830,7 @@ function SourceShare({ rows, metric, lang, activeId, onToggle, onHover }: {
   if (rows.length === 0) return null
   const total = rows.reduce((sum, row) => sum + rowMetric(row, metric), 0)
   const top = rows.slice(0, SOURCE_ROW_LIMIT)
-  const rest = rows.slice(SOURCE_ROW_LIMIT)
-  const restValue = rest.reduce((sum, row) => sum + rowMetric(row, metric), 0)
-  const restTokens = rest.reduce((sum, row) => sum + row.totalTokens, 0)
+  const restValue = rows.slice(SOURCE_ROW_LIMIT).reduce((sum, row) => sum + rowMetric(row, metric), 0)
   const share = (value: number) => (total > 0 ? value / total : 0)
   return (
     <div className="mt-5">
@@ -861,18 +874,6 @@ function SourceShare({ rows, metric, lang, activeId, onToggle, onHover }: {
             </button>
           )
         })}
-        {rest.length > 0 && (
-          <div className="px-2 py-1.5">
-            <div className="flex items-center gap-2 text-[13px] text-[var(--text-muted)]">
-              <span className={SWATCH} style={{ backgroundColor: OTHER_COLOR }} />
-              <span className="min-w-0 flex-1 truncate">{zh ? `其他 ${rest.length} 个来源` : `${rest.length} other sources`}</span>
-              <span className="shrink-0 tabular-nums">{metric === 'cost' ? formatCost(restValue) : formatTokens(restValue)}</span>
-            </div>
-            <div className="mt-0.5 pl-4 text-[11px] tabular-nums text-[var(--text-faint)]">
-              {formatShare(share(restValue))}{metric === 'cost' ? ` · ${formatTokens(restTokens)} tokens` : ''}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )
@@ -929,7 +930,7 @@ function EmptyRows({ children }: { children: ReactNode }) {
   return <div className="border-y border-[var(--border)] py-12 text-center text-xs text-[var(--text-muted)]">{children}</div>
 }
 
-function GroupTable({ rows, lang, type, metric }: { rows: UsageGroupStats[]; lang: string; type: 'provider' | 'model'; metric: UsageMetric }) {
+function GroupTable({ rows, lang, type, metric }: { rows: UsageSourceRow[]; lang: string; type: 'provider' | 'model'; metric: UsageMetric }) {
   const zh = lang === 'zh'
   if (rows.length === 0) {
     return <EmptyRows>{zh ? '这个范围内暂无用量，试试更长的时间范围或刷新本地 CLI。' : 'No usage in this range. Try a longer range or refresh local CLI history.'}</EmptyRows>
@@ -1066,7 +1067,7 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
   )
 }
 
-export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
+export function UsageStatsPanel({ lang, view, providers, providerIcons }: UsageStatsPanelProps) {
   const [range, setRange] = useState<UsageRange>('1d')
   const [viewMode, setViewMode] = useState<UsageView>(view === 'calls' ? 'logs' : 'models')
   const [source, setSource] = useState('all')
@@ -1210,7 +1211,13 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
   }, [])
 
   const activeFilters = [source !== 'all', status !== 'all', activeProvider !== '', modelSearch.trim() !== ''].filter(Boolean).length
-  const providerRows = useMemo(() => sortByMetric(stats?.providerStats, metric), [metric, stats?.providerStats])
+  const providerRows = useMemo<UsageSourceRow[]>(() => {
+    const providersById = new Map(providers.map(provider => [provider.id, provider]))
+    return sortByMetric(stats?.providerStats, metric).map(row => {
+      const id = row.providerId ?? row.id
+      return { ...row, provider: providersById.get(id), iconKey: providerIcons?.[id] }
+    })
+  }, [metric, providers, providerIcons, stats?.providerStats])
   const modelRows = useMemo(() => sortByMetric(stats?.modelStats, metric), [metric, stats?.modelStats])
   const trend = stats?.trend ?? []
   const chartSources = useMemo(
