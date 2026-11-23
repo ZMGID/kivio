@@ -231,7 +231,7 @@ describe('AgentModelPicker · external CLI models and effort', () => {
     renderPicker({ agentRuntime: runtime, conversationId: null })
     await waitFor(() => expect(detectModels).toHaveBeenCalledTimes(1))
     expect(detectModels.mock.calls[0][2]).toBeUndefined()
-    await waitFor(() => expect(trigger()).toHaveTextContent('Auto'))
+    await waitFor(() => expect(trigger()).toHaveTextContent('选择模型'))
     openPicker()
     expect(screen.getByText('刷新失败，保留当前列表')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('boom')
@@ -259,6 +259,8 @@ describe('AgentModelPicker · external CLI models and effort', () => {
     })
     renderPicker({ agentRuntime: runtime, onExternalModelChange })
     await waitFor(() => expect(onExternalModelChange).toHaveBeenCalledWith('grok-4.5', 'high'))
+    openPicker()
+    expect(screen.getByRole('button', { name: 'Grok 4.5' })).toHaveAttribute('aria-current', 'true')
   })
 
   it('用户已显式选择模型时不被当前配置覆盖', async () => {
@@ -293,7 +295,7 @@ describe('AgentModelPicker · external CLI models and effort', () => {
       source: 'probed', currentModel: null, currentReasoning: 'off',
     })
     renderPicker({ agentRuntime: runtime })
-    await waitFor(() => expect(trigger()).toHaveTextContent('Auto'))
+    await waitFor(() => expect(trigger()).toHaveTextContent('选择模型'))
     expect(trigger()).not.toHaveAccessibleName(/思考等级/)
     openPicker()
     expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument()
@@ -330,12 +332,14 @@ describe('AgentModelPicker · external CLI models and effort', () => {
     expect(screen.queryByText(/automatic task delegation/)).not.toBeInTheDocument()
   })
 
-  it('无当前模型概念时胶囊显示「Auto」', async () => {
+  it('无当前模型时提示选择模型并显示空目录', async () => {
     detectModels.mockResolvedValue({
-      models: [{ id: 'default', label: 'Default' }], reasoningOptions: [], source: 'probed', currentModel: null, currentReasoning: null,
+      models: [], reasoningOptions: [], source: 'probed', currentModel: null, currentReasoning: null,
     })
     renderPicker({ agentRuntime: runtime })
-    await waitFor(() => expect(trigger()).toHaveTextContent('Auto'))
+    await waitFor(() => expect(trigger()).toHaveTextContent('选择模型'))
+    openPicker()
+    expect(await screen.findByText('该 CLI 未上报可用模型')).toBeInTheDocument()
   })
 
   it('切换 agent 时旧 CLI 的 currentModel 立即失效（不残留在胶囊上）', async () => {
@@ -386,9 +390,23 @@ describe('AgentModelPicker · 切换代理', () => {
     const claude = await screen.findByRole('radio', { name: /Claude Code/ })
     expect(claude).toBeDisabled()
     expect(screen.queryByText('已绑定')).not.toBeInTheDocument()
+    detectModels.mockResolvedValue({ models: [{ id: 'claude-opus-5-5' }], source: 'probed', initialModel: 'claude-opus-5-5' })
     view.rerenderWith({ busy: false })
     act(() => { fireEvent.click(claude) })
-    expect(onRuntimeChange).toHaveBeenCalledWith(expect.objectContaining({ externalAgentId: 'claude' }))
+    await waitFor(() => expect(onRuntimeChange).toHaveBeenCalledWith(expect.objectContaining({ externalAgentId: 'claude', externalModel: 'claude-opus-5-5' })))
+  })
+
+  it('ignores a first-use catalog that arrives after switching conversations', async () => {
+    const onRuntimeChange = vi.fn()
+    const view = renderPicker({ onRuntimeChange, conversationId: 'first' })
+    let resolve!: (catalog: Partial<ExternalAgentModels>) => void
+    detectModels.mockImplementation(() => new Promise(done => { resolve = done }))
+    openPicker()
+    fireEvent.click(await screen.findByRole('radio', { name: /Claude Code/ }))
+    expect(detectModels).toHaveBeenCalledWith('claude', 'first')
+    view.rerenderWith({ conversationId: 'second' })
+    await act(async () => resolve({ source: 'probed', initialModel: 'claude-opus-5-5' }))
+    expect(onRuntimeChange).not.toHaveBeenCalled()
   })
 
   it('再点当前外部代理不把模型和思考重置成 default', async () => {
@@ -415,14 +433,14 @@ describe('AgentModelPicker · 切换代理', () => {
     openPicker()
     const claude = await screen.findByRole('radio', { name: /Claude Code/ })
     act(() => { fireEvent.click(claude) })
-    expect(onRuntimeChange).toHaveBeenCalledWith({
+    await waitFor(() => expect(onRuntimeChange).toHaveBeenCalledWith({
       kind: 'external',
       externalAgentId: 'claude',
       externalModel: 'claude-opus-5',
       externalReasoning: 'high',
       externalSandbox: null,
       externalAgentPreset: null,
-    })
+    }))
     expect(panel()).toBeInTheDocument()
     window.localStorage.removeItem(LAST_AGENT_RUNTIME_KEY)
   })

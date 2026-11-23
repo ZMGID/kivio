@@ -1,16 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { chatApi, type DetectedExternalAgent } from './api'
+import { useT } from '../components/i18n'
 import { modelIncludesEffort } from './externalModelEffort'
 import type { AgentRuntimeConfig } from './types'
 import type { ExternalAgentModels } from '../api/externalCliSettings'
+import { concreteCliModelId } from '../api/cliModelId'
 
 type ExternalModel = DetectedExternalAgent['models'][number]
 type ReasoningOption = NonNullable<DetectedExternalAgent['reasoningOptions']>[number]
-
-// 胶囊显示：把裸 "Default" 映射为「自动」（不再向用户暴露内部占位名）。
-export function mapDefaultLabel(label: string): string {
-  return label === 'Default' ? 'Auto' : label
-}
 
 /** ACP 探测常把思考开关报成 on/off，那不是档位。dsh 的 `off` 是真档位，会跟 high/max 一起出现。 */
 const ACP_SWITCH_IDS = ['on', 'off', 'true', 'false', 'enabled', 'disabled']
@@ -95,7 +92,7 @@ export interface ExternalModelCatalog {
   /** 胶囊上的模型名。 */
   displayName: string
   /** 列表里视为当前的模型 id。 */
-  activeModelId: string
+  activeModelId: string | null
   reasoningOptions: ReasoningOption[]
   reasoningValue: string
   /** 实际生效的档位：显式选择优先，否则是 CLI 当前配置；都没有为 null（Auto）。 */
@@ -120,13 +117,12 @@ export function useExternalModelCatalog({
   agentRuntime,
   conversationId,
   onModelChange,
-  fetchingLabel,
 }: {
   agentRuntime: AgentRuntimeConfig
   conversationId?: string | null
   onModelChange: (model: string, reasoning?: string | null, serviceTier?: string | null) => void
-  fetchingLabel: string
 }): ExternalModelCatalog {
+  const t = useT()
   const agentId = agentRuntime.kind === 'external' ? agentRuntime.externalAgentId ?? null : null
   const [models, setModels] = useState<ExternalModel[]>([])
   const [reasoningOptions, setReasoningOptions] = useState<ReasoningOption[]>([])
@@ -168,7 +164,7 @@ export function useExternalModelCatalog({
         if (result.refreshing || result.source === 'fallback' || selection !== modelSelectionRef.current) return
         // 自动同步 CLI 当前配置：仅当用户未显式选择（externalModel 空 / 'default'）时。
         const rt = runtimeRef.current
-        const explicitModel = !!rt.externalModel && rt.externalModel !== 'default'
+        const explicitModel = !!concreteCliModelId(rt.externalModel)
         const effectiveModel = explicitModel ? rt.externalModel : result.currentModel
         const effectiveLabel = result.models.find((m) => m.id === effectiveModel)?.label
         if (modelIncludesEffort(id, effectiveModel, effectiveLabel)) {
@@ -238,23 +234,20 @@ export function useExternalModelCatalog({
     return () => { pendingRequests.current++ }
   }, [agentId, conversationId, loadModels])
 
-  const explicitModelId = agentRuntime.externalModel && agentRuntime.externalModel !== 'default'
-    ? agentRuntime.externalModel
-    : null
-  const modelForEffort = explicitModelId ?? currentModel
+  const explicitModelId = concreteCliModelId(agentRuntime.externalModel)
+  const activeModelId = explicitModelId ?? currentModel
 
   // 当前展示用的 effort 列表：优先按所选/当前模型从 reasoningByModel 取（kimi 按模型变档）。
   const activeReasoningOptions = useMemo(() => {
-    if (modelIncludesEffort(agentId, modelForEffort, models.find((m) => m.id === modelForEffort)?.label)) return []
-    if (modelForEffort && Object.prototype.hasOwnProperty.call(reasoningByModel, modelForEffort)) {
-      return reasoningByModel[modelForEffort] ?? []
+    if (modelIncludesEffort(agentId, activeModelId, models.find((m) => m.id === activeModelId)?.label)) return []
+    if (activeModelId && Object.prototype.hasOwnProperty.call(reasoningByModel, activeModelId)) {
+      return reasoningByModel[activeModelId] ?? []
     }
     // 整表都是 ACP 开关才藏档位。不要从混有 high/max 的表里单独抠掉 off——dsh 的 off 是真档位。
     if (isAcpSwitchOnlyList(reasoningOptions)) return []
     return reasoningOptions
-  }, [agentId, modelForEffort, models, reasoningByModel, reasoningOptions])
+  }, [agentId, activeModelId, models, reasoningByModel, reasoningOptions])
 
-  const activeModelId = agentRuntime.externalModel || currentModel || 'default'
   const selectedModel = models.find(model => model.id === activeModelId)
   const fastTier = (selectedModel?.capabilities?.serviceTiers ?? []).find(tier => tier.id !== 'default')
   const fastOn = !!fastTier && agentRuntime.externalServiceTier === fastTier.id
@@ -270,7 +263,10 @@ export function useExternalModelCatalog({
     : null
   const reasoningLabel = useMemo(() => {
     const opt = activeReasoningOptions.find((o) => o.id === displayId)
-    if (opt) return mapDefaultLabel(formatEffortLabel(opt.id, opt.label || displayId))
+    if (opt) {
+      const label = formatEffortLabel(opt.id, opt.label || displayId)
+      return label === 'Default' ? 'Auto' : label
+    }
     // 未显式选择且探测也没有档位时显示「自动」；残留的 ACP on/off 开关也当自动。
     if (displayId === 'Default' || displayId === 'default' || isAcpSwitchId(String(displayId))) return 'Auto'
     return displayId
@@ -278,17 +274,17 @@ export function useExternalModelCatalog({
 
   const displayName = useMemo(() => {
     const formatLabel = (label: string) => agentId === 'antigravity'
-      ? mapDefaultLabel(label)
-      : stripProviderPrefix(stripParenthetical(mapDefaultLabel(label)))
+      ? label
+      : stripProviderPrefix(stripParenthetical(label))
     // 显式选择：显示所选模型 label（探测中列表未到时退回原始 id）。
     if (explicitModelId) {
       return formatLabel(models.find((item) => item.id === explicitModelId)?.label ?? explicitModelId)
     }
-    // 未显式选择：优先显示 CLI 当前配置模型的真实名字；探测中显示「获取中…」；都没有则「自动」。
+    // 旧会话可能把模型交给 CLI。显示已知的实际模型，未知时提示选择。
     if (currentModel) return formatLabel(models.find((item) => item.id === currentModel)?.label ?? currentModel)
-    if (loading && models.length === 0) return fetchingLabel
-    return 'Auto'
-  }, [agentId, explicitModelId, models, currentModel, loading, fetchingLabel])
+    if (loading && models.length === 0) return t.chatRuntimeFetching
+    return t.chatSelectModel
+  }, [agentId, explicitModelId, models, currentModel, loading, t])
 
   const reload = useCallback((force?: boolean) => {
     if (agentId) void loadModels(agentId, force)

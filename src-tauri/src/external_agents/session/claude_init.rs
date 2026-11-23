@@ -10,27 +10,12 @@ use crate::external_agents::slash::is_claude_init;
 use crate::external_agents::spawn::{parse_json_line, spawn_agent, write_probe_stdin};
 use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext, RuntimeModelOption};
 
-/// Built-in Claude Code model catalog, initially ported from desktop-cc-gui
-/// (`engine/status.rs::get_builtin_claude_models`), updated for Claude Code 2.1.293.
-///
-/// Claude CLI 没有 list-models RPC。cc-gui 的做法是：
-/// 1. 只暴露 4 个家族档位（Fable / Opus / Sonnet / Haiku），catalog id 钉死当前代
-/// 2. `~/.claude/settings.json` 的 `env.ANTHROPIC_DEFAULT_*` / 进程 env **改写**
-///    每档的 runtime model + 展示名（tier id 不变，所以四行不会因映射到同一模型而折叠）
-/// 3. **不起进程**探测模型列表
-///
-/// 保留家族档位结构；Kivio 额外在列表头保留 `default`（Auto / 不传
-/// `--model`），这是本应用胶囊语义，cc-gui 没有这一行。
-const CLAUDE_BUILTIN_TIERS: &[(&str, &str)] = &[
-    ("claude-fable-5-1", "Fable 5.1"),
-    ("claude-opus-5-5", "Opus 5.5"),
-    ("claude-sonnet-5-5", "Sonnet 5.5"),
-    ("claude-haiku-5-5", "Haiku 5.5"),
-];
+use crate::external_agents::providers::claude::CLAUDE_BUILTIN_TIERS;
 
 /// 上一代 catalog id。旧会话可能还存着它们；仍按家族走 settings/env 覆盖，
 /// 没有覆盖时原样透传（用户当初显式选的就是这一代）。
 const LEGACY_CLAUDE_TIERS: &[&str] = &[
+    "claude-fable-5-1",
     "claude-fable-5",
     "claude-opus-5",
     "claude-sonnet-5",
@@ -389,8 +374,6 @@ pub fn resolve_claude_cli_model(selected: &str) -> String {
         return selected.to_string();
     }
     // 只对 builtin catalog id 做家族映射；用户手填 / 旧会话里的自定义 id 原样透传。
-    // Existing conversations may still store the previous Fable tier. Preserve its
-    // provider override semantics even though the picker now offers Fable 5.1.
     let is_catalog = LEGACY_CLAUDE_TIERS.contains(&selected)
         || CLAUDE_BUILTIN_TIERS.iter().any(|(id, _)| *id == selected);
     if !is_catalog {
@@ -449,13 +432,11 @@ pub fn map_claude_config_to_catalog_id(raw: &str) -> Option<String> {
         return Some(raw.to_string());
     }
     // Bare aliases + concrete ids → current curated tier.
-    match claude_model_family_key(raw) {
-        Some("fable") => Some("claude-fable-5-1".to_string()),
-        Some("opus") => Some("claude-opus-5-5".to_string()),
-        Some("sonnet") => Some("claude-sonnet-5-5".to_string()),
-        Some("haiku") => Some("claude-haiku-5-5".to_string()),
-        _ => None,
-    }
+    let family = claude_model_family_key(raw)?;
+    CLAUDE_BUILTIN_TIERS
+        .iter()
+        .find(|(id, _)| claude_model_family_key(id) == Some(family))
+        .map(|(id, _)| (*id).to_string())
 }
 
 /// 胶囊「当前模型」：settings.json 顶层 `model`，否则 `ANTHROPIC_MODEL`，再否则
@@ -654,15 +635,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn builtin_catalog_matches_supported_claude_tiers() {
-        assert_eq!(
-            &crate::external_agents::providers::claude::CLAUDE_AGENT_DEF.fallback_models[1..],
-            CLAUDE_BUILTIN_TIERS,
-            "fallback and configured model catalogs must stay aligned",
-        );
-    }
-
     /// 把 CLAUDE_CONFIG_DIR 指到空目录，避免读到本机真实 `~/.claude/settings.json`。
     fn isolate_claude_config() -> (PathBuf, Option<String>) {
         let dir = std::env::temp_dir().join(format!(
@@ -840,6 +812,10 @@ mod tests {
         assert_eq!(
             map_claude_config_to_catalog_id("claude-opus-4-8"),
             map_claude_config_to_catalog_id("opus")
+        );
+        assert_eq!(
+            map_claude_config_to_catalog_id("claude-fable-5-1").as_deref(),
+            Some("claude-fable-5-1")
         );
         assert_eq!(map_claude_config_to_catalog_id("my-gateway-x"), None);
         assert_eq!(map_claude_config_to_catalog_id("default"), None);

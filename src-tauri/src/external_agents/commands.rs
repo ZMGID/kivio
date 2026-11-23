@@ -370,7 +370,7 @@ fn cached_models_payload(
     } else {
         cached.reasoning_options.clone()
     };
-    models_payload(
+    let mut payload = models_payload(
         &merge_custom_models(def.id, &cached.models),
         &reasoning_options,
         &cached.reasoning_by_model,
@@ -379,7 +379,28 @@ fn cached_models_payload(
         cached.current_reasoning.as_deref(),
         cached_flag,
         cached.probe_error.as_deref(),
-    )
+    );
+    // Select only from the native catalog, before inserting user-added picker entries.
+    // A saved runtime and an explicit CLI configuration take precedence over first-use defaults.
+    if cached.source == ModelSource::Probed && cached.current_model.is_none() {
+        let mut available = cached.models.iter().filter(|model| model.id != "default");
+        let preferred = match def.id {
+            "codex" => ["gpt-6.2-astra", "gpt-6.2-sol"]
+                .iter()
+                .find_map(|id| {
+                    available
+                        .clone()
+                        .find(|m| m.id.strip_prefix("openai.").unwrap_or(&m.id) == *id)
+                })
+                .or_else(|| available.next()), // model/list puts the server default first.
+            "claude" => available.next(),
+            _ => None,
+        };
+        if let Some(model) = preferred {
+            payload["initialModel"] = model.id.clone().into();
+        }
+    }
+    payload
 }
 
 #[tauri::command]
@@ -533,6 +554,44 @@ mod tests {
         assert_eq!(opts[0]["id"], "low");
         assert_eq!(opts[2]["id"], "max");
         assert_eq!(payload["currentReasoning"], "high");
+    }
+
+    #[test]
+    fn first_use_default_uses_the_native_catalog_and_defers_to_configured_models() {
+        use crate::external_agents::types::fallback_models_from_pairs;
+        let codex = get_agent_def("codex").unwrap();
+        let mut cached = CachedAgentModels {
+            models: fallback_models_from_pairs(&[
+                ("server-default", ""),
+                ("gpt-6-astra", ""),
+                ("openai.gpt-6.2-astra", ""),
+                ("gpt-6.2-sol", ""),
+            ]),
+            source: ModelSource::Probed,
+            reasoning_options: vec![],
+            reasoning_by_model: Default::default(),
+            current_model: None,
+            current_reasoning: None,
+            probe_error: None,
+        };
+        for expected in ["openai.gpt-6.2-astra", "gpt-6.2-sol", "server-default"] {
+            assert_eq!(
+                cached_models_payload(codex, &cached, false)["initialModel"],
+                expected
+            );
+            cached.models.retain(|m| m.id != expected);
+        }
+        let claude = get_agent_def("claude").unwrap();
+        cached.models = fallback_models_from_pairs(claude.fallback_models);
+        assert_eq!(
+            cached_models_payload(claude, &cached, false)["initialModel"],
+            "claude-opus-5-5"
+        );
+        cached.current_model = Some("custom-gateway".into());
+        assert!(cached_models_payload(claude, &cached, false)["initialModel"].is_null());
+        cached.current_model = None;
+        cached.source = ModelSource::Fallback;
+        assert!(cached_models_payload(claude, &cached, false)["initialModel"].is_null());
     }
 
     #[test]

@@ -4,6 +4,7 @@ import {
   externalCliSettingsApi,
   type DetectedExternalAgent,
 } from '../../api/externalCliSettings'
+import { isConcreteCliModel } from '../../api/cliModelId'
 import type { ExternalCliAgentConfig } from '../../api/tauri'
 import { Button, IconButton } from '../../components/Button'
 import { i18n, type Lang } from '../../components/i18n'
@@ -72,8 +73,9 @@ export function ModelsSection({
 
   const candidate = newId.trim()
   const duplicate = Boolean(candidate) && (customIds.has(candidate) || builtIn.some((m) => m.id === candidate))
+  const canAdd = isConcreteCliModel({ id: candidate, label: newLabel.trim() }) && !duplicate
   const add = () => {
-    if (!candidate || duplicate) return
+    if (!canAdd) return
     onChange([...custom, { id: candidate, label: newLabel.trim() }])
     setNewId('')
     setNewLabel('')
@@ -156,7 +158,7 @@ export function ModelsSection({
             placeholder={t.externalAgentsModelLabel}
             aria-label={t.externalAgentsModelLabel}
           />
-          <Button size="sm" onClick={add} disabled={!candidate || duplicate}>
+          <Button size="sm" onClick={add} disabled={!canAdd}>
             <Plus size={12} />
             {t.externalAgentsModelAdd}
           </Button>

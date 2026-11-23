@@ -4,13 +4,11 @@ use super::super::types::{
     StreamFormat,
 };
 
-/// Probe 失败时的静态兜底：与 claude_init 的当前家族目录同 id/label，
-/// 另加 Kivio 的 `default`（Auto / 不传 `--model`）。
-const FALLBACK_MODELS: &[(&str, &str)] = &[
-    ("default", "Default"),
-    ("claude-fable-5-1", "Fable 5.1"),
+/// First entry is the default chat tier. Auto is added by the catalog adapter.
+pub(crate) const CLAUDE_BUILTIN_TIERS: &[(&str, &str)] = &[
     ("claude-opus-5-5", "Opus 5.5"),
     ("claude-sonnet-5-5", "Sonnet 5.5"),
+    ("claude-fable-5-2", "Fable 5.2"),
     ("claude-haiku-5-5", "Haiku 5.5"),
 ];
 
@@ -448,7 +446,7 @@ pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     fallback_bins: &["openclaude"],
     version_args: &["--version"],
     auth_probe_args: Some(&["auth", "status"]),
-    fallback_models: FALLBACK_MODELS,
+    fallback_models: CLAUDE_BUILTIN_TIERS,
     reasoning_options: REASONING,
     // `default` asks through the stdio control channel. `auto` uses Claude's classifier and
     // falls back to asking; `dontAsk` only permits allow-rules/read-only commands.

@@ -1,3 +1,4 @@
+import { concreteCliModelId } from '../../api/cliModelId'
 import type { I18n } from '../../components/i18n'
 import type {
   AgentData,
@@ -52,7 +53,7 @@ export function normalizeAgent(data?: AgentData | null): NormalizedAgent {
     prompt: text(data?.prompt),
     runtimeKind,
     externalAgentId: data?.externalAgentId?.trim() || null,
-    externalModel: data?.externalModel?.trim() || null,
+    externalModel: concreteCliModelId(data?.externalModel),
     providerId: data?.providerId?.trim() || null,
     model: data?.model?.trim() || null,
     toolIds: idList(data?.toolIds),

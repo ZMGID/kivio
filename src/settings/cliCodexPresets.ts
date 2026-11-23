@@ -5,6 +5,7 @@
  */
 
 export const CODEX_CUSTOM_PRESET_ID = 'custom' as const
+export const CODEX_CUSTOM_PRESET_MODEL = 'gpt-6.2-astra'
 
 export type CodexPresetId =
   | typeof CODEX_CUSTOM_PRESET_ID
@@ -77,7 +78,7 @@ export const DEFAULT_CODEX_AUTH_JSON = `{
 export const DEFAULT_CODEX_CONFIG_TOML = buildCodexProviderConfigToml(
   'relay',
   'https://api.example.com/v1',
-  'gpt-5.5',
+  CODEX_CUSTOM_PRESET_MODEL,
   'responses',
   'relay',
 )
@@ -316,7 +317,7 @@ export function setCodexStructuredFields(
 ): { configToml: string; authJson: string } {
   const meta = extractCodexMeta(currentToml || DEFAULT_CODEX_CONFIG_TOML)
   const baseUrl = patch.baseUrl ?? extractCodexBaseUrl(currentToml)
-  const model = ((patch.model ?? extractCodexModel(currentToml)) || 'gpt-5.5').trim() || 'gpt-5.5'
+  const model = (patch.model ?? extractCodexModel(currentToml)).trim() || CODEX_CUSTOM_PRESET_MODEL
   const configToml = buildCodexProviderConfigToml(
     meta.providerName,
     baseUrl.trim(),

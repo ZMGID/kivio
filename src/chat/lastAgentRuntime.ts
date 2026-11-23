@@ -1,6 +1,8 @@
+import { concreteCliModelId } from '../api/cliModelId'
 import {
   BUILTIN_AGENT_RUNTIME,
   CHAT_AGENT_RUNTIME,
+  chatApi,
   type AgentRuntimeConfig,
 } from './api'
 
@@ -40,7 +42,7 @@ function parseSnapshot(raw: unknown): ExternalRuntimeSnapshot | null {
   if (!raw || typeof raw !== 'object') return null
   const value = raw as Record<string, unknown>
   return {
-    externalModel: asNonEmptyString(value.externalModel) ?? 'default',
+    externalModel: concreteCliModelId(asNonEmptyString(value.externalModel)) ?? 'default',
     externalReasoning: asNonEmptyString(value.externalReasoning),
     ...(asNonEmptyString(value.externalServiceTier) ? { externalServiceTier: asNonEmptyString(value.externalServiceTier) } : {}),
     externalSandbox: asNonEmptyString(value.externalSandbox),
@@ -106,16 +108,30 @@ export function loadLastRuntimeForAgent(agentId: string): ExternalRuntimeSnapsho
   }
 }
 
-export function rememberedExternalRuntime(agentId: string): AgentRuntimeConfig {
+/** With no saved choice, select a model from the CLI's current catalog before committing the runtime. */
+export async function initialExternalRuntime(
+  agentId: string, conversationId?: string | null,
+): Promise<AgentRuntimeConfig> {
   const snap = loadLastRuntimeForAgent(agentId)
-  return {
+  const runtime: AgentRuntimeConfig = {
     kind: 'external',
     externalAgentId: agentId,
-    externalModel: snap?.externalModel ?? 'default',
-    externalReasoning: snap?.externalReasoning ?? null,
-    externalSandbox: snap?.externalSandbox ?? null,
-    externalAgentPreset: snap?.externalAgentPreset ?? null,
+    externalModel: 'default',
+    externalReasoning: null,
+    externalSandbox: null,
+    externalAgentPreset: null,
+    ...snap,
   }
+  if (snap || (agentId !== 'codex' && agentId !== 'claude')) return runtime
+  try {
+    const catalog = await chatApi.detectExternalAgentModels(agentId, conversationId)
+    if (catalog.source === 'probed' && catalog.initialModel) {
+      return { ...runtime, externalModel: catalog.initialModel }
+    }
+  } catch {
+    // Discovery can fail while the CLI itself remains usable with its native default.
+  }
+  return runtime
 }
 
 export function saveLastAgentRuntime(runtime: AgentRuntimeConfig): void {

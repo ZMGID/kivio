@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Lock, Zap } from 'lucide-react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Loader2, Lock, Zap } from 'lucide-react'
 import { AgentIcon } from '../components/AgentIcon'
 import { ModelIcon, hasModelIcon } from '../components/ModelIcon'
 import { IconButton } from '../components/Button'
@@ -7,7 +7,7 @@ import { useLang, useT } from '../components/i18n'
 import { chatTitlebarPillButtonClass } from './platform'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import { usePopoverMenu } from './usePopoverMenu'
-import { rememberedExternalRuntime } from './lastAgentRuntime'
+import { initialExternalRuntime } from './lastAgentRuntime'
 import { useThinkingLevel } from './useThinkingLevel'
 import {
   formatEffortLabel,
@@ -109,7 +109,6 @@ function AgentModelPickerBase({
     agentRuntime,
     conversationId,
     onModelChange: onExternalModelChange,
-    fetchingLabel: t.chatRuntimeFetching,
   })
   const thinking = useThinkingLevel({
     enabled: !usesExternal,
@@ -132,7 +131,7 @@ function AgentModelPickerBase({
     : (thinking.hidden ? null : thinking.effectiveLabel)
   const fastOn = usesExternal && external.fastOn
   const pillModelCandidate = usesExternal
-    ? (external.activeModelId !== 'default' ? external.activeModelId : null)
+    ? external.activeModelId
     : model || null
   // 认不出品牌的模型不画首字母方块，也不带「/」。
   const pillModelId = pillModelCandidate && hasModelIcon(pillModelCandidate) ? pillModelCandidate : null
@@ -145,9 +144,26 @@ function AgentModelPickerBase({
     locked ? t.chatRuntimeBoundHint : null,
   ].filter(Boolean).join(' · ')
 
-  const switchRuntime = (next: AgentRuntimeConfig, active: boolean) => {
-    // 已选中的代理再点一次不重发：重发 default 会把用户刚选的模型和思考档清成 Auto。
+  const selectionRequest = useRef<symbol | null>(null)
+  const [pendingAgent, setPendingAgent] = useState<string | null>(null)
+  useLayoutEffect(() => {
+    setPendingAgent(null)
+    return () => { selectionRequest.current = null }
+  }, [conversationId, agentRuntime.kind, agentRuntime.externalAgentId, busy, locked, open])
+
+  const switchRuntime = async (target: AgentRuntimeConfig | string, active: boolean) => {
+    const request = Symbol()
+    selectionRequest.current = request
+    setPendingAgent(null)
     if (locked || busy || active) return
+    if (typeof target !== 'string') {
+      onRuntimeChange(target)
+      return
+    }
+    setPendingAgent(target)
+    const next = await initialExternalRuntime(target, conversationId)
+    if (request !== selectionRequest.current) return
+    setPendingAgent(null)
     onRuntimeChange(next)
   }
 
@@ -252,11 +268,12 @@ function AgentModelPickerBase({
                     key={agent.id}
                     label={agent.name}
                     title={agent.version ? `${agent.name} · ${agent.version}` : agent.name}
-                    icon={<AgentIcon id={agent.id} size={18} />}
+                    icon={pendingAgent === agent.id
+                      ? <Loader2 size={18} role="status" aria-label={t.chatRuntimeFetching} className="animate-spin" />
+                      : <AgentIcon id={agent.id} size={18} />}
                     active={active}
                     disabled={(locked || busy) && !active}
-                    // 换代理时带回该 CLI 上次的模型/思考档。没有记录才走 default（胶囊显示 Auto）。
-                    onSelect={() => switchRuntime(rememberedExternalRuntime(agent.id), active)}
+                    onSelect={() => switchRuntime(agent.id, active)}
                   />
                 )
               })}
@@ -434,11 +451,8 @@ function ExternalModelList({
                   onClick={() => select(item)}
                   className={modelRowButtonClass(selected)}
                 >
-                  {/* Auto 交给 CLI 决定，用 CLI 自己的图标；具体模型用模型品牌图标，与内置列表一致。 */}
-                  {item.id === 'default'
-                    ? <AgentIcon id={agentId} size={16} />
-                    : <ModelIcon model={item.id} size={16} />}
-                  <span className="min-w-0 truncate">{item.id === 'default' ? t.chatRuntimeAutoCliDefault : item.label}</span>
+                  <ModelIcon model={item.id} size={16} />
+                  <span className="min-w-0 truncate">{item.label}</span>
                   {textOnly && <span className="ml-auto shrink-0 text-[11px] font-normal text-neutral-400">{zh ? '仅文本' : 'Text only'}</span>}
                 </button>
                 <ModelRowCheck selected={selected} />

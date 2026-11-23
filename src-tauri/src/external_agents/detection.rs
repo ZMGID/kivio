@@ -1309,6 +1309,12 @@ fn parse_codex_debug_models_json(
         .iter()
         .map(|entry| {
             let mut obj = serde_json::Map::new();
+            let hidden = entry.get("visibility").and_then(|v| v.as_str()) == Some("hide")
+                || entry.get("hidden").and_then(|v| v.as_bool()) == Some(true);
+            obj.insert("hidden".into(), hidden.into());
+            if let Some(default) = entry.get("isDefault").or_else(|| entry.get("is_default")) {
+                obj.insert("isDefault".into(), default.clone());
+            }
             if let Some(id) = entry.get("slug").or_else(|| entry.get("id")).cloned() {
                 obj.insert("id".into(), id.clone());
                 obj.insert("model".into(), id);
@@ -1618,13 +1624,15 @@ mod tests {
                     {"effort": "high", "description": "Deep"}
                   ]
                 },
-                {"slug": "o3"}
+                {"slug": "o3"},
+                {"slug": "gpt-6-astra", "visibility": "hide", "isDefault": true}
               ]
             }"#,
         )
         .unwrap();
         assert!(probe.models.iter().any(|m| m.id == "gpt-5.5"));
         assert!(probe.models.iter().any(|m| m.id == "o3"));
+        assert!(!probe.models.iter().any(|m| m.id == "gpt-6-astra"));
         let sol = probe.models.iter().find(|m| m.id == "gpt-5.5").unwrap();
         assert_eq!(sol.context_window_tokens, Some(272000));
         assert_eq!(sol.label, "GPT-5.5");

@@ -24,7 +24,7 @@ describe('external CLI settings transport', () => {
   })
 
   it('normalizes an older model-probe response without a source field', async () => {
-    vi.mocked(invoke).mockResolvedValue({ success: true, models: [{ id: 'm', label: 'M' }] })
+    vi.mocked(invoke).mockResolvedValue({ success: true, models: [{ id: 'default', label: 'Default' }, { id: 'auto', label: 'Auto' }, { id: 'm', label: 'M' }], currentModel: 'default' })
 
     expect(await externalCliSettingsApi.detectExternalAgentModels('claude')).toEqual({
       models: [{ id: 'm', label: 'M' }],
@@ -36,6 +36,23 @@ describe('external CLI settings transport', () => {
       currentReasoning: null,
     })
     expect(invoke).toHaveBeenCalledWith('chat_detect_external_agent_models', expect.objectContaining({ force: false }))
+  })
+
+  it.each(['default[]', 'native-router'])('excludes the routing selection %s from both the catalog and the current model', async (currentModel) => {
+    const concreteModel = { id: 'composer-2.5[fast=true]', label: 'Composer (fast)' }
+    vi.mocked(invoke).mockResolvedValue({
+      currentModel,
+      initialModel: currentModel,
+      models: [
+        { id: 'default[]', label: 'Auto' },
+        { id: 'native-router', label: 'Auto（CLI 默认）' },
+        concreteModel,
+      ],
+    })
+    const catalog = await externalCliSettingsApi.detectExternalAgentModels('grok')
+    expect(catalog.models).toEqual([concreteModel])
+    expect(catalog.currentModel).toBeNull()
+    expect(catalog.initialModel).toBeUndefined()
   })
 
   it('shows the snapshot before a slow refresh finishes', async () => {

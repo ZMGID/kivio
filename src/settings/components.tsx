@@ -244,12 +244,13 @@ function SelectMenuPortal({
 /**
  * 下拉选择 — 自绘菜单，避免 macOS 原生 select 的系统高亮/勾选反馈和受控状态不同步。
  */
-export function Select({ value, onChange, options, className = '', disabled: disabledProp = false, title, ariaLabel, triggerIcon, triggerLabel, size = 'md' }: {
+export function Select({ value, onChange, options, className = '', disabled: disabledProp = false, title, ariaLabel, placeholder = '', triggerIcon, triggerLabel, size = 'md' }: {
   value: string
   onChange: (v: string) => void
   options: SelectOption[]
   className?: string
   disabled?: boolean
+  placeholder?: string
   /** 紧凑工具栏使用图标触发器，选项菜单仍显示完整名称。 */
   triggerIcon?: ReactNode
   /** 图标工具栏同时显示当前范围时使用；菜单保留完整选项名称。 */
@@ -265,7 +266,7 @@ export function Select({ value, onChange, options, className = '', disabled: dis
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const selected = options.find(opt => opt.value === value)
-  const displayLabel = selected?.label || value
+  const displayLabel = selected?.label || value || placeholder
   const displayTitle = selected?.title || displayLabel
   const disabled = disabledProp || options.length === 0
   const compact = size === 'sm'

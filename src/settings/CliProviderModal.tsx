@@ -46,6 +46,7 @@ import {
 import {
   applyCodexPreset,
   CODEX_CUSTOM_PRESET_ID,
+  CODEX_CUSTOM_PRESET_MODEL,
   CODEX_PRESET_BUTTONS,
   detectCodexPresetId,
   extractCodexBaseUrl,
@@ -504,7 +505,7 @@ export function CliProviderModal({
   }
 
   const codexBaseUrl = isCodex ? extractCodexBaseUrl(configToml) : ''
-  const codexModel = isCodex ? (extractCodexModel(configToml) || 'gpt-5.5') : ''
+  const codexModel = isCodex ? (extractCodexModel(configToml) || CODEX_CUSTOM_PRESET_MODEL) : ''
   const codexApiKey = isCodex ? extractOpenAiApiKey(authJson) : ''
   const grokFields = isGrok ? parseGrokConfigToml(configToml) : null
   const kimiFields = isKimi ? parseKimiConfigToml(configToml) : null
@@ -1123,7 +1124,7 @@ export function CliProviderModal({
           value={codexModel}
           onChange={(value) => patchCodexFields({ model: value })}
           options={modelSelectOptions}
-          placeholder="gpt-5.5"
+          placeholder={CODEX_CUSTOM_PRESET_MODEL}
           mono
           ariaLabel={t.externalAgentsCodexDefaultModel}
         />

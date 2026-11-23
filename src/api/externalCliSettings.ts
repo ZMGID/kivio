@@ -1,3 +1,4 @@
+import { concreteCliModelId, isConcreteCliModel } from './cliModelId'
 import { invoke } from '@tauri-apps/api/core'
 import type { ProviderCapabilities } from '../generated/chatProtocol'
 import { isTauriRuntime } from './tauri'
@@ -35,19 +36,25 @@ export interface ExternalAgentModels {
   reasoningByModel: Record<string, NonNullable<DetectedExternalAgent['reasoningOptions']>>
   source: 'probed' | 'fallback'
   probeError?: string
+  initialModel?: string
   currentModel?: string | null
   currentReasoning?: string | null
   refreshing?: boolean
 }
 
 function modelResult(result: Partial<ExternalAgentModels>): ExternalAgentModels {
+  const catalog = result.models ?? []
+  const models = catalog.filter(isConcreteCliModel)
+  const currentModel = concreteCliModelId(result.currentModel)
+  const currentEntry = catalog.find(model => model.id === currentModel)
   return {
-    models: result.models ?? [],
+    models,
     reasoningOptions: result.reasoningOptions ?? [],
     reasoningByModel: result.reasoningByModel ?? {},
     source: result.source ?? 'probed',
     probeError: result.probeError,
-    currentModel: result.currentModel ?? null,
+    ...(result.initialModel && models.some(model => model.id === result.initialModel) ? { initialModel: result.initialModel } : {}),
+    currentModel: currentEntry && !isConcreteCliModel(currentEntry) ? null : currentModel,
     currentReasoning: result.currentReasoning ?? null,
     ...(result.refreshing !== undefined ? { refreshing: result.refreshing } : {}),
   }

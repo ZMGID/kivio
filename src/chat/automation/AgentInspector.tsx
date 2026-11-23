@@ -147,19 +147,10 @@ export function AgentInspector({
   )
   const cliModelOptions = useMemo(
     () => withOrphanOption(
-      [
-        {
-          value: '',
-          label: t.chatRuntimeAutoCliDefault,
-          title: cliCurrentModel
-            ? `${t.chatRuntimeAutoCliDefault} · ${cliCurrentModel}`
-            : t.chatRuntimeAutoCliDefault,
-        },
-        ...cliModels.map((model) => ({ value: model.id, label: model.label || model.id })),
-      ],
+      cliModels.map((model) => ({ value: model.id, label: model.label || model.id })),
       agent.externalModel ?? '',
     ),
-    [agent.externalModel, cliCurrentModel, cliModels, t.chatRuntimeAutoCliDefault],
+    [agent.externalModel, cliModels],
   )
 
   const toolIdsKey = agent.toolIds.join('\0')
@@ -260,7 +251,8 @@ export function AgentInspector({
         ) : (
           <FieldBlock label={t.chatAutomationAgentModel}>
             <Select
-              value={agent.externalModel ?? ''}
+              value={agent.externalModel || cliCurrentModel || ''}
+              placeholder={t.chatSelectModel}
               onChange={(value) => patch(withRuntimeKind(
                 { ...agent, externalModel: value || null },
                 'external',

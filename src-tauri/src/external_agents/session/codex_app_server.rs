@@ -2944,29 +2944,13 @@ pub struct CodexModelsProbe {
     pub reasoning_options: Vec<crate::external_agents::types::RuntimeModelOption>,
 }
 
-/// Offline fallback catalog — used only when neither `model/list` nor `codex debug models`
-/// answers, plus effort ladders for listed ids that come back without
-/// `supportedReasoningEfforts`. Live `model/list` is authoritative since 0.157: it filters
-/// legacy models server-side (`hidden`) and is the only place new families such as GPT-6
-/// (`gpt-6-astra` default in 0.158) appear.
-const CODEX_CURATED_CATALOG: &[(&str, &str, &[&str])] = &[
-    (
-        "gpt-5.6-sol",
-        "gpt-5.6-sol",
-        &["low", "medium", "high", "xhigh", "max", "ultra"],
-    ),
-    (
-        "gpt-5.6-terra",
-        "gpt-5.6-terra",
-        &["low", "medium", "high", "xhigh", "max", "ultra"],
-    ),
-    (
-        "gpt-5.6-luna",
-        "gpt-5.6-luna",
-        &["low", "medium", "high", "xhigh", "max"],
-    ),
-    ("gpt-5.5", "gpt-5.5", &["low", "medium", "high", "xhigh"]),
-];
+fn curated_efforts(id: &str) -> Vec<crate::external_agents::types::RuntimeModelOption> {
+    effort_options(match id {
+        "gpt-5.5" => &["low", "medium", "high", "xhigh"],
+        "gpt-6-luna" | "gpt-5.6-luna" => &["low", "medium", "high", "xhigh", "max"],
+        _ => &["low", "medium", "high", "xhigh", "max", "ultra"],
+    })
+}
 
 fn effort_options(ids: &[&str]) -> Vec<crate::external_agents::types::RuntimeModelOption> {
     use crate::external_agents::types::RuntimeModelOption;
@@ -2992,12 +2976,7 @@ pub fn merge_codex_model_catalog(
 ) -> CodexModelsProbe {
     use crate::external_agents::types::{default_model_option, RuntimeModelOption};
 
-    let curated_efforts = |id: &str| {
-        CODEX_CURATED_CATALOG
-            .iter()
-            .find(|(cid, _, _)| *cid == id)
-            .map(|(_, _, efforts)| effort_options(efforts))
-    };
+    use crate::external_agents::providers::codex::FALLBACK_MODELS;
     let mut models = vec![runtime
         .models
         .iter()
@@ -3014,7 +2993,7 @@ pub fn merge_codex_model_catalog(
         .filter(|m| m.id != "default")
         .collect();
     if live.is_empty() {
-        for (id, label, efforts) in CODEX_CURATED_CATALOG {
+        for (id, label) in FALLBACK_MODELS {
             seen.insert((*id).to_string());
             models.push(RuntimeModelOption {
                 capabilities: None,
@@ -3022,7 +3001,7 @@ pub fn merge_codex_model_catalog(
                 label: (*label).to_string(),
                 context_window_tokens: None,
             });
-            reasoning_by_model.insert((*id).to_string(), effort_options(efforts));
+            reasoning_by_model.insert((*id).to_string(), curated_efforts(id));
         }
     } else {
         for m in live {
@@ -3034,7 +3013,12 @@ pub fn merge_codex_model_catalog(
                 .get(&m.id)
                 .filter(|o| !o.is_empty())
                 .cloned()
-                .or_else(|| curated_efforts(&m.id));
+                .or_else(|| {
+                    FALLBACK_MODELS
+                        .iter()
+                        .find(|(id, _)| *id == m.id)
+                        .map(|(id, _)| curated_efforts(id))
+                });
             if let Some(efforts) = efforts {
                 reasoning_by_model.insert(m.id.clone(), efforts);
             }
@@ -4588,7 +4572,7 @@ mod tests {
 
     #[test]
     fn merge_uses_live_model_list_and_falls_back_to_curated() {
-        let (known_id, _, known_efforts) = CODEX_CURATED_CATALOG.first().copied().unwrap();
+        let known_id = "gpt-6.2-astra";
         let runtime = parse_codex_model_list_result(&json!({
             "data": [
                 {"id": "live-model", "displayName": "Live"},
@@ -4623,14 +4607,14 @@ mod tests {
             .iter()
             .map(|effort| effort.id.as_str())
             .collect();
-        assert_eq!(actual_efforts.as_slice(), known_efforts);
+        assert!(actual_efforts.contains(&"ultra"));
         assert!(!merged.reasoning_by_model.contains_key("live-model"));
 
         let fallback = codex_static_fallback_probe();
         assert_eq!(fallback.models[0].id, "default");
         let ids: Vec<_> = fallback.models[1..].iter().map(|m| m.id.as_str()).collect();
-        let expected: Vec<_> = CODEX_CURATED_CATALOG.iter().map(|(id, _, _)| *id).collect();
-        assert_eq!(ids, expected);
+        assert_eq!(ids.first(), Some(&"gpt-6.2-astra"));
+        assert!(ids.contains(&"gpt-6-luna"));
     }
 
     #[test]

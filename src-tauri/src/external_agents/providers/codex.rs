@@ -21,13 +21,17 @@ use super::super::types::{
     PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, StreamFormat,
 };
 
-/// 探测彻底失败时的静态兜底 — 与 desktop-cc-gui `generatedModelCatalog.json` 四档一致。
-const FALLBACK_MODELS: &[(&str, &str)] = &[
-    ("default", "Default"),
-    ("gpt-5.6-sol", "gpt-5.6-sol"),
-    ("gpt-5.6-terra", "gpt-5.6-terra"),
-    ("gpt-5.6-luna", "gpt-5.6-luna"),
-    ("gpt-5.5", "gpt-5.5"),
+/// Offline choices only. A live catalog always controls account availability.
+pub(crate) const FALLBACK_MODELS: &[(&str, &str)] = &[
+    ("gpt-6.2-astra", "GPT-6.2 Astra"),
+    ("gpt-6.2-sol", "GPT-6.2 Sol"),
+    ("gpt-6-astra", "GPT-6 Astra"),
+    ("gpt-6.1-sol", "GPT-6.1 Sol"),
+    ("gpt-6-luna", "GPT-6 Luna"),
+    ("gpt-5.6-sol", "GPT-5.6 Sol"),
+    ("gpt-5.6-terra", "GPT-5.6 Terra"),
+    ("gpt-5.6-luna", "GPT-5.6 Luna"),
+    ("gpt-5.5", "GPT-5.5"),
 ];
 
 const REASONING: &[(&str, &str)] = &[
