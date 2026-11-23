@@ -1,12 +1,12 @@
 import { providerModelLabel } from '../data/modelCatalog'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Loader2, Lock, Zap } from 'lucide-react'
 import { AgentIcon } from '../components/AgentIcon'
 import { ModelIcon, hasModelIcon } from '../components/ModelIcon'
 import { IconButton } from '../components/Button'
 import { useLang, useT } from '../components/i18n'
 import { chatTitlebarPillButtonClass } from './platform'
-import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import { usePopoverMenu } from './usePopoverMenu'
 import { initialExternalRuntime } from './lastAgentRuntime'
 import { useThinkingLevel } from './useThinkingLevel'
@@ -58,6 +58,19 @@ function KivioMark({ size = 18, variant = 'agent' }: { size?: number; variant?: 
   )
 }
 
+function pickerPosition(trigger: HTMLButtonElement) {
+  const anchor = trigger.getBoundingClientRect()
+  const edge = 8
+  const width = Math.min(420, window.innerWidth - 2 * edge)
+  const top = anchor.bottom + edge
+  return {
+    top,
+    left: Math.max(edge, Math.min(anchor.left, window.innerWidth - width - edge)),
+    width,
+    height: Math.max(0, Math.min(460, window.innerHeight - top - edge)),
+  }
+}
+
 export interface AgentModelPickerProps {
   agentRuntime: AgentRuntimeConfig
   conversationId?: string | null
@@ -94,11 +107,26 @@ function AgentModelPickerBase({
 }: AgentModelPickerProps) {
   const t = useT()
   const lang = useLang()
-  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [position, setPosition] = useState<ReturnType<typeof pickerPosition> | null>(null)
+  const open = position !== null
   const menuRef = useRef<HTMLDivElement>(null)
-  const close = useCallback(() => setOpen(false), [])
+  const close = useCallback(() => setPosition(null), [])
   usePopoverMenu(open, close, menuRef)
-  const maxHeight = usePopoverMaxHeight(open, menuRef, 'down', 460)
+  useLayoutEffect(() => {
+    const trigger = triggerRef.current
+    if (!open || !trigger) return
+    const update = () => setPosition(pickerPosition(trigger))
+    const observer = new ResizeObserver(update)
+    observer.observe(trigger)
+    const pane = trigger.closest('.chat-main-pane, .chat-titlebar-strip-content')
+    if (pane) observer.observe(pane)
+    window.addEventListener('resize', update)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [open])
 
   const usesExternal = agentRuntime.kind === 'external' && !!agentRuntime.externalAgentId
   const usesChat = agentRuntime.kind === 'chat'
@@ -194,14 +222,15 @@ function AgentModelPickerBase({
     <div className="kv-agent-picker" data-tauri-drag-region="false">
       <button
         type="button"
-        onClick={() => {
+        ref={triggerRef}
+        onClick={(event) => {
           if (open) {
             close()
             return
           }
           // 常用入口：无论鼠标还是键盘打开，焦点都进搜索框，直接打字、方向键下移、回车选中。
           if (usesExternal) external.refreshOnOpen()
-          setOpen(true)
+          setPosition(pickerPosition(event.currentTarget))
         }}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -233,15 +262,15 @@ function AgentModelPickerBase({
         {fastOn && <Zap size={13} fill="currentColor" className="shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       </button>
 
-      {open && (
+      {position && createPortal(
         <>
-          <div className="fixed inset-0 z-10" onClick={close} aria-hidden />
+          <div className="fixed inset-0 z-[1000]" onClick={close} aria-hidden />
           <div
             ref={menuRef}
             role="dialog"
             aria-label={summary}
             // 定高：换代理时列表长短、底栏有无都不该让弹层伸缩。
-            style={{ height: maxHeight }}
+            style={position}
             className="kv-agent-picker__popover kv-menu chat-motion-popover"
           >
             {/* 左栏只放代理图标（名字在悬停提示和右侧搜索框里），把宽度留给模型列表。
@@ -322,7 +351,8 @@ function AgentModelPickerBase({
               />
             </div>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   )

@@ -2,10 +2,11 @@
 <html lang="zh"><head><meta charset="UTF-8"><title>Agent model picker</title>
 <style>
   body { margin: 0; background: var(--theme-surface); }
+  #root.chat-main-pane { position: absolute; inset: 0 0 0 240px; }
   .fixture-titlebar { display: flex; align-items: center; gap: 4px; height: 52px; padding: 8px 12px 0 96px; }
 </style>
 </head>
-<body><div id="root"></div><script type="module">
+<body><div id="root" class="chat-main-pane"></div><script type="module">
 // Synthetic data only. Renders the real titlebar picker with a stubbed Tauri bridge so the
 // popover, rail, model list and effort slider can be inspected and screenshotted in a browser.
 const params = new URLSearchParams(location.search);

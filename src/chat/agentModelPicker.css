@@ -58,14 +58,9 @@
 /* 外壳用 .kv-menu 的表面、边框、圆角与阴影；内边距归各区自己管，
    这样左栏分隔线、搜索与底栏分隔线都能通到边。 */
 .kv-menu.kv-agent-picker__popover {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: 30;
+  position: fixed;
+  z-index: 1001;
   display: flex;
-  width: 420px;
-  max-width: calc(100vw - 16px);
-  min-height: 280px;
   overflow: hidden;
   padding: 0;
 }

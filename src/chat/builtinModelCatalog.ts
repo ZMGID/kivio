@@ -125,7 +125,7 @@ export function modelRowButtonClass(selected: boolean): string {
 export function useAutoFocusSearch(enabled: boolean, ref: RefObject<HTMLInputElement>) {
   useEffect(() => {
     if (!enabled) return
-    const frame = requestAnimationFrame(() => ref.current?.focus())
+    const frame = requestAnimationFrame(() => ref.current?.focus({ preventScroll: true }))
     return () => cancelAnimationFrame(frame)
   }, [enabled, ref])
 }
@@ -133,7 +133,12 @@ export function useAutoFocusSearch(enabled: boolean, ref: RefObject<HTMLInputEle
 /** 打开列表时把当前模型滚到视野中间（当前项在第三组时，一打开就能看到它）。只在挂载时做一次。 */
 export function useRevealCurrentRow(ref: RefObject<HTMLElement>) {
   useEffect(() => {
-    const current = ref.current?.querySelector<HTMLElement>('[aria-current="true"]')
-    current?.scrollIntoView?.({ block: 'center' })
+    const list = ref.current
+    const current = list?.querySelector<HTMLElement>('[aria-current="true"]')
+    if (!list || !current) return
+    // 只移动模型列表。scrollIntoView 也会滚动承载弹层的聊天主区。
+    const row = current.getBoundingClientRect()
+    const bounds = list.getBoundingClientRect()
+    list.scrollTop += row.top - bounds.top + (row.height - bounds.height) / 2
   }, [ref])
 }
