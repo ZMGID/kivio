@@ -10,10 +10,9 @@ import type { Root } from 'hast'
 import { cjk } from '@streamdown/cjk'
 import remarkCjkFriendlyGfmStrikethrough from 'remark-cjk-friendly-gfm-strikethrough'
 import { code } from '@streamdown/code'
-import { createMathPlugin } from '@streamdown/math'
-import 'katex/dist/katex.min.css'
-import { mermaid } from '@streamdown/mermaid'
 import remarkBreaks from 'remark-breaks'
+import { markdownMathPlugin, MARKDOWN_MATH_TAG, preloadMarkdownMathWhenIdle } from './markdownMathPlugin'
+import { MarkdownMath } from './MarkdownMath'
 import { remarkLiteralUnderscore } from './markdownUtils'
 import { MarkdownErrorBoundary } from './MarkdownErrorBoundary'
 import type { ChatToolArtifact } from './types'
@@ -965,6 +964,9 @@ const streamdownRehypePlugins: PluggableList = [...Object.values(defaultRehypePl
 const markdownComponents = {
   [renderedBlockTag]: RenderedMarkdownBlock,
   pre: MarkdownPre,
+  [MARKDOWN_MATH_TAG]: ({ children, 'data-math': kind }: { children?: ReactNode; 'data-math'?: string }) => (
+    <MarkdownMath tex={codeChildrenToString(children)} display={kind === 'display'} />
+  ),
 
   // 表格：**每个单元格一个独立圆角块**，横竖都靠 border-spacing 的空隙分隔。
   // **没有任何边框线**，别加 border，也别给容器加外框。
@@ -1380,8 +1382,10 @@ const streamdownPlugins = {
     )),
   },
   code,
-  math: createMathPlugin({ singleDollarTextMath: true }),
-  mermaid,
+  // 公式按需排版：解析仍由 remark-math 完成，KaTeX 由 MarkdownMath 首次遇到公式或空闲时加载。
+  math: markdownMathPlugin,
+  // 不注册 streamdown 的 mermaid 插件：代码块由 MarkdownPre 接管，MermaidBlock 按需 import('mermaid')。
+  // 该插件会静态导入 mermaid 核心（约 600 KB），使按需加载失效。
 }
 const streamdownRemarkPlugins: PluggableList = [
   // GFM 和 CJK 都注册删除线解析；两处都只允许 ~~，避免数值范围被划掉。
@@ -1597,6 +1601,7 @@ function ChatMarkdownComponent({
   // 出字中按节奏显示新增文字；完成或停止时立即显示全文。
   const visibleContent = useRevealedText(content, useContext(LiveRevealContext))
   const [documentRoot, setDocumentRoot] = useState<HTMLDivElement | null>(null)
+  useEffect(preloadMarkdownMathWhenIdle, [])
   const artifactContext = useMemo(() => ({
     artifacts: new Map(artifacts.filter(a => artifactId(a)).map(a => [artifactId(a), a])),
     artifactLookup: buildArtifactLookup(artifacts),

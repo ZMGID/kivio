@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { ChatMarkdown } from './ChatMarkdown'
 import { MarkdownStreamingContext } from './markdownStreaming'
@@ -43,12 +43,12 @@ describe('助手 Markdown 保留普通下划线', () => {
     expect(container.textContent).toContain('name')
   })
 
-  it('代码、链接和公式里的下划线不被改写', () => {
+  it('代码、链接和公式里的下划线不被改写', async () => {
     const { container } = renderMarkdown('`file_name` [a_b](https://example.com/my_file) $Z_1$')
     expect(container.querySelector('code')?.textContent).toBe('file_name')
     expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.com/my_file')
     expect(container.querySelector('a')?.textContent).toBe('a_b')
-    expect(container.querySelector('.katex-mathml annotation')?.textContent).toBe('Z_1')
+    await waitFor(() => expect(container.querySelector('.katex-mathml annotation')?.textContent).toBe('Z_1'))
   })
 
   it('流式补全不会给未写完的标识符多补一个下划线', () => {

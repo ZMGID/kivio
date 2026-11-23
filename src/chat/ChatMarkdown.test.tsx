@@ -17,10 +17,11 @@ describe('ChatMarkdown settled cache', () => {
 // 回归测试：ChatMarkdown 因 props 变化（如 artifacts/citations 换引用）重渲时，公式节点
 // 仍应保留在文档中，避免切换对话时出现「原始 LaTeX → 公式」的闪烁。
 describe('ChatMarkdown 公式稳定性', () => {
-  it('artifacts 换引用重渲时，公式节点不被 remount', () => {
+  it('artifacts 换引用重渲时，公式节点不被 remount', async () => {
     const { container, rerender } = render(
       <ChatMarkdown content={'目标函数 $Z_1$ 最小化'} artifacts={[]} />,
     )
+    await waitFor(() => expect(container.querySelector('.katex-mathml annotation')).not.toBeNull())
     const before = container.querySelector('.katex')
     expect(before).not.toBeNull()
 

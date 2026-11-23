@@ -5,10 +5,11 @@ import { createPortal } from 'react-dom'
 import { Activity, FolderTree, GitBranch, GitPullRequest, Plus, Terminal, X } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
 import { IconButton } from '../../components/Button'
+import { notifyError } from '../../components/appNoticeStore'
+import { scheduleIdleTask } from '../idleTask'
 import { FileTreePanel } from './FileTreePanel'
 import { GitPanel } from './GitPanel'
 import { PullRequestsPanel } from './PullRequestsPanel'
-import { TerminalPanel } from './TerminalPanel'
 import { BackgroundTasksPanel } from './BackgroundTasksPanel'
 import { SidebarToggleIcon } from '../SidebarToggleIcon'
 import { SubagentSidebar } from '../AgentHub'
@@ -71,6 +72,49 @@ type RightDockProps = {
   onTreeExpandedChange: (paths: string[]) => void
   onInsertMention?: (path: string) => void
   onRevealInTree: (path: string) => void
+}
+
+type TerminalPanelComponent = typeof import('./TerminalPanel').TerminalPanel
+
+let terminalPanel: TerminalPanelComponent | null = null
+let terminalPanelLoad: Promise<TerminalPanelComponent> | null = null
+
+/** xterm + WebGL 约 440 KB，独立分包。加载失败后清空记录，下次打开终端时重试。 */
+function loadTerminalPanel(): Promise<TerminalPanelComponent> {
+  terminalPanelLoad ??= import('./TerminalPanel').then((module) => {
+    terminalPanel = module.TerminalPanel
+    return module.TerminalPanel
+  }, (error: unknown) => {
+    terminalPanelLoad = null
+    throw error
+  })
+  return terminalPanelLoad
+}
+
+/**
+ * Dock 挂载后空闲时预取终端代码，预取完成后首次点开终端同步渲染；
+ * 预取前就点开则加载完成后显示。返回 null 表示代码尚未就绪。
+ */
+function useTerminalPanel(active: boolean, lang: Lang): TerminalPanelComponent | null {
+  const [loaded, setLoaded] = useState(() => terminalPanel)
+  // 预取只会把模块缓存从空变为已加载；渲染时直接读取，点开终端的那次渲染就能用上。
+  const component = loaded ?? terminalPanel
+  useEffect(() => {
+    if (terminalPanel) return
+    return scheduleIdleTask(() => { loadTerminalPanel().catch(() => {}) })
+  }, [])
+  useEffect(() => {
+    if (component || !active) return
+    let current = true
+    loadTerminalPanel().then((next) => {
+      if (current) setLoaded(() => next)
+    }, (error: unknown) => {
+      console.error('[dock] terminal failed to load', error)
+      if (current) notifyError(i18n[lang].dockTerminalLoadFailed)
+    })
+    return () => { current = false }
+  }, [active, component, lang])
+  return component
 }
 
 export const RightDock = memo(function RightDock({
@@ -152,12 +196,13 @@ export const RightDock = memo(function RightDock({
   const pullsActive = open && shown === 'pulls'
   const terminalActive = open && shown === 'terminal'
   const selectedSubagent = open && shown === 'tasks' && subagent?.conversationId === conversationId ? subagent : null
-  // 代码提前加载，PTY 和画布只在首次真正打开终端时创建，之后切标签保留会话。
+  // PTY 和画布只在首次真正打开终端时创建，之后切标签保留会话。
   // Dock 折叠时即使记住了终端标签，也不能提前启动 shell。
   const [terminalMounted, setTerminalMounted] = useState(() => terminalActive)
   useEffect(() => {
     if (terminalActive) setTerminalMounted(true)
   }, [terminalActive])
+  const TerminalPanel = useTerminalPanel(terminalActive, lang)
   // 折叠后仍挂载（用于滑出动画），卡片被负 margin 推到窗口外；不设 inert 的话 Tab 会聚焦到
   // 屏外按钮，浏览器为了露出焦点把 .chat-window-shell 横向滚走一个面板宽度。同 Sidebar 的做法。
   useLayoutEffect(() => {
@@ -299,7 +344,7 @@ export const RightDock = memo(function RightDock({
         <PullRequestsPanel workdir={workdir} active={pullsActive} lang={lang} />
       </div>
       <div className="flex min-h-0 flex-1 flex-col" hidden={shown !== 'terminal'}>
-        {terminalMounted && (
+        {terminalMounted && TerminalPanel && (
           <TerminalPanel workdir={workdir} active={terminalActive} lang={lang} />
         )}
       </div>

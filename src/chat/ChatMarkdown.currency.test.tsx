@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { ChatMarkdown } from './ChatMarkdown'
 import { MarkdownStreamingContext } from './markdownStreaming'
@@ -30,11 +30,11 @@ describe('currency and math', () => {
     expect(container.textContent).toContain('原价 R$ 99.99，优惠 25%')
   })
 
-  it.each([' ', '\u00a0', '\u202f'])('preserves currency spacing %j alongside math', (space) => {
+  it.each([' ', '\u00a0', '\u202f'])('preserves currency spacing %j alongside math', async (space) => {
     const { container } = render(<ChatMarkdown content={`**R$${space}20.00** e R$${space}28.90; $ 2 + 3 = 5 $`} />)
     expect(container.querySelector('[data-streamdown="strong"]')?.textContent).toBe(`R$${space}20.00`)
-    expect(Array.from(container.querySelectorAll('.katex-mathml annotation'), node => node.textContent))
-      .toEqual(['2 + 3 = 5'])
+    await waitFor(() => expect(Array.from(container.querySelectorAll('.katex-mathml annotation'), node => node.textContent))
+      .toEqual(['2 + 3 = 5']))
   })
 
   it.each([false, true])('keeps standalone currency symbols out of math (streaming=%s)', (streaming) => {
@@ -58,11 +58,11 @@ describe('currency and math', () => {
       .toEqual(['R$ 8,30', 'R$ 19,22', 'US$ 9,50', 'R$ 17,90'])
   })
 
-  it('keeps currency beside real numeric, symbolic and display math', () => {
+  it('keeps currency beside real numeric, symbolic and display math', async () => {
     const { container } = render(<ChatMarkdown content={'Costs $10 and $20; $2 + 3 = 5$, $x^2$, and \\(2x\\).\n\n$$\n2 + 3 = 5\n$$'} />)
     expect(container.textContent).toContain('Costs $10 and $20;')
-    expect(Array.from(container.querySelectorAll('.katex-mathml annotation'), (node) => node.textContent))
-      .toEqual(['2 + 3 = 5', 'x^2', '2x', '2 + 3 = 5'])
+    await waitFor(() => expect(Array.from(container.querySelectorAll('.katex-mathml annotation'), (node) => node.textContent))
+      .toEqual(['2 + 3 = 5', 'x^2', '2x', '2 + 3 = 5']))
   })
 
   it('preserves escaped dollars and literal code', () => {
@@ -73,10 +73,10 @@ describe('currency and math', () => {
     expect(container.textContent).toContain('$30 and $40')
   })
 
-  it('preserves numeric math with punctuation and LaTeX commands', () => {
+  it('preserves numeric math with punctuation and LaTeX commands', async () => {
     const { container } = render(<ChatMarkdown content={'$2,3$ and $2^{10}$ and $2 \\text{USD}$'} />)
-    expect(Array.from(container.querySelectorAll('.katex-mathml annotation'), (node) => node.textContent))
-      .toEqual(['2,3', '2^{10}', '2 \\text{USD}'])
+    await waitFor(() => expect(Array.from(container.querySelectorAll('.katex-mathml annotation'), (node) => node.textContent))
+      .toEqual(['2,3', '2^{10}', '2 \\text{USD}']))
   })
 
   it('does not rewrite link destinations or tilde-fenced code', () => {
@@ -87,11 +87,11 @@ describe('currency and math', () => {
     expect(container.textContent).not.toContain('\\$')
   })
 
-  it('preserves signed amounts beside a real formula', () => {
+  it('preserves signed amounts beside a real formula', async () => {
     const { container } = render(<ChatMarkdown content={'退款 $-10，余额 $+20；公式 $-2 + 3 = 1$。'} />)
     expect(container.textContent).toContain('退款 $-10，余额 $+20；')
-    expect(Array.from(container.querySelectorAll('.katex-mathml annotation'), node => node.textContent))
-      .toEqual(['-2 + 3 = 1'])
+    await waitFor(() => expect(Array.from(container.querySelectorAll('.katex-mathml annotation'), node => node.textContent))
+      .toEqual(['-2 + 3 = 1']))
   })
 
   it('keeps a price literal as its answer streams and then settles', () => {

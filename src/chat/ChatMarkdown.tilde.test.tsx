@@ -1,4 +1,4 @@
-import { act, render } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { ChatMarkdown } from './ChatMarkdown'
 import { MarkdownStreamingContext } from './markdownStreaming'
@@ -74,7 +74,7 @@ describe('ChatMarkdown 波浪线', () => {
     expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.com/a~b')
     rerender(view('$x~y$'))
     await act(async () => { await Promise.resolve() })
-    expect(container.querySelector('.katex-mathml annotation')?.textContent).toBe('x~y')
+    await waitFor(() => expect(container.querySelector('.katex-mathml annotation')?.textContent).toBe('x~y'))
     rerender(view('~~~text\n7~8小时，12~14°C\n~~~'))
     await act(async () => { await Promise.resolve() })
     expect(container.querySelector('pre code')?.textContent).toBe('7~8小时，12~14°C')

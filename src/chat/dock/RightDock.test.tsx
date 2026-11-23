@@ -279,11 +279,11 @@ describe('RightDock tabs', () => {
     }
   })
 
-  it('renders panels immediately on opening without waiting for hover or an import', () => {
+  it('renders panels immediately on opening without waiting for hover or an import', async () => {
     const props = dockProps({ open: false })
     const { rerender } = render(<RightDock {...props} />)
-    expect(loadedPanels).toHaveLength(4)
-    expect(loadedPanels).toEqual(expect.arrayContaining(['files', 'git', 'pulls', 'terminal']))
+    // 文件 / Git / PR 随 Dock 静态加载；终端代码独立分包，见 RightDock.terminalLoading.test.tsx。
+    expect(loadedPanels).toEqual(expect.arrayContaining(['files', 'git', 'pulls']))
     expect(screen.queryByTestId('terminal-panel')).toBeNull()
 
     rerender(<RightDock {...props} open />)
@@ -295,7 +295,7 @@ describe('RightDock tabs', () => {
     expect(screen.getByTestId('git-panel')).toBeVisible()
 
     rerender(<RightDock {...props} open activeTab="terminal" openTabRequest={{ tab: 'terminal' }} />)
-    expect(screen.getByTestId('terminal-panel')).toHaveAttribute('data-active', 'true')
+    expect(await screen.findByTestId('terminal-panel')).toHaveAttribute('data-active', 'true')
   })
 
   it('exposes files, git, pull requests, terminal, and tasks — not trajectory', async () => {
@@ -480,7 +480,7 @@ describe('RightDock external requests', () => {
     fireEvent.click(screen.getByText('Toggle dock'))
     expect(screen.queryByTestId('terminal-panel')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '终端 t' }))
-    const terminal = screen.getByTestId('terminal-panel')
+    const terminal = await screen.findByTestId('terminal-panel')
     expect(terminal).toHaveAttribute('data-active', 'true')
 
     fireEvent.click(screen.getByRole('button', { name: '打开面板' }))

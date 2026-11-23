@@ -66,10 +66,31 @@ function pdfResources(): Plugin {
   }
 }
 
+/** Fail the build on static chunk import cycles; a cycle can run a chunk before its imports exist and blank the window. */
+function chunkCycleGuard(): Plugin {
+  return {
+    name: 'chunk-cycle-guard',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const done = new Set<string>()
+      const visit = (fileName: string, path: string[]) => {
+        if (done.has(fileName)) return
+        const start = path.indexOf(fileName)
+        if (start !== -1) this.error(`Chunk import cycle: ${[...path.slice(start), fileName].join(' -> ')}`)
+        const chunk = bundle[fileName]
+        if (chunk?.type !== 'chunk') return
+        for (const imported of chunk.imports) visit(imported, [...path, fileName])
+        done.add(fileName)
+      }
+      for (const fileName of Object.keys(bundle)) visit(fileName, [])
+    },
+  }
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
   base: './',
-  plugins: [chatProtocolValidators(), pdfResources(), react()],
+  plugins: [chatProtocolValidators(), pdfResources(), react(), chunkCycleGuard()],
   build: {
     target: 'esnext',
   },
