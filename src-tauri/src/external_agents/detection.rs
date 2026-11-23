@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::external_agents::providers::dsh::{DEFAULT_MODEL as DSH_DEFAULT_MODEL, OFFICIAL_MODELS};
 use crate::external_agents::registry::AGENT_DEFS;
 use crate::external_agents::session::acp::detect_acp_models;
 use crate::external_agents::session::claude_init::detect_claude_models;
@@ -246,8 +247,9 @@ struct DshDefaultModel {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DshDeepseekSettings {
-    /// `None` = 适配器默认 flash / pro / vision-exp；`Some([])` = 用户明确不公布任何模型。
+    /// `None` = 适配器默认目录；`Some([])` = 用户明确不公布任何模型。
     models: Option<Vec<DshModelEntry>>,
+    thinking: Option<String>,
     reasoning_effort: Option<String>,
 }
 
@@ -281,6 +283,8 @@ struct DshModelDetail {
     id: String,
     name: Option<String>,
     context_window: Option<u32>,
+    #[serde(alias = "input")]
+    input_modalities: Option<Vec<String>>,
     #[serde(default, rename = "reasoningEfforts")]
     reasoning_efforts: Option<serde_yaml::Value>,
 }
@@ -308,6 +312,13 @@ impl DshModelEntry {
         }
     }
 
+    fn input_modalities(&self) -> Option<&[String]> {
+        match self {
+            DshModelEntry::Id(_) => None,
+            DshModelEntry::Detail(detail) => detail.input_modalities.as_deref(),
+        }
+    }
+
     fn reasoning_efforts(&self) -> Option<&serde_yaml::Value> {
         match self {
             DshModelEntry::Id(_) => None,
@@ -318,7 +329,6 @@ impl DshModelEntry {
 
 const DSH_OFFICIAL_PROVIDER_ID: &str = "deepseek-official";
 const DSH_OFFICIAL_PROVIDER_NAME: &str = "DeepSeek";
-const DSH_OFFICIAL_DEFAULT_MODEL_COUNT: usize = 3;
 
 /// 设置页「所有供应商」用的摘要。dsh 的官方 DeepSeek 不在 `llm-pi-ai` 里，
 /// 但官方 UI 会单独列它；缓存命中时也要重读，所以 `pub(crate)`。
@@ -326,15 +336,7 @@ pub(crate) fn native_provider_summaries(def: &RuntimeAgentDef) -> Vec<NativeProv
     match def.native_providers {
         NativeProviderStrategy::None => Vec::new(),
         NativeProviderStrategy::DshSettings => {
-            let text = dsh_settings_path()
-                .and_then(|path| std::fs::read_to_string(path).ok())
-                .unwrap_or_default();
-            parse_dsh_native_provider_summaries(&text).unwrap_or_else(|_| {
-                vec![official_deepseek_summary(
-                    DSH_OFFICIAL_DEFAULT_MODEL_COUNT,
-                    true,
-                )]
-            })
+            dsh_native_provider_summaries(read_dsh_settings().unwrap_or_default())
         }
     }
 }
@@ -350,19 +352,14 @@ fn official_deepseek_summary(model_count: usize, is_default: bool) -> NativeProv
     }
 }
 
-fn parse_dsh_native_provider_summaries(text: &str) -> Result<Vec<NativeProviderSummary>, String> {
-    let text = if text.trim().is_empty() { "{}" } else { text };
-    let settings: DshSettings =
-        serde_yaml::from_str(text).map_err(|err| format!("解析 dsh settings.yaml 失败：{err}"))?;
-    let selected = settings
-        .agent_default_model
-        .as_ref()
-        .or(settings.api_gateway.as_ref());
+fn dsh_native_provider_summaries(settings: DshSettings) -> Vec<NativeProviderSummary> {
+    let selected = settings.selection();
     let default_provider = selected
         .and_then(|selection| selection.provider.as_deref())
         .map(str::trim)
         .filter(|provider| !provider.is_empty())
-        .unwrap_or(DSH_OFFICIAL_PROVIDER_ID);
+        .unwrap_or(DSH_OFFICIAL_PROVIDER_ID)
+        .to_owned();
     let deepseek_model_count = match settings
         .llm_deepseek
         .as_ref()
@@ -372,7 +369,7 @@ fn parse_dsh_native_provider_summaries(text: &str) -> Result<Vec<NativeProviderS
             .iter()
             .filter(|model| model.parts().is_some())
             .count(),
-        None => DSH_OFFICIAL_DEFAULT_MODEL_COUNT,
+        None => OFFICIAL_MODELS.len(),
     };
     let mut providers = vec![official_deepseek_summary(
         deepseek_model_count,
@@ -406,24 +403,44 @@ fn parse_dsh_native_provider_summaries(text: &str) -> Result<Vec<NativeProviderS
             id,
         }
     }));
-    Ok(providers)
+    providers
 }
 
-fn dsh_settings_path() -> Option<std::path::PathBuf> {
-    if let Some(home) = std::env::var_os("DSH_HOME") {
-        let path = std::path::PathBuf::from(home);
-        if !path.as_os_str().is_empty() {
-            return Some(path.join("settings.yaml"));
+fn read_dsh_settings() -> Result<DshSettings, String> {
+    let home = super::dsh_profile::dsh_home().ok_or("无法定位 DSH 配置目录")?;
+    let entries = super::dsh_plugins::read_effective_settings(&home)?;
+    serde_yaml::from_value(serde_yaml::Value::Mapping(entries))
+        .map_err(|err| format!("解析 DSH 模型配置失败：{err}"))
+}
+
+impl DshSettings {
+    fn selection(&self) -> Option<&DshDefaultModel> {
+        self.agent_default_model
+            .as_ref()
+            .or(self.api_gateway.as_ref())
+    }
+
+    fn selected_model(&self) -> Option<String> {
+        let selection = self.selection()?;
+        let model = selection.model.as_deref()?.trim();
+        if model.is_empty() {
+            return None;
+        }
+        match selection.provider.as_deref().map(str::trim) {
+            None | Some("" | DSH_OFFICIAL_PROVIDER_ID) => Some(model.to_owned()),
+            Some(provider) => Some(format!("{provider}:{model}")),
         }
     }
-    directories::BaseDirs::new().map(|base| base.home_dir().join(".dsh").join("settings.yaml"))
 }
 
-fn read_dsh_settings_models() -> Result<ProbeModelsOutput, String> {
-    let path = dsh_settings_path().ok_or_else(|| "无法定位 dsh settings.yaml".to_string())?;
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取 dsh 设置失败（{}）：{e}", path.display()))?;
-    parse_dsh_settings_models(&text)
+pub(crate) fn dsh_configured_selection() -> Result<(Option<String>, Option<String>), String> {
+    let settings = read_dsh_settings()?;
+    Ok((
+        settings.selected_model(),
+        settings
+            .selection()
+            .and_then(|value| value.reasoning_effort.clone()),
+    ))
 }
 
 const DSH_PI_EFFORT_ORDER: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -448,11 +465,13 @@ fn dsh_effort_option(id: &str) -> RuntimeModelOption {
     }
 }
 
-fn dsh_official_reasoning_options() -> Vec<RuntimeModelOption> {
-    ["default", "off", "low", "high", "max"]
-        .into_iter()
-        .map(dsh_effort_option)
-        .collect()
+fn dsh_official_reasoning_options(thinking_disabled: bool) -> Vec<RuntimeModelOption> {
+    let efforts: &[&str] = if thinking_disabled {
+        &["default", "off"]
+    } else {
+        &["default", "off", "low", "high", "max"]
+    };
+    efforts.iter().copied().map(dsh_effort_option).collect()
 }
 
 fn dsh_reasoning_options_from_keys<'a>(
@@ -505,22 +524,16 @@ fn dsh_reasoning_options_from_json(
     }
 }
 
-fn parse_dsh_settings_models(text: &str) -> Result<ProbeModelsOutput, String> {
-    let settings: DshSettings =
-        serde_yaml::from_str(text).map_err(|e| format!("解析 dsh settings.yaml 失败：{e}"))?;
+fn dsh_settings_models(settings: DshSettings) -> Result<ProbeModelsOutput, String> {
     let mut models = vec![default_model_option()];
     let mut seen = std::collections::HashSet::from(["default".to_string()]);
     let mut reasoning_by_model = HashMap::new();
 
-    let deepseek_defaults = [
-        ("deepseek-v4-flash", "DeepSeek-V4-Flash", Some(1_000_000)),
-        ("deepseek-v4-pro", "DeepSeek-V4-Pro", Some(1_000_000)),
-        (
-            "deepseek-v4-flash-vision-exp",
-            "DeepSeek-V4-Flash-Vision-Exp",
-            Some(1_000_000),
-        ),
-    ];
+    let thinking_disabled = settings
+        .llm_deepseek
+        .as_ref()
+        .and_then(|section| section.thinking.as_deref())
+        == Some("disabled");
     match settings
         .llm_deepseek
         .as_ref()
@@ -529,23 +542,61 @@ fn parse_dsh_settings_models(text: &str) -> Result<ProbeModelsOutput, String> {
         Some(entries) => {
             for entry in entries {
                 if let Some((id, name, window)) = entry.parts() {
-                    push_dsh_model(&mut models, &mut seen, id, name, window);
-                    reasoning_by_model.insert(id.to_string(), dsh_official_reasoning_options());
+                    push_dsh_model(
+                        &mut models,
+                        &mut seen,
+                        id,
+                        name,
+                        window,
+                        Some(
+                            entry
+                                .input_modalities()
+                                .map(<[_]>::to_vec)
+                                .unwrap_or_else(|| vec!["text".into()]),
+                        ),
+                    );
+                    reasoning_by_model.insert(
+                        id.to_string(),
+                        dsh_official_reasoning_options(thinking_disabled),
+                    );
                 }
             }
         }
         None => {
-            for (id, name, window) in deepseek_defaults {
-                push_dsh_model(&mut models, &mut seen, id, name, window);
-                reasoning_by_model.insert(id.to_string(), dsh_official_reasoning_options());
+            for &(id, name) in OFFICIAL_MODELS {
+                let input = if id == DSH_DEFAULT_MODEL {
+                    vec!["text".into(), "image".into()]
+                } else {
+                    vec!["text".into()]
+                };
+                push_dsh_model(
+                    &mut models,
+                    &mut seen,
+                    id,
+                    name,
+                    Some(1_048_576),
+                    Some(input),
+                );
+                reasoning_by_model.insert(
+                    id.to_string(),
+                    dsh_official_reasoning_options(thinking_disabled),
+                );
             }
         }
     }
 
+    let managed = crate::external_agents::overrides::agent_config("dsh").unwrap_or_default();
     if let Some(pi_ai) = settings.llm_pi_ai.as_ref() {
         let mut providers: Vec<_> = pi_ai.providers.iter().collect();
         providers.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (provider, config) in providers {
+            if managed
+                .providers
+                .iter()
+                .any(|item| !item.disabled && item.native_provider_id.trim() == provider)
+            {
+                continue;
+            }
             let provider_label = config
                 .display_name
                 .as_deref()
@@ -558,7 +609,14 @@ fn parse_dsh_settings_models(text: &str) -> Result<ProbeModelsOutput, String> {
                 };
                 let wire_id = format!("{provider}:{id}");
                 let label = format!("{name} ({provider_label})");
-                push_dsh_model(&mut models, &mut seen, &wire_id, &label, window);
+                push_dsh_model(
+                    &mut models,
+                    &mut seen,
+                    &wire_id,
+                    &label,
+                    window,
+                    entry.input_modalities().map(<[_]>::to_vec),
+                );
                 reasoning_by_model.insert(
                     wire_id,
                     dsh_reasoning_options_from_yaml(entry.reasoning_efforts()).unwrap_or_default(),
@@ -567,69 +625,60 @@ fn parse_dsh_settings_models(text: &str) -> Result<ProbeModelsOutput, String> {
         }
     }
 
-    let selected = settings
-        .agent_default_model
-        .as_ref()
-        .or(settings.api_gateway.as_ref());
-    let mut current_model = selected.and_then(|selection| {
-        let model = selection.model.as_deref()?.trim();
-        if model.is_empty() {
-            return None;
-        }
-        let provider = selection.provider.as_deref().unwrap_or("deepseek-official");
-        Some(if provider == "deepseek-official" {
-            model.to_string()
-        } else {
-            format!("{provider}:{model}")
+    for provider in managed.providers.iter().filter(|item| !item.disabled) {
+        merge_kivio_dsh_provider(&mut models, &mut seen, &mut reasoning_by_model, provider)?;
+    }
+
+    let native_model = settings.selected_model();
+    let current_model = super::overrides::selected_provider(&managed)
+        .map(|provider| {
+            format!(
+                "{}:{}",
+                provider.native_provider_id.trim(),
+                provider.default_model.trim()
+            )
         })
-    });
-    let mut current_reasoning = selected
+        .or_else(|| native_model.clone())
+        .unwrap_or_else(|| DSH_DEFAULT_MODEL.into());
+    // Account models come from DSH's signed-in catalog. Its configured selection
+    // is available offline even when there is no local list of account models.
+    if let Some(model) = current_model.strip_prefix("deepseek-account:") {
+        push_dsh_model(
+            &mut models,
+            &mut seen,
+            &current_model,
+            &format!("{model} (DeepSeek Account)"),
+            None,
+            None,
+        );
+    }
+    let selected_effort = settings
+        .selection()
+        .filter(|_| {
+            native_model
+                .as_ref()
+                .is_some_and(|model| model == &current_model)
+        })
         .and_then(|selection| selection.reasoning_effort.clone())
-        .or_else(|| {
+        .filter(|value| !value.trim().is_empty() && value != "default");
+    let current_reasoning = selected_effort.or_else(|| {
+        (!current_model.contains(':')).then(|| {
             settings
                 .llm_deepseek
                 .as_ref()
                 .and_then(|section| section.reasoning_effort.clone())
-        });
-
-    if let Some(config) = crate::external_agents::overrides::agent_config("dsh") {
-        for provider in config
-            .providers
-            .iter()
-            .filter(|provider| !provider.disabled)
-        {
-            merge_kivio_dsh_provider(&mut models, &mut seen, &mut reasoning_by_model, provider)?;
-        }
-        if let Some(provider) = config
-            .providers
-            .iter()
-            .find(|provider| provider.id == config.current_provider && !provider.disabled)
-        {
-            let route = provider.native_provider_id.trim();
-            let model = provider.default_model.trim();
-            if !route.is_empty() && !model.is_empty() {
-                current_model = Some(format!("{route}:{model}"));
-            }
-        }
-    }
-
-    // 与 `dsh_jsonrpc::resolve_model_route_for_turn` / 适配器 `defaultEffort: high` 对齐：
-    // settings.yaml 只有 onboarding、用户也没显式选时，轮次仍会跑 Flash + high。
-    // 不报 current_* 的话前端只能显示 Auto，和实际在用的对不上。
-    if current_model.is_none() {
-        current_model = Some("deepseek-v4-flash".to_string());
-    }
-    if current_reasoning
-        .as_deref()
-        .map(str::trim)
-        .is_none_or(|value| value.is_empty() || value == "default")
-    {
-        current_reasoning = Some("high".to_string());
-    }
+                .unwrap_or_else(|| if thinking_disabled { "off" } else { "high" }.into())
+        })
+    });
+    // Conversations saved with Auto use the same input capabilities as the resolved model.
+    models[0].capabilities = models
+        .iter()
+        .find(|model| model.id == current_model)
+        .and_then(|model| model.capabilities.clone());
 
     Ok(probe_ok(
         models,
-        current_model,
+        Some(current_model),
         current_reasoning,
         Vec::new(),
         reasoning_by_model,
@@ -642,12 +691,16 @@ fn push_dsh_model(
     id: &str,
     label: &str,
     context_window_tokens: Option<u32>,
+    input: Option<Vec<String>>,
 ) {
     if !seen.insert(id.to_string()) {
         return;
     }
     models.push(RuntimeModelOption {
-        capabilities: None,
+        capabilities: input.map(|kinds| super::types::ModelCapabilities {
+            input_modalities: Some(kinds),
+            ..Default::default()
+        }),
         id: id.to_string(),
         label: label.to_string(),
         context_window_tokens,
@@ -697,7 +750,17 @@ fn merge_kivio_dsh_provider(
             .and_then(|value| u32::try_from(value).ok());
         let wire_id = format!("{route}:{id}");
         let label = format!("{name} ({display_name})");
-        push_dsh_model(models, seen, &wire_id, &label, window);
+        let input = entry
+            .get("input")
+            .and_then(serde_json::Value::as_array)
+            .map(|kinds| {
+                kinds
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            });
+        push_dsh_model(models, seen, &wire_id, &label, window, input);
         if let Some(options) = dsh_reasoning_options_from_json(entry.get("reasoningEfforts")) {
             reasoning_by_model.insert(wire_id, options);
         } else {
@@ -1111,10 +1174,8 @@ async fn probe_models(
 ) -> Result<ProbeModelsOutput, String> {
     let bin = path.ok_or_else(|| "CLI 可执行文件未定位".to_string())?;
 
-    // dsh 的模型目录就在 `$DSH_HOME/settings.yaml`，结构化读文件比 boot 整棵 profile 快几秒，
-    // 也不会为打开一个下拉框启动 agent / MCP / watcher。bin 只用于上面的已安装判定。
     if matches!(def.model_probe, Some(ModelProbeStrategy::DshSettings)) {
-        return read_dsh_settings_models();
+        return dsh_settings_models(read_dsh_settings()?);
     }
 
     // OpenCode's native command is the source of truth for merged global/project JSONC config.
@@ -1852,6 +1913,16 @@ default_effort = "high"
         assert_eq!(reasoning.as_deref(), Some("medium"));
     }
 
+    fn parse_dsh_settings_models(text: &str) -> Result<ProbeModelsOutput, String> {
+        dsh_settings_models(serde_yaml::from_str(text).map_err(|err| format!("{err}"))?)
+    }
+
+    fn parse_dsh_native_provider_summaries(
+        text: &str,
+    ) -> Result<Vec<NativeProviderSummary>, serde_yaml::Error> {
+        serde_yaml::from_str(text).map(dsh_native_provider_summaries)
+    }
+
     #[test]
     fn dsh_settings_exposes_deepseek_and_relay_models() {
         let result = parse_dsh_settings_models(
@@ -1894,14 +1965,46 @@ llm-pi-ai:
     }
 
     #[test]
+    fn dsh_account_default_is_selectable_without_an_api_key_catalog_entry() {
+        let result = parse_dsh_settings_models(
+            "agent-default-model: {provider: deepseek-account, model: account-only, reasoningEffort: low}",
+        ).unwrap();
+        assert_eq!(
+            result.current_model.as_deref(),
+            Some("deepseek-account:account-only")
+        );
+        assert!(result
+            .models
+            .iter()
+            .any(|model| model.id == "deepseek-account:account-only"));
+        assert_eq!(result.current_reasoning.as_deref(), Some("low"));
+    }
+
+    #[test]
     fn dsh_settings_defaults_native_catalog_but_respects_explicit_empty_models() {
         let defaults = parse_dsh_settings_models("{}").expect("default dsh settings");
         let default_model = defaults.current_model.as_deref().expect("default model");
-        assert_ne!(default_model, "default");
-        assert!(defaults
-            .models
-            .iter()
-            .any(|model| model.id == default_model));
+        assert_eq!(default_model, "deepseek-flash");
+        assert_eq!(
+            defaults
+                .models
+                .iter()
+                .skip(1)
+                .map(|model| (
+                    model.id.as_str(),
+                    model.context_window_tokens,
+                    model
+                        .capabilities
+                        .as_ref()
+                        .and_then(|caps| caps.input_modalities.as_deref())
+                        .is_some_and(|kinds| kinds.iter().any(|kind| kind == "image")),
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("deepseek-flash", Some(1_048_576), true),
+                ("deepseek-v4-pro", Some(1_048_576), false)
+            ]
+        );
         assert_eq!(defaults.current_reasoning.as_deref(), Some("high"));
 
         let empty = parse_dsh_settings_models("llm-deepseek:\n  models: []\n")
@@ -1919,10 +2022,12 @@ llm-pi-ai:
     }
 
     #[test]
-    fn dsh_settings_accepts_extra_vision_model_fields() {
+    fn dsh_profile_catalog_controls_image_input_and_disabled_thinking() {
         let result = parse_dsh_settings_models(
             r#"
+agent-default-model: {provider: deepseek-official, model: native-text}
 llm-deepseek:
+  thinking: disabled
   models:
     - id: native-text
       name: Text Model
@@ -1942,6 +2047,18 @@ llm-deepseek:
                 .collect::<Vec<_>>(),
             vec!["default", "native-text", "native-vision"]
         );
+        for (id, accepts_images) in [
+            ("default", false),
+            ("native-text", false),
+            ("native-vision", true),
+        ] {
+            let model = result.models.iter().find(|model| model.id == id).unwrap();
+            assert_eq!(
+                model.capabilities.as_ref().unwrap().accepts_images(),
+                accepts_images
+            );
+        }
+        assert_eq!(result.current_reasoning.as_deref(), Some("off"));
         assert_eq!(
             result
                 .reasoning_by_model
@@ -1950,7 +2067,7 @@ llm-deepseek:
                     .iter()
                     .map(|item| item.id.as_str())
                     .collect::<Vec<_>>()),
-            Some(vec!["default", "off", "low", "high", "max"])
+            Some(vec!["default", "off"])
         );
     }
 

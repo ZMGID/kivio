@@ -15,6 +15,7 @@ async fn offline_replay_dsh_two_prompts_and_disconnect_keep_native_delivery() {
         let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
         ready(&mut reader).await;
         let mut session = DshJsonRpcSession {
+            _launch_patch: None,
             stdin,
             reader,
             stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
@@ -22,7 +23,7 @@ async fn offline_replay_dsh_two_prompts_and_disconnect_keep_native_delivery() {
             session_id: "replay-session".into(),
             resumed: false,
             next_id: 1,
-            route: resolve_model_route_for_turn(None).unwrap(),
+            route: resolve_dsh_selection(None).unwrap().0,
             context_window: None,
             map_state: MapSessionState::default(),
             idle_wake: IdleWakeState::default(),

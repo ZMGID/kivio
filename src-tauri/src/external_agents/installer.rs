@@ -429,10 +429,6 @@ fn needs_deepseek_scope_registry(package: &str, extra_args: &[&str]) -> bool {
             .any(|arg| arg.starts_with("@deepseek-ai/"))
 }
 
-/// `node --version` 输出 → (major, minor, patch)。认 `v24.13.0` / `24.13.0`。
-
-/// dsh 官方 `engines.node`：`^22.19.0 || >=24.0.0`（不含 23）。
-
 fn prepend_path_dirs(dirs: &[PathBuf]) {
     let current = std::env::var("PATH").unwrap_or_default();
     let sep = if cfg!(windows) { ';' } else { ':' };

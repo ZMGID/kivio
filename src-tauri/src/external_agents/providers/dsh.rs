@@ -44,21 +44,11 @@ pub fn builtin_slash_commands() -> Vec<ExternalCliSlashCommand> {
         .collect()
 }
 
-/// dsh 自带 DeepSeek 适配器（`deepseek-official` 路由）的三个模型。真实列表由
-/// `detection::read_dsh_settings_models` 从 `~/.dsh/settings.yaml` 读出（含用户在
-/// `llm-pi-ai.providers` 里配的中转路由）；这张表只是读不到时的兜底，前端标「默认列表」。
-///
-/// `deepseek-v4-flash-vision-exp` 是 0.1.1 起的多模态目录项（`inputModalities: [text, image]`）。
-/// 能力写在 dsh 自己的 catalog 里，Kivio 不往 `llm-deepseek` 补这份声明——Flash / Pro
-/// 仍是纯文本，硬开 `inputModalities` 会 400。
-const FALLBACK_MODELS: &[(&str, &str)] = &[
-    ("default", "Default"),
-    ("deepseek-v4-flash", "DeepSeek-V4-Flash"),
+/// Advisory API-key catalog shipped in DSH 0.2.2-rc.5. Explicit profile catalogs take precedence.
+pub(crate) const DEFAULT_MODEL: &str = "deepseek-flash";
+pub(crate) const OFFICIAL_MODELS: &[(&str, &str)] = &[
+    (DEFAULT_MODEL, "DeepSeek-V4.1-Flash"),
     ("deepseek-v4-pro", "DeepSeek-V4-Pro"),
-    (
-        "deepseek-v4-flash-vision-exp",
-        "DeepSeek-V4-Flash-Vision-Exp",
-    ),
 ];
 
 /// 官方 DeepSeek 路由的兜底档位：`off | low | high | max`（rc.7 起有 `low`）。
@@ -97,7 +87,7 @@ pub const DSH_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     // `dsh` 没有登录态概念：凭据是 `~/.dsh/.credentials.yaml` / `.env` / 环境变量里的
     // `DEEPSEEK_API_KEY`，没有任何「查询登录状态」的子命令。探测认证只会白起一个进程。
     auth_probe_args: None,
-    fallback_models: FALLBACK_MODELS,
+    fallback_models: OFFICIAL_MODELS,
     reasoning_options: REASONING,
     sandbox_options: &[
         ("read-only", "只读"),

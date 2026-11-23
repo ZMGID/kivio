@@ -2,7 +2,11 @@
 //! The profile composes version-matched official preset declarations and the stdio bridge.
 
 use crate::external_agents::spawn::CliProcessOutput;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use super::provider_profile::write_private_atomic;
+use serde_yaml::{Mapping, Value as Yaml};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,6 +17,9 @@ use crate::settings::ExternalCliProvider;
 /// Kivio 私有 profile 名。与用户的 `web` / `tui` 并存。
 pub const KIVIO_PROFILE: &str = "kivio";
 
+pub(super) const PROFILE_BUNDLE: &str = "./kivio-profile";
+const PATCH_FILE: &str = "cordis.patch.yml";
+const LEGACY_HEADER: &str = "# Kivio-managed profile.";
 const BRIDGE_FILENAME: &str = "kivio-dsh-bridge.mjs";
 const BRIDGE_SOURCE: &str = include_str!("../../resources/dsh/kivio-dsh-bridge.mjs");
 
@@ -59,10 +66,9 @@ const HOST_PLANE_TOOL_IDS: &[&str] = &[
 
 /// `$DSH_HOME`，未设时 `~/.dsh`（与上游 `resolveDshHome` 同序）。
 pub(crate) fn dsh_home() -> Option<PathBuf> {
-    super::provider_profile::effective_dsh_path(
+    super::provider_profile::effective_dsh_home(
         &super::overrides::agent_config("dsh").unwrap_or_default(),
     )
-    .and_then(|path| path.parent().map(Path::to_path_buf))
     .filter(|path| path.is_absolute())
 }
 
@@ -197,27 +203,19 @@ pub fn chat_dsh_list_agent_presets() -> Vec<DshAgentPresetOption> {
     list_user_agent_presets()
 }
 
-/// profile 的 `cordis.patch.yml` 内容。
-///
-/// `reasoning` 为 `None` / 空 / `"default"` 时**不写** `llm-deepseek` 那条 —— 让适配器用它
-/// 自己的默认（实测 `defaultEffort: high`）。写一个 `default` 字面量会被 schema 拒（合法值
-/// 只有 `off|low|high|max`），整棵树起不来。
-fn render_patch(reasoning: Option<&str>, preset: Option<&str>) -> String {
-    let mut out = String::from("# Kivio-managed profile.\n- id: hmr\n  disabled: true\n- id: session-title-llm\n  disabled: true\n");
-    if let Some(effort) = normalize_reasoning_effort(reasoning) {
-        out.push_str(&format!(
-            "- id: llm-deepseek\n  config:\n    reasoningEffort: {effort}\n"
-        ));
-    }
+/// Profile bundle applied before DSH's editable profile and home patches.
+fn render_patch() -> String {
+    let mut out =
+        String::from("- id: hmr\n  disabled: true\n- id: session-title-llm\n  disabled: true\n");
     for id in HOST_PLANE_TOOL_IDS {
         out.push_str(&format!("- id: {id}\n  disabled: true\n"));
     }
-    out.push_str(&format!(
+    out.push_str(
         r#"- insert:
     - id: agent-preset-registry
       name: '@deepseek-ai/dsh-agent-preset-registry'
       config:
-        default: {}
+        default: standard
     - id: subagent-model-selection-settings
       name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
     - id: workspace
@@ -231,8 +229,7 @@ fn render_patch(reasoning: Option<&str>, preset: Option<&str>) -> String {
     - id: kivio-dsh-jsonrpc-bridge
       name: './kivio-dsh-bridge.mjs'
 "#,
-        normalize_agent_preset(preset)
-    ));
+    );
     out
 }
 
@@ -254,20 +251,98 @@ fn append_preset_declarations(
         let path = user_root.join(&preset.id).join(COMPOSITION_FILE);
         let url = url::Url::from_file_path(&path)
             .map_err(|_| format!("dsh preset 路径必须为绝对路径：{}", path.display()))?;
-        let declaration = serde_json::json!({ "insert": [{
+        let mut declaration = serde_yaml::to_value(serde_json::json!({ "insert": [{
             "id": format!("kivio-preset-{}", preset.id),
             "name": "@deepseek-ai/dsh-agent-preset",
-            "config": {
-                "id": preset.id, "name": preset.label,
-                "plugins": [{ "id": "composition", "name": "@deepseek-ai/cordis-plugin-include",
-                    "config": { "path": url.as_str() } }]
+            "config": { "id": preset.id, "name": preset.label }
+        }] }))
+        .map_err(|e| e.to_string())?;
+        let config = &mut declaration["insert"][0]["config"];
+        // A native include outside the profile cannot resolve the CLI's bare
+        // plugin packages. Register the same child rows in the profile scope.
+        let composition = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|src| super::dsh_plugins::parse_cordis_yaml(&src).ok());
+        let mut plugins = None;
+        if let Some(Yaml::Sequence(mut rows)) = composition {
+            let module_roots: Vec<_> = path
+                .parent()
+                .into_iter()
+                .flat_map(Path::ancestors)
+                .map(|dir| dir.join("node_modules"))
+                .filter(|dir| dir.is_dir())
+                .collect();
+            if rebase_preset_rows(&mut rows, &url, &module_roots)? {
+                plugins = Some(Yaml::Sequence(rows));
             }
-        }] });
-        out.push_str("\n- ");
-        out.push_str(&declaration.to_string());
+        }
+        // Preserve Node's package exports and imports when the preset supplies
+        // a dependency. A malformed composition also keeps its native diagnostic.
+        config["plugins"] = match plugins {
+            Some(rows) => rows,
+            None => serde_yaml::to_value(serde_json::json!([{ "id": "composition",
+                "name": "@deepseek-ai/cordis-plugin-include", "config": { "path": url.as_str() } }]))
+                .map_err(|e| e.to_string())?,
+        };
         out.push('\n');
+        out.push_str(&super::dsh_plugins::render_cordis_yaml(&Yaml::Sequence(
+            vec![declaration],
+        ))?);
     }
     Ok(())
+}
+
+fn rebase_preset_rows(
+    rows: &mut [Yaml],
+    source: &url::Url,
+    module_roots: &[PathBuf],
+) -> Result<bool, String> {
+    for row in rows {
+        let name = row["name"].as_str().unwrap_or("");
+        if name.starts_with('#') {
+            return Ok(false);
+        }
+        if name.starts_with("./") || name.starts_with("../") {
+            row["name"] = source
+                .join(name)
+                .map_err(|e| e.to_string())?
+                .as_str()
+                .into();
+        } else if !name.is_empty() && !name.contains(':') && !name.starts_with('/') {
+            let mut parts = name.split('/');
+            let mut package = PathBuf::from(parts.next().unwrap_or(""));
+            if name.starts_with('@') {
+                if let Some(part) = parts.next() {
+                    package.push(part);
+                }
+            }
+            if module_roots
+                .iter()
+                .any(|root| root.join(&package).join("package.json").is_file())
+            {
+                return Ok(false);
+            }
+        }
+        let name = row["name"].as_str().unwrap_or("");
+        if matches!(name, "cordis:group" | "@deepseek-ai/cordis-plugin-group")
+            || row["group"].as_bool() == Some(true)
+        {
+            if let Some(children) = row.get_mut("config").and_then(Yaml::as_sequence_mut) {
+                if !rebase_preset_rows(children, source, module_roots)? {
+                    return Ok(false);
+                }
+            }
+        } else if name == "@deepseek-ai/cordis-plugin-include" {
+            if let Some(path) = row["config"]["path"].as_str() {
+                row["config"]["path"] = source
+                    .join(path)
+                    .map_err(|e| e.to_string())?
+                    .as_str()
+                    .into();
+            }
+        }
+    }
+    Ok(true)
 }
 
 #[derive(Debug)]
@@ -357,53 +432,76 @@ fn parse_active_provider(provider: &ExternalCliProvider) -> Result<ActiveDshProv
     })
 }
 
-fn render_patch_with_providers(
+/// Cordis replaces the whole row config. Start from its effective native config
+/// so a per-session selection does not remove the user's routes or options.
+fn render_launch_patch(
     reasoning: Option<&str>,
     preset: Option<&str>,
     providers: &[ExternalCliProvider],
+    native: &Mapping,
 ) -> Result<String, String> {
-    let mut out = render_patch(reasoning, preset);
-    let providers: Vec<_> = providers
-        .iter()
-        .filter(|provider| !provider.disabled)
-        .collect();
-    if providers.is_empty() {
-        return Ok(out);
+    let mut rows = Vec::new();
+    let mut config_for = |id: &str, key: &str, value: Yaml| -> Result<(), String> {
+        let mut config = match native.get(id) {
+            None => Mapping::new(),
+            Some(value) => value
+                .as_mapping()
+                .cloned()
+                .ok_or_else(|| format!("dsh {id} 配置必须是对象"))?,
+        };
+        config.insert(key.into(), value);
+        rows.push(Yaml::Mapping(Mapping::from_iter([
+            (Yaml::from("id"), Yaml::from(id)),
+            (Yaml::from("config"), Yaml::Mapping(config)),
+        ])));
+        Ok(())
+    };
+    if let Some(effort) = normalize_reasoning_effort(reasoning) {
+        config_for("llm-deepseek", "reasoningEffort", effort.into())?;
     }
-
-    let mut active_providers = Vec::with_capacity(providers.len());
+    if let Some(preset) = preset {
+        config_for(
+            "agent-preset-registry",
+            "default",
+            normalize_agent_preset(Some(preset)).into(),
+        )?;
+    }
     let mut routes = std::collections::HashSet::new();
-    for provider in providers {
+    let mut merged = match native
+        .get("llm-pi-ai")
+        .and_then(|config| config.get("providers"))
+    {
+        None => Mapping::new(),
+        Some(value) => value
+            .as_mapping()
+            .cloned()
+            .ok_or_else(|| "dsh llm-pi-ai.providers 必须是对象".to_owned())?,
+    };
+    for provider in providers.iter().filter(|provider| !provider.disabled) {
         let active = parse_active_provider(provider)?;
         if !routes.insert(active.route.clone()) {
             return Err(format!("dsh 供应商路由重复：{}", active.route));
         }
-        active_providers.push(active);
-    }
-
-    out.push_str("\n# 挂载到 Kivio profile 的第三方供应商；API Key 只通过环境变量注入。\n");
-    out.push_str("- id: llm-pi-ai\n  config:\n    providers:\n");
-    for active in active_providers {
         let mut config = active.config;
         if let Some(object) = config.as_object_mut() {
             if let Some(effort) = normalize_pi_reasoning_effort(reasoning) {
-                object.insert("reasoning".to_string(), Value::String(effort.to_string()));
+                object.insert("reasoning".into(), Value::String(effort.into()));
             } else {
                 object.remove("reasoning");
             }
         }
-        let yaml = serde_yaml::to_string(&config)
-            .map_err(|err| format!("序列化 dsh 供应商配置失败：{err}"))?;
-        out.push_str("      ");
-        out.push_str(&active.route);
-        out.push_str(":\n");
-        for line in yaml.trim_start_matches("---\n").lines() {
-            out.push_str("        ");
-            out.push_str(line);
-            out.push('\n');
-        }
+        merged.insert(
+            active.route.into(),
+            serde_yaml::to_value(config).map_err(|e| e.to_string())?,
+        );
     }
-    Ok(out)
+    if !routes.is_empty() {
+        config_for("llm-pi-ai", "providers", Yaml::Mapping(merged))?;
+    }
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+    super::dsh_plugins::render_cordis_yaml(&Yaml::Sequence(rows))
 }
 
 pub fn active_provider_default_route() -> Result<Option<(String, String)>, String> {
@@ -495,40 +593,230 @@ async fn dsh_core_version(bin: &Path) -> Result<String, String> {
         .ok_or_else(|| "无法确定 dsh core 版本，不能安全安装匹配的 profile SDK".to_string())
 }
 
-/// 确保 profile 可用：装依赖（首次）+ 按当前设置重写 patch。
-///
-/// **幂等**。依赖已在时不跑 pnpm（那条要几秒）；patch 每次都重写，因为推理档位可能变了。
-///
-/// `Err` 的内容是给用户看的：pnpm 没装、网络不通、目录没权限都会走到这里，
-/// 而这条错误会成为那一轮的失败气泡 —— 所以不写「bootstrap failed」这种查不到根因的话。
+/// Install the matching SDK, prepare the shared profile, and return the
+/// invocation's private overlay. Its owner keeps it until the child exits.
 pub async fn ensure_profile_ready(
     bin: &Path,
     reasoning: Option<&str>,
     preset: Option<&str>,
-) -> Result<(), String> {
+) -> Result<Option<tempfile::TempPath>, String> {
     let home = dsh_home().ok_or_else(|| "无法定位 dsh 主目录（$DSH_HOME / ~/.dsh）".to_string())?;
     let dir = home.join("profiles").join(KIVIO_PROFILE);
 
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建 dsh profile 目录失败：{e}"))?;
-    std::fs::write(dir.join(".npmrc"), PROFILE_NPMRC)
-        .map_err(|e| format!("写入 dsh profile npmrc 失败：{e}"))?;
+    write_generated_file(&dir.join(".npmrc"), PROFILE_NPMRC)?;
 
     let core_version = dsh_core_version(bin).await?;
     if !packages_match_core(&dir, &core_version) {
         install_packages(bin, &core_version, &home).await?;
     }
-    normalize_profile_manifest(&dir)?;
-
-    // patch 在依赖之后写：`dsh plugin` 首次会按模板初始化 profile 目录并写一份占位
-    // `cordis.patch.yml`（内容是 `[]`），先写就会被它覆盖掉。
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 dsh profile 目录失败：{e}"))?;
-    std::fs::write(dir.join(BRIDGE_FILENAME), BRIDGE_SOURCE)
-        .map_err(|e| format!("写入 Kivio dsh bridge 失败：{e}"))?;
     let config = crate::external_agents::overrides::agent_config("dsh").unwrap_or_default();
-    let mut patch = render_patch_with_providers(reasoning, preset, &config.providers)?;
-    append_preset_declarations(&mut patch, &dir, &home.join(USER_PRESET_DIR))?;
-    std::fs::write(dir.join("cordis.patch.yml"), patch)
-        .map_err(|e| format!("写入 dsh profile 配置失败：{e}"))
+    write_profile_bundle(&home, &dir, &config.providers)?;
+    if preset.is_none()
+        && normalize_reasoning_effort(reasoning).is_none()
+        && config.providers.iter().all(|provider| provider.disabled)
+    {
+        return Ok(None);
+    }
+    let native = super::dsh_plugins::read_profile_settings(&home)?;
+    let overlay = render_launch_patch(reasoning, preset, &config.providers, &native)?;
+    let mut file = tempfile::Builder::new()
+        .prefix("kivio-launch-")
+        .suffix(".yml")
+        .tempfile_in(&dir)
+        .map_err(|e| format!("创建 dsh 启动配置失败：{e}"))?;
+    file.write_all(overlay.as_bytes())
+        .map_err(|e| format!("写入 dsh 启动配置失败：{e}"))?;
+    Ok(Some(file.into_temp_path()))
+}
+
+fn write_generated_file(path: &Path, content: &str) -> Result<(), String> {
+    match std::fs::read(path) {
+        Ok(bytes) if bytes == content.as_bytes() => Ok(()),
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("读取 {} 失败：{err}", path.display()))
+        }
+        _ => write_private_atomic(path, content),
+    }
+}
+
+fn write_profile_bundle(
+    home: &Path,
+    dir: &Path,
+    providers: &[ExternalCliProvider],
+) -> Result<(), String> {
+    let _guard = super::provider_profile::lock_native_config()?;
+    let bundle = dir.join(PROFILE_BUNDLE);
+    let mut patch = render_patch();
+    append_preset_declarations(&mut patch, dir, &home.join(USER_PRESET_DIR))?;
+    write_generated_file(&bundle.join(BRIDGE_FILENAME), BRIDGE_SOURCE)?;
+    write_generated_file(&bundle.join(PATCH_FILE), &patch)?;
+    write_generated_file(
+        &bundle.join("package.json"),
+        &serde_json::json!({
+            "name": "kivio-dsh-composition", "version": env!("CARGO_PKG_VERSION"),
+            "private": true, "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        })
+        .to_string(),
+    )?;
+    normalize_profile_manifest(dir)?;
+    let path = dir.join(PATCH_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("读取 dsh profile 配置失败：{e}")),
+    };
+    if let Some(native) = legacy_native_patch(&text, providers)? {
+        write_private_atomic(&dir.join("kivio-pre-bundle.patch.yml"), &text)?;
+        write_private_atomic(&path, &native)?;
+    }
+    super::dsh_plugins::preserve_legacy_launch_settings(home)
+}
+
+pub(super) fn looks_like_legacy_profile(text: &str) -> bool {
+    text.starts_with(LEGACY_HEADER)
+        || text.starts_with("# 由 Kivio 生成并维护")
+        || (text.contains("kivio-dsh-jsonrpc-bridge") && text.contains(BRIDGE_FILENAME))
+}
+
+/// Older releases wrote generated and native rows into the same patch. The
+/// native editor appends overrides or updates an existing row in place.
+pub(crate) fn legacy_native_patch(
+    text: &str,
+    providers: &[ExternalCliProvider],
+) -> Result<Option<String>, String> {
+    if !looks_like_legacy_profile(text) {
+        return Ok(None);
+    }
+    let doc = super::dsh_plugins::parse_cordis_yaml(text)?;
+    let rows = doc
+        .as_sequence()
+        .ok_or("旧版 Kivio profile 必须是 YAML 数组")?;
+    let has_bridge = rows
+        .iter()
+        .filter_map(|row| row.get("insert").and_then(Yaml::as_sequence))
+        .flatten()
+        .any(|entry| {
+            entry["id"].as_str() == Some("kivio-dsh-jsonrpc-bridge")
+                && entry["name"].as_str() == Some("./kivio-dsh-bridge.mjs")
+        });
+    if !has_bridge && !text.starts_with(LEGACY_HEADER) && !text.starts_with("# 由 Kivio 生成并维护")
+    {
+        return Ok(None);
+    }
+    // Keep generated block-style rows verbatim when possible. An editor can
+    // also save the sequence in flow style; fall back to its parsed rows.
+    let mut starts: Vec<usize> = text.match_indices("\n- ").map(|(i, _)| i + 1).collect();
+    if text.starts_with("- ") {
+        starts.insert(0, 0);
+    }
+    let raw_rows = starts.len() == rows.len();
+    starts.push(text.len());
+    let mut native = String::new();
+    let mut cleared_pi = false;
+    let mut cleared_effort = false;
+    let mut generated_insert_done = false;
+    for (index, row) in rows.iter().enumerate() {
+        let mut kept = row.clone();
+        let id = row.get("id").and_then(Yaml::as_str).unwrap_or("");
+        if let Some(inserts) = kept.get_mut("insert").and_then(Yaml::as_sequence_mut) {
+            inserts.retain(|entry| {
+                let id = entry["id"].as_str().unwrap_or("");
+                let name = entry["name"].as_str().unwrap_or("");
+                let shipped = name == "@deepseek-ai/dsh-agent-preset"
+                    && (id.strip_prefix("preset-").is_some_and(is_builtin_preset_id)
+                        || id.starts_with("kivio-preset-"));
+                let host = matches!(
+                    (id, name),
+                    ("kivio-dsh-jsonrpc-bridge", "./kivio-dsh-bridge.mjs")
+                        | ("agent-presets", "@deepseek-ai/dsh-agent-presets")
+                        | (
+                            "agent-preset-registry",
+                            "@deepseek-ai/dsh-agent-preset-registry"
+                        )
+                        | (
+                            "subagent-model-selection-settings",
+                            "@deepseek-ai/dsh-tool-subagent/model-selection-settings"
+                        )
+                        | ("workspace", "@deepseek-ai/dsh-workspace")
+                        | ("schedule", "@deepseek-ai/dsh-schedule")
+                        | ("cordis-host-runner", "@deepseek-ai/dsh-cordis-host-runner")
+                        | (
+                            "cordis-inspect-providers",
+                            "@deepseek-ai/dsh-tool-cordis/host"
+                        )
+                );
+                generated_insert_done |= shipped;
+                !(host || shipped)
+            });
+            if inserts.is_empty() {
+                continue;
+            }
+        } else if row.get("name").is_none() {
+            if row.as_mapping().is_some_and(|map| map.len() == 2)
+                && row["disabled"].as_bool() == Some(true)
+                && (HOST_PLANE_TOOL_IDS.contains(&id)
+                    || matches!(
+                        id,
+                        "hmr"
+                            | "session-title-llm"
+                            | "tool-subagent-list-agents"
+                            | "workflow-worker-thread"
+                            | "tool-ralph"
+                    ))
+            {
+                continue;
+            }
+            let field = match id {
+                "llm-deepseek" if !cleared_effort && !generated_insert_done => {
+                    cleared_effort = true;
+                    Some("reasoningEffort")
+                }
+                "llm-pi-ai" if !cleared_pi && !generated_insert_done => {
+                    cleared_pi = true;
+                    if let Some(routes) = kept
+                        .get_mut("config")
+                        .and_then(|config| config.get_mut("providers"))
+                        .and_then(Yaml::as_mapping_mut)
+                    {
+                        for provider in providers {
+                            routes.remove(provider.native_provider_id.trim());
+                        }
+                        routes.is_empty().then_some("providers")
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let (Some(field), Some(config)) =
+                (field, kept.get_mut("config").and_then(Yaml::as_mapping_mut))
+            {
+                config.remove(field);
+                if config.is_empty() {
+                    let map = kept.as_mapping_mut().expect("row has config");
+                    map.remove("config");
+                    if map.len() == 1 {
+                        continue;
+                    }
+                }
+            }
+        }
+        if raw_rows && &kept == row {
+            native.push_str(&text[starts[index]..starts[index + 1]]);
+        } else {
+            native.push_str(&super::dsh_plugins::render_cordis_yaml(&Yaml::Sequence(
+                vec![kept],
+            ))?);
+        }
+        if !native.ends_with('\n') {
+            native.push('\n');
+        }
+    }
+    if native.is_empty() {
+        native.push_str("[]\n");
+    }
+    Ok(Some(native))
 }
 
 fn normalize_profile_manifest(dir: &Path) -> Result<(), String> {
@@ -575,12 +863,21 @@ fn normalize_profile_manifest(dir: &Path) -> Result<(), String> {
     {
         bundles.insert(0, serde_json::json!("@deepseek-ai/dsh-base"));
     }
+    if !bundles
+        .iter()
+        .any(|bundle| bundle.as_str() == Some(PROFILE_BUNDLE))
+    {
+        let base = bundles
+            .iter()
+            .position(|bundle| bundle.as_str() == Some("@deepseek-ai/dsh-base"))
+            .expect("base bundle present");
+        bundles.insert(base + 1, serde_json::json!(PROFILE_BUNDLE));
+    }
     let bundles_changed = *bundles != previous_bundles;
     if version_changed || removed_preset || bundles_changed {
         let next = serde_json::to_string_pretty(&value)
             .map_err(|e| format!("序列化 dsh profile package.json 失败：{e}"))?;
-        std::fs::write(&package_json, format!("{next}\n"))
-            .map_err(|e| format!("写入 dsh profile package.json 失败：{e}"))?;
+        write_private_atomic(&package_json, &format!("{next}\n"))?;
     }
     let relative = PROFILE_PRESET_PACKAGE.trim_start_matches('@');
     if let Some((scope, name)) = relative.split_once('/') {
@@ -742,7 +1039,7 @@ mod tests {
     /// 装配 bridge 的 insert 必须在，否则 `initialize` 没有 resumable server 应答。
     #[test]
     fn patch_always_mounts_the_kivio_bridge() {
-        let yml = render_patch(None, None);
+        let yml = render_patch();
         assert!(yml.contains("- insert:"));
         assert!(yml.contains("name: './kivio-dsh-bridge.mjs'"));
         assert!(yml.contains("id: kivio-dsh-jsonrpc-bridge"));
@@ -788,7 +1085,7 @@ mod tests {
 
     #[test]
     fn patch_reuses_base_storage_and_mounts_the_workspace_registry() {
-        let yml = render_patch(None, None);
+        let yml = render_patch();
         assert!(yml.contains("name: '@deepseek-ai/dsh-workspace'"));
         assert!(!yml.contains("name: '@deepseek-ai/dsh-storage'"));
         assert!(!yml.contains("id: tool-str-replace-editor"));
@@ -806,9 +1103,10 @@ mod tests {
         }
         let users = dir.path().join("user presets");
         write_user_preset(&users, "my-reviewer", Some("name: Reviewer"), true);
-        let mut patch = render_patch(None, Some("code"));
+        std::fs::write(users.join("my-reviewer").join(COMPOSITION_FILE),
+            "- name: '@deepseek-ai/dsh-persona'\n- name: ./review.mjs\n  disabled: !!js process.platform === 'win32'\n").unwrap();
+        let mut patch = render_patch();
         append_preset_declarations(&mut patch, dir.path(), &users).unwrap();
-        assert!(patch.contains("default: ptc"));
         assert!(patch.contains("!!js process.platform === 'win32'"));
         let parsed: serde_yaml::Value = serde_yaml::from_str(&patch).unwrap();
         let rows = parsed.as_sequence().unwrap();
@@ -817,15 +1115,80 @@ mod tests {
             custom["insert"][0]["config"]["id"].as_str(),
             Some("my-reviewer")
         );
-        let path = custom["insert"][0]["config"]["plugins"][0]["config"]["path"]
+        let plugins = &custom["insert"][0]["config"]["plugins"];
+        assert_eq!(
+            plugins[0]["name"].as_str(),
+            Some("@deepseek-ai/dsh-persona")
+        );
+        let path = plugins[1]["name"].as_str().unwrap();
+        assert_eq!(
+            url::Url::parse(path).unwrap().to_file_path().unwrap(),
+            users.join("my-reviewer/review.mjs")
+        );
+        let local = users.join("my-reviewer/node_modules/@deepseek-ai/dsh-persona");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("package.json"), "{}").unwrap();
+        let mut patch = String::new();
+        append_preset_declarations(&mut patch, dir.path(), &users).unwrap();
+        let parsed: Yaml = serde_yaml::from_str(&patch).unwrap();
+        let local_config = &parsed.as_sequence().unwrap().last().unwrap()["insert"][0]["config"];
+        let include_path = local_config["plugins"][0]["config"]["path"]
             .as_str()
             .unwrap();
         assert_eq!(
-            url::Url::parse(path).unwrap().to_file_path().unwrap(),
+            url::Url::parse(include_path)
+                .unwrap()
+                .to_file_path()
+                .unwrap(),
             users.join("my-reviewer").join(COMPOSITION_FILE)
         );
         std::fs::remove_file(presets.join("ptc.patch.yml")).unwrap();
         assert!(append_preset_declarations(&mut String::new(), dir.path(), &users).is_err());
+    }
+
+    #[test]
+    fn preparing_profile_twice_preserves_native_settings_and_removes_legacy_managed_rows() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("profiles/kivio");
+        let presets = package_dir(&dir, "@deepseek-ai/dsh-web-app")
+            .unwrap()
+            .join("presets");
+        std::fs::create_dir_all(&presets).unwrap();
+        for id in BUILTIN_PRESET_IDS {
+            std::fs::write(presets.join(format!("{id}.patch.yml")), format!("- insert:\n    - id: preset-{id}\n      name: '@deepseek-ai/dsh-agent-preset'\n")).unwrap();
+        }
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        // The native editor can reserialize the old generated rows without their banner.
+        let legacy = "- id: hmr\n  disabled: true\n- id: llm-pi-ai\n  config:\n    providers:\n      relay-one: {}\n      native: {apiKeyEnv: NATIVE_KEY}\n- insert:\n    - id: kivio-dsh-jsonrpc-bridge\n      name: './kivio-dsh-bridge.mjs'\n- id: agent-loop\n  config: {maxParallelToolCalls: 3}\n- id: user-plugin\n  disabled: !!js process.platform === 'win32'\n";
+        std::fs::write(dir.join(PATCH_FILE), legacy).unwrap();
+        let provider = relay_provider();
+        for _ in 0..2 {
+            write_profile_bundle(home.path(), &dir, std::slice::from_ref(&provider)).unwrap();
+            let native = std::fs::read_to_string(dir.join(PATCH_FILE)).unwrap();
+            assert!(native.contains("apiKeyEnv: NATIVE_KEY"));
+            assert!(native.contains("maxParallelToolCalls: 3"));
+            assert!(native.contains("disabled: !!js process.platform === 'win32'"));
+            assert!(!native.contains("relay-one"));
+            assert!(!native.contains("kivio-dsh-jsonrpc-bridge"));
+            assert_eq!(
+                std::fs::read_to_string(dir.join("kivio-pre-bundle.patch.yml")).unwrap(),
+                legacy
+            );
+        }
+        let native = super::super::dsh_plugins::read_profile_settings(home.path()).unwrap();
+        let launch = render_launch_patch(Some("high"), None, &[provider], &native).unwrap();
+        let document: Yaml = serde_yaml::from_str(&launch).unwrap();
+        let routes = &document
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"].as_str() == Some("llm-pi-ai"))
+            .unwrap()["config"]["providers"];
+        assert_eq!(routes["native"]["apiKeyEnv"].as_str(), Some("NATIVE_KEY"));
+        assert_eq!(
+            routes["relay-one"]["apiKeyEnv"].as_str(),
+            Some("KIVIO_DSH_RELAY_ONE_API_KEY")
+        );
     }
 
     #[test]
@@ -895,7 +1258,7 @@ mod tests {
     #[test]
     fn provider_patch_mounts_llm_pi_ai_without_serializing_the_api_key() {
         let provider = relay_provider();
-        let yml = render_patch_with_providers(Some("high"), None, &[provider]).unwrap();
+        let yml = render_launch_patch(Some("high"), None, &[provider], &Mapping::new()).unwrap();
         assert!(yml.contains("- id: llm-pi-ai"));
         assert!(yml.contains("relay-one:"));
         assert!(yml.contains("apiKeyEnv: KIVIO_DSH_RELAY_ONE_API_KEY"));
@@ -929,7 +1292,8 @@ mod tests {
         disabled.native_provider_id = "relay-disabled".to_string();
         disabled.disabled = true;
 
-        let yml = render_patch_with_providers(None, None, &[first, second, disabled]).unwrap();
+        let yml =
+            render_launch_patch(None, None, &[first, second, disabled], &Mapping::new()).unwrap();
         assert!(yml.contains("relay-one:"));
         assert!(yml.contains("relay-two:"));
         assert!(!yml.contains("relay-disabled:"));
@@ -942,20 +1306,23 @@ mod tests {
     #[test]
     fn provider_patch_writes_pi_ai_reasoning_for_custom_efforts() {
         let provider = relay_provider();
-        let yml = render_patch_with_providers(Some("low"), None, &[provider.clone()]).unwrap();
+        let yml =
+            render_launch_patch(Some("low"), None, &[provider.clone()], &Mapping::new()).unwrap();
         assert!(yml.contains("reasoning: low"));
         assert!(yml.contains("reasoningEffort: low"));
 
-        let yml = render_patch_with_providers(Some("minimal"), None, &[provider.clone()]).unwrap();
+        let yml = render_launch_patch(Some("minimal"), None, &[provider.clone()], &Mapping::new())
+            .unwrap();
         assert!(yml.contains("reasoning: minimal"));
         assert!(!yml.contains("reasoningEffort:"));
         assert!(!yml.contains("- id: llm-deepseek"));
 
-        let yml = render_patch_with_providers(Some("xhigh"), None, &[provider.clone()]).unwrap();
+        let yml =
+            render_launch_patch(Some("xhigh"), None, &[provider.clone()], &Mapping::new()).unwrap();
         assert!(yml.contains("reasoning: xhigh"));
         assert!(!yml.contains("reasoningEffort:"));
 
-        let yml = render_patch_with_providers(Some("default"), None, &[provider]).unwrap();
+        let yml = render_launch_patch(Some("default"), None, &[provider], &Mapping::new()).unwrap();
         assert!(!yml.contains("reasoning:"));
     }
 
@@ -963,21 +1330,25 @@ mod tests {
     fn provider_patch_rejects_missing_key_and_invalid_default_model() {
         let mut provider = relay_provider();
         provider.env.clear();
-        assert!(render_patch_with_providers(None, None, &[provider])
-            .unwrap_err()
-            .contains("KIVIO_DSH_RELAY_ONE_API_KEY"));
+        assert!(
+            render_launch_patch(None, None, &[provider], &Mapping::new())
+                .unwrap_err()
+                .contains("KIVIO_DSH_RELAY_ONE_API_KEY")
+        );
 
         let mut provider = relay_provider();
         provider.default_model = "missing".to_string();
-        assert!(render_patch_with_providers(None, None, &[provider])
-            .unwrap_err()
-            .contains("默认模型"));
+        assert!(
+            render_launch_patch(None, None, &[provider], &Mapping::new())
+                .unwrap_err()
+                .contains("默认模型")
+        );
     }
 
     /// 两条 disable 是钱和稳定性：标题 LLM 每轮一次白花的调用，hmr 是意外重连。
     #[test]
     fn patch_disables_hmr_and_title_llm() {
-        let yml = render_patch(None, None);
+        let yml = render_patch();
         assert!(yml.contains("- id: hmr\n  disabled: true"));
         assert!(yml.contains("- id: session-title-llm\n  disabled: true"));
     }
@@ -1037,7 +1408,7 @@ mod tests {
         );
         assert_eq!(
             value["dsh"]["profile"]["bundles"],
-            serde_json::json!(["@deepseek-ai/dsh-base", "custom-bundle"])
+            serde_json::json!(["@deepseek-ai/dsh-base", PROFILE_BUNDLE, "custom-bundle"])
         );
     }
 
@@ -1072,15 +1443,21 @@ mod tests {
 
     #[test]
     fn patch_writes_the_selected_agent_preset() {
-        let yml = render_patch(None, Some("minimal"));
-        assert!(yml.contains("@deepseek-ai/dsh-agent-preset-registry"));
+        let yml = render_launch_patch(None, Some("minimal"), &[], &Mapping::new()).unwrap();
+        assert!(yml.contains("id: agent-preset-registry"));
         assert!(yml.contains("default: minimal"));
         assert!(!yml.contains("default: standard"));
     }
 
     #[test]
     fn unknown_preset_is_not_interpolated_into_the_patch() {
-        let yml = render_patch(None, Some("x\n- id: injected-tool\n  disabled: false"));
+        let yml = render_launch_patch(
+            None,
+            Some("x\n- id: injected-tool\n  disabled: false"),
+            &[],
+            &Mapping::new(),
+        )
+        .unwrap();
         assert!(yml.contains("default: standard"));
         assert!(!yml.contains("injected-tool"));
     }
@@ -1133,7 +1510,7 @@ mod tests {
 
     #[test]
     fn patch_writes_reasoning_effort_when_chosen() {
-        let yml = render_patch(Some("max"), None);
+        let yml = render_launch_patch(Some("max"), None, &[], &Mapping::new()).unwrap();
         assert!(yml.contains("- id: llm-deepseek"));
         assert!(yml.contains("reasoningEffort: max"));
     }
@@ -1143,7 +1520,7 @@ mod tests {
     #[test]
     fn patch_omits_reasoning_for_default_and_blank() {
         for value in [None, Some(""), Some("   "), Some("default")] {
-            let yml = render_patch(value, None);
+            let yml = render_launch_patch(value, None, &[], &Mapping::new()).unwrap();
             assert!(
                 !yml.contains("reasoningEffort"),
                 "reasoning={value:?} 不该写档位"
@@ -1155,8 +1532,12 @@ mod tests {
     /// `off` 是合法档位（关思考），不能被当成「不指定」吞掉。
     #[test]
     fn off_is_a_real_effort_not_an_absence() {
-        assert!(render_patch(Some("off"), None).contains("reasoningEffort: off"));
-        assert!(render_patch(Some("low"), None).contains("reasoningEffort: low"));
+        assert!(render_launch_patch(Some("off"), None, &[], &Mapping::new())
+            .unwrap()
+            .contains("reasoningEffort: off"));
+        assert!(render_launch_patch(Some("low"), None, &[], &Mapping::new())
+            .unwrap()
+            .contains("reasoningEffort: low"));
     }
 
     /// 未知档位（含换行 / YAML 注入）必须整段省略，不能原样插进共享 patch。
@@ -1168,7 +1549,7 @@ mod tests {
             Some("high\n- id: injected-tool\n  disabled: false"),
             Some("off\n- insert:\n    - id: evil"),
         ] {
-            let yml = render_patch(value, None);
+            let yml = render_launch_patch(value, None, &[], &Mapping::new()).unwrap();
             assert!(
                 !yml.contains("reasoningEffort"),
                 "reasoning={value:?} 不该写档位"
@@ -1187,8 +1568,8 @@ mod tests {
     /// 续行 —— 出现顶层 `key:` 就说明写成映射了。
     #[test]
     fn patch_is_a_top_level_sequence() {
-        for reasoning in [None, Some("high")] {
-            let yml = render_patch(reasoning, None);
+        {
+            let yml = render_patch();
             let mut entries = 0;
             for line in yml.lines() {
                 if line.trim().is_empty() || line.trim_start().starts_with('#') {
@@ -1200,7 +1581,7 @@ mod tests {
                 }
                 assert!(
                     line.starts_with(' '),
-                    "顶层只能是数组条目或其缩进续行，出现了 {line:?}（reasoning={reasoning:?}）"
+                    "顶层只能是数组条目或其缩进续行，出现了 {line:?}"
                 );
             }
             assert!(

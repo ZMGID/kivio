@@ -30,8 +30,8 @@
 //!    合并进现有文件；`managed:kimi-code` OAuth 段与其它用户配置原样保留。首次接管前
 //!    整份备份，切回「CLI 自身配置」时还原。
 //! 7. **dsh 的 Kivio 私有 profile** —— provider 本体由 `dsh_profile.rs` 写进
-//!    `profiles/kivio/cordis.patch.yml` 的 `llm-pi-ai.providers`；本层把 `apiKeyEnv`
-//!    指向的 Key 注入 Kivio 启动的进程。`settings.yaml` 只回写已存在路由上的模型
+//!    本次启动补丁的 `llm-pi-ai.providers`；本层把 `apiKeyEnv`
+//!    指向的 Key 注入 Kivio 启动的进程。dsh 原生配置只回写已存在路由上的模型
 //!    `input` / `defaultInput` / `reasoningEfforts`（官方 web 贴图与 effort 门控），
 //!    不新建供应商、不写密钥。
 //!
@@ -141,13 +141,17 @@ pub(crate) fn native_file_update(path: &Path) -> Result<NativeFileUpdate, String
         )],
         true,
     )?;
-    let lock = NATIVE_CONFIG_LOCK
-        .lock()
-        .map_err(|_| "原生 CLI 配置写锁已损坏")?;
+    let lock = lock_native_config()?;
     Ok(NativeFileUpdate {
         _resource: resource,
         _lock: lock,
     })
+}
+
+pub(crate) fn lock_native_config() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    NATIVE_CONFIG_LOCK
+        .lock()
+        .map_err(|_| "原生 CLI 配置写锁已损坏".into())
 }
 
 fn effective_env_path(
@@ -245,11 +249,14 @@ fn toml_config_path_in(
         .map(|home| home.join("config.toml"))
 }
 
-pub(super) fn effective_dsh_path(config: &ExternalCliAgentConfig) -> Option<PathBuf> {
+pub(super) fn effective_dsh_home(config: &ExternalCliAgentConfig) -> Option<PathBuf> {
     let def = get_agent_def("dsh")?;
     effective_env_path(def, config, "DSH_HOME")
         .or_else(|| effective_user_home(def, config).map(|home| home.join(".dsh")))
-        .map(|home| home.join("settings.yaml"))
+}
+
+fn effective_dsh_path(config: &ExternalCliAgentConfig) -> Option<PathBuf> {
+    effective_dsh_home(config).map(|home| super::dsh_plugins::native_settings_path(&home))
 }
 
 fn validate_private_target(path: &Path) -> Result<(), String> {
@@ -1145,7 +1152,12 @@ pub(super) fn launch_file_revision(
         Grok | Kimi if !wsl => files.extend(toml_config_path_in(def, &env_path)),
         Dsh if !wsl => {
             if let Some(home) = env_path("DSH_HOME").or_else(super::dsh_profile::dsh_home) {
-                files.extend([home.join(".credentials.yaml"), home.join(".env")]);
+                files.extend([
+                    home.join(".credentials.yaml"),
+                    home.join(".env"),
+                    super::dsh_plugins::native_settings_path(&home),
+                    home.join("cordis.patch.yml"),
+                ]);
             }
         }
         _ => {}
@@ -3662,6 +3674,7 @@ mod tests {
             ("pi", "PI_CODING_AGENT_DIR", "models.json"),
             ("opencode", "XDG_CONFIG_HOME", "opencode/opencode.json"),
             ("dsh", "DSH_HOME", "settings.yaml"),
+            ("dsh", "DSH_HOME", "profiles/kivio/cordis.patch.yml"),
         ] {
             let root = tempfile::tempdir().unwrap();
             let _root = isolated_profiles(root.path());

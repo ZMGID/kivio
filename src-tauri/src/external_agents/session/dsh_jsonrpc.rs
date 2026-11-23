@@ -37,6 +37,7 @@
 //! `turn/end` 时落成一条助手消息，不能只留任务边沿。Kivio bridge 直接调用 dsh
 //! 公共的 `agents.resume()` 与 `agent.cancel()`，所以进程重建和用户停止都不会再丢失原生会话。
 
+use crate::external_agents::providers::dsh::DEFAULT_MODEL;
 use crate::external_agents::session::live::TurnDelivery;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -72,7 +73,6 @@ const CHILD_PREVIEW_MAX_CHARS: usize = 1200;
 const CHILD_STEP_MAX_CHARS: usize = 160;
 const CHILD_STEPS_MAX: usize = 24;
 const DEFAULT_PROVIDER: &str = "deepseek-official";
-const DEFAULT_MODEL: &str = "deepseek-v4-flash";
 
 // 共享 profile 的配置必须在子进程完成 initialize 前保持不变。
 static DSH_PROFILE_BOOT_LOCK: Mutex<()> = Mutex::const_new(());
@@ -80,6 +80,7 @@ static DSH_PROFILE_BOOT_LOCK: Mutex<()> = Mutex::const_new(());
 /// 运行中的 dsh 连接：一个进程可承载同一个 session 的多轮 prompt。
 pub struct DshJsonRpcSession {
     child: Child,
+    _launch_patch: Option<tempfile::TempPath>,
     stdin: AgentStdin,
     reader: Lines<BufReader<AgentStdout>>,
     stderr_tail: tokio::task::JoinHandle<String>,
@@ -364,7 +365,7 @@ impl DshJsonRpcSession {
         mcp: Option<(&str, &str)>,
     ) -> Result<Self, String> {
         let _profile_boot_guard = DSH_PROFILE_BOOT_LOCK.lock().await;
-        let route = resolve_model_route_for_turn(model)?;
+        let (route, native_effort) = resolve_dsh_selection(model)?;
         let managed_provider =
             crate::external_agents::overrides::agent_config("dsh").is_some_and(|config| {
                 config.providers.iter().any(|provider| {
@@ -379,9 +380,12 @@ impl DshJsonRpcSession {
         {
             return Err("missing credential".to_string());
         }
-        crate::external_agents::dsh_plugins::heal_credentials_store()?;
-        crate::external_agents::dsh_profile::ensure_profile_ready(resolved_bin, reasoning, preset)
-            .await?;
+        let launch_patch = crate::external_agents::dsh_profile::ensure_profile_ready(
+            resolved_bin,
+            reasoning,
+            preset,
+        )
+        .await?;
 
         let session_id = resume_session_id
             .map(str::trim)
@@ -399,6 +403,14 @@ impl DshJsonRpcSession {
                 "DSH_AGENT_PRESET",
                 crate::external_agents::dsh_profile::normalize_agent_preset(preset),
             );
+        if let Some(path) = &launch_patch {
+            command
+                .arg("--patch")
+                .arg(crate::external_agents::wsl::path_for_cli(
+                    resolved_bin,
+                    path,
+                ));
+        }
         if crate::external_agents::wsl::is_wsl_target(resolved_bin) {
             if let Some(home) = crate::external_agents::dsh_profile::dsh_home() {
                 command.env(
@@ -461,13 +473,16 @@ impl DshJsonRpcSession {
                     "failOnStartupError": true,
                 });
             }
-            if let Some(effort) = reasoning
+            let explicit_effort = reasoning
                 .map(str::trim)
-                .filter(|s| !s.is_empty() && *s != "default")
-            {
+                .filter(|s| !s.is_empty() && *s != "default");
+            let default_effort = native_effort
+                .as_deref()
+                .filter(|s| !wants_resume && !s.is_empty() && *s != "default");
+            if let Some(effort) = explicit_effort.or(default_effort) {
                 init_params["reasoningEffort"] = json!(effort);
             }
-            // settings.yaml 里的 pi-ai 路由是异步挂上的。第一次 initialize 常会
+            // profile 里的 pi-ai 路由是异步挂上的。第一次 initialize 常会
             // 立刻回 `no adapter registered`——这是失败，不是成功。按这条错误重试
             // initialize；其它错误（超时、进程退出、真缺供应商）直接失败给用户。
             let mut last_adapter_err = None;
@@ -587,6 +602,7 @@ impl DshJsonRpcSession {
         match handshake {
             Ok((resumed, slash_commands)) => Ok(Self {
                 child,
+                _launch_patch: launch_patch,
                 stdin,
                 reader,
                 stderr_tail,
@@ -636,7 +652,7 @@ impl DshJsonRpcSession {
         mut idle_approvals: Option<&mut ApprovalBridge>,
         idle_pending_asks: &mut std::collections::HashMap<String, DshInteraction>,
     ) -> Result<(), String> {
-        let requested_route = resolve_model_route_for_turn(model)?;
+        let (requested_route, _) = resolve_dsh_selection(model)?;
         if requested_route != self.route {
             // 防止未来有人把 dsh 从启动指纹里删掉后，UI 显示新模型、实际 agent 仍跑旧模型。
             return Err(crate::external_agents::session::acp::NEEDS_RECONNECT.to_string());
@@ -1871,26 +1887,28 @@ pub fn is_missing_session_error(err: &str) -> bool {
     not_found || resume_miss
 }
 
-/// Official SDK throws this when initialize names a pi-ai route that settings.yaml
+/// Official SDK throws this when initialize names a pi-ai route that the profile
 /// has not registered yet. Transient: retry initialize. Permanent after retries:
 /// the route is missing and the user should see this error.
 fn is_adapter_not_registered(err: &str) -> bool {
     err.to_ascii_lowercase().contains("no adapter registered")
 }
 
-fn resolve_model_route_for_turn(selected: Option<&str>) -> Result<ModelRoute, String> {
+fn resolve_dsh_selection(selected: Option<&str>) -> Result<(ModelRoute, Option<String>), String> {
     let explicit = selected
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "default");
     if let Some(explicit) = explicit {
-        return Ok(resolve_model_route(Some(explicit)));
+        return Ok((resolve_model_route(Some(explicit)), None));
     }
     if let Some((provider, model)) =
         crate::external_agents::dsh_profile::active_provider_default_route()?
     {
-        return Ok(ModelRoute { provider, model });
+        return Ok((ModelRoute { provider, model }, None));
     }
-    Ok(resolve_model_route(None))
+    let (native, effort) = crate::external_agents::detection::dsh_configured_selection()?;
+    let route = resolve_model_route(native.as_deref());
+    Ok((route, native.and(effort)))
 }
 
 /// 外部模型值：默认 DeepSeek 路由用裸 model id；用户配置的 pi-ai 路由由 detection 编成
@@ -2332,12 +2350,19 @@ fn map_session_event(
                 "blocked" => Err("dsh turn blocked".to_string()),
                 "interrupted" => Err("dsh turn interrupted".to_string()),
                 "error" => {
-                    let message = reason
-                        .get("error")
-                        .and_then(|error| error.get("message"))
+                    let error = &reason["error"];
+                    let detail = error
+                        .get("message")
                         .and_then(Value::as_str)
-                        .unwrap_or("dsh turn failed")
-                        .to_string();
+                        .unwrap_or("dsh turn failed");
+                    let message = if error["code"] == "CONTENT_REFUSED" {
+                        format!(
+                            "{}{detail}",
+                            crate::external_agents::errors::DSH_CONTENT_REFUSED_PREFIX
+                        )
+                    } else {
+                        detail.to_string()
+                    };
                     sink(UnifiedAgentEvent::Error {
                         message: message.clone(),
                     });
@@ -3171,6 +3196,7 @@ mod tests {
                 "done"
             );
             let mut session = DshJsonRpcSession {
+                _launch_patch: None,
                 stdin,
                 reader,
                 stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
@@ -3178,7 +3204,7 @@ mod tests {
                 session_id: "session-1".into(),
                 resumed: false,
                 next_id: 2,
-                route: resolve_model_route_for_turn(None).unwrap(),
+                route: resolve_dsh_selection(None).unwrap().0,
                 context_window: None,
                 map_state: MapSessionState::default(),
                 idle_wake: IdleWakeState::default(),
@@ -3412,7 +3438,7 @@ mod tests {
             resolve_model_route(None),
             ModelRoute {
                 provider: "deepseek-official".into(),
-                model: "deepseek-v4-flash".into(),
+                model: "deepseek-flash".into(),
             }
         );
         assert_eq!(
@@ -4121,6 +4147,46 @@ mod tests {
             &emitted[0],
             UnifiedAgentEvent::Error { message } if message == "missing credential"
         ));
+    }
+
+    #[test]
+    fn refusal_keeps_billed_attempt_usage_and_explains_the_failed_turn() {
+        let mut state = MapSessionState::default();
+        let mut events = Vec::new();
+        let failure = json!({
+            "message": "DeepSeek refused to answer under its content safety review: blocked image",
+            "code": "CONTENT_REFUSED"
+        });
+        map_session_event(
+            "assistant/attempt",
+            &json!({ "stream": [
+                { "type": "chunk", "chunk": { "type": "usage",
+                    "usage": { "inputTokens": 12, "outputTokens": 5, "totalTokens": 17 } } },
+                { "type": "chunk", "chunk": { "type": "finish",
+                    "reason": { "kind": "error", "failure": failure } } }
+            ] }),
+            &mut state,
+            &mut |event| events.push(event),
+        );
+        let raw = map_session_event(
+            "turn/end",
+            &json!({ "reason": { "kind": "error", "error": failure } }),
+            &mut state,
+            &mut |event| events.push(event),
+        )
+        .expect("turn/end")
+        .expect_err("refusal must fail the turn");
+        assert!(matches!(&events[..], [
+            UnifiedAgentEvent::Usage { usage }, UnifiedAgentEvent::Error { message }
+        ] if usage.total_tokens == Some(17) && message == &raw));
+        let error = crate::external_agents::errors::classify(&raw, None, "previous timeout", "dsh");
+        assert!(
+            error.user_message.contains("拒绝"),
+            "{}",
+            error.user_message
+        );
+        assert!(error.detail.contains("CONTENT_REFUSED"));
+        assert!(error.detail.contains("blocked image"));
     }
 
     #[test]
@@ -4969,7 +5035,7 @@ mod tests {
             &args,
             &cwd,
             None,
-            Some("deepseek-v4-flash"),
+            Some("deepseek-flash"),
             Some("off"),
             Some("read-only"),
             None,
@@ -4987,7 +5053,7 @@ mod tests {
                 } else {
                     "必须调用 bash 工具执行 `printf KIVIO_DSH_E2E`，然后只回答命令输出。"
                 },
-                Some("deepseek-v4-flash"),
+                Some("deepseek-flash"),
                 &[],
                 &event_tx,
                 &mut control_rx,
@@ -5050,7 +5116,7 @@ mod tests {
             &args,
             &cwd,
             None,
-            Some("deepseek-v4-flash"),
+            Some("deepseek-flash"),
             Some("high"),
             Some("read-only"),
             None,
@@ -5065,7 +5131,7 @@ mod tests {
             .run_turn(
                 &TurnDelivery::default(),
                 "记住验证码 KIVIO-7429。只回答 ACK。",
-                Some("deepseek-v4-flash"),
+                Some("deepseek-flash"),
                 &[],
                 &event_tx,
                 &mut control_rx,
@@ -5082,7 +5148,7 @@ mod tests {
             &args,
             &cwd,
             Some(&original_id),
-            Some("deepseek-v4-flash"),
+            Some("deepseek-flash"),
             Some("high"),
             Some("read-only"),
             None,
@@ -5095,7 +5161,7 @@ mod tests {
             .run_turn(
                 &TurnDelivery::default(),
                 "上一轮的验证码是什么？只回答验证码。",
-                Some("deepseek-v4-flash"),
+                Some("deepseek-flash"),
                 &[],
                 &event_tx,
                 &mut control_rx,
@@ -5145,7 +5211,7 @@ mod tests {
             &args,
             &cwd,
             None,
-            Some("deepseek-v4-flash"),
+            Some("deepseek-flash"),
             Some("off"),
             Some("read-only"),
             None,
@@ -5165,7 +5231,7 @@ mod tests {
             .run_turn(
                 &TurnDelivery::default(),
                 "写一篇很长的文章。",
-                Some("deepseek-v4-flash"),
+                Some("deepseek-flash"),
                 &[],
                 &event_tx,
                 &mut control_rx,
@@ -5181,7 +5247,7 @@ mod tests {
             .run_turn(
                 &TurnDelivery::default(),
                 "只回答 READY。",
-                Some("deepseek-v4-flash"),
+                Some("deepseek-flash"),
                 &[],
                 &event_tx,
                 &mut control_rx,

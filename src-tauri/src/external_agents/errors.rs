@@ -21,6 +21,8 @@ pub enum ExternalAgentErrorKind {
     Auth,
     /// Daily/account quota or AI credits exhausted; retrying cannot recover it.
     Quota,
+    /// The model provider refused the submitted content.
+    ContentRefused,
     /// Handshake or turn timed out — usually slow network or an unresponsive CLI.
     Timeout,
     /// The provider's streaming response was interrupted before the turn completed.
@@ -64,6 +66,7 @@ impl ClassifiedError {
 }
 
 const STDERR_DETAIL_CAP: usize = 2000;
+pub(super) const DSH_CONTENT_REFUSED_PREFIX: &str = "dsh CONTENT_REFUSED: ";
 
 fn agent_error_policy(agent_id: &str) -> (&'static str, AgentErrorPolicy) {
     get_agent_def(agent_id)
@@ -106,6 +109,9 @@ pub(crate) fn is_launch_configuration_error(raw: &str) -> bool {
 }
 
 fn detect_kind(raw: &str, exit_code: Option<i32>, stderr_tail: &str) -> ExternalAgentErrorKind {
+    if raw.starts_with(DSH_CONTENT_REFUSED_PREFIX) {
+        return ExternalAgentErrorKind::ContentRefused;
+    }
     if is_launch_configuration_error(raw) {
         return ExternalAgentErrorKind::Configuration;
     }
@@ -215,6 +221,9 @@ pub fn classify(
         ExternalAgentErrorKind::Quota => format!(
             "{name} 的可用额度已耗尽。请等待额度恢复或检查账号配额与 AI credits 后再试。"
         ),
+        ExternalAgentErrorKind::ContentRefused => {
+            "模型提供方在内容审核中拒绝了本次请求。请调整消息或附件后再试。".to_string()
+        }
         ExternalAgentErrorKind::Protocol => {
             let lower = raw.to_lowercase();
             if policy.detail == AgentErrorDetailStrategy::CodexAppServer
