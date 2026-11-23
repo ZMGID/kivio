@@ -26,7 +26,14 @@ export function nextMarkerPosition(
   return Math.abs(target - next) < 0.5 ? target : next
 }
 
-type MarkerState = { shown: number | null; applied: number; settleUntil: number }
+type MarkerState = {
+  shown: number | null
+  applied: number
+  settleUntil: number
+  /** 平滑的参照物（紧挨着的上一个兄弟）及其上次位置：它的位移是整体移动，不做平滑。 */
+  anchor: Element | null
+  anchorTop: number
+}
 
 /** 标记到滚动内容底部之间的流内距离：后面的兄弟 + 各层祖先的下内边距/边框。贴底时就是 sticky 的 bottom。 */
 function distanceToContentEnd(marker: HTMLElement, viewport: HTMLElement): number {
@@ -51,6 +58,7 @@ function distanceToContentEnd(marker: HTMLElement, viewport: HTMLElement): numbe
  * - 生成中、贴底跟随：sticky 固定在钉底后的槽位。正文由跟随缓动滚上来，
  *   墨墨不随缓动滞后先被挤出底边再拉回；由浏览器在绘制时夹住，和 rAF 先后无关。
  * - 用户离开底部、按住指针（跟随暂停）或生成结束：去掉 sticky，贴着内容走，不悬浮在正文上。
+ * - 只平滑墨墨相对上一行的位移；滚动是整体移动，墨墨和正文一起走，不追滚动。
  *
  * 只在位置还没落定时跑 rAF；新字、视口变化、排队消息和列表提交负责把它唤醒。
  */
@@ -75,7 +83,7 @@ export function useTrailingMarkerGlide({ marker, viewport, active, live, isFollo
   const isPinningBottomRef = useRef(isPinningBottom)
   isPinningBottomRef.current = isPinningBottom
   // 整个挂载期只有这一个对象；重置只改字段，正在运行的 effect 与之始终一致。
-  const stateRef = useRef<MarkerState>({ shown: null, applied: 0, settleUntil: 0 })
+  const stateRef = useRef<MarkerState>({ shown: null, applied: 0, settleUntil: 0, anchor: null, anchorTop: 0 })
   const syncRef = useRef<(() => void) | null>(null)
   const wasLiveRef = useRef(live)
 
@@ -84,6 +92,7 @@ export function useTrailingMarkerGlide({ marker, viewport, active, live, isFollo
     const state = stateRef.current
     state.shown = null
     state.applied = 0
+    state.anchor = null
     if (!marker) return
     marker.style.transform = ''
     marker.style.position = ''
@@ -134,21 +143,29 @@ export function useTrailingMarkerGlide({ marker, viewport, active, live, isFollo
     const update = (now: number): boolean => {
       const dt = Math.min(64, Math.max(0, now - last))
       last = now
-      if (!isFollowingRef.current()) {
-        // 读者在别处：贴着内容走，不平滑、不轮询；回到底部时列表提交会重新唤醒。
-        writeSticky(false)
-        state.shown = null
-        writeOffset(0)
-        return false
-      }
-      const pinned = active && isPinningBottomRef.current()
+      // 只在跟随且没按住指针时贴底固定；读者在别处时贴着内容走，不悬浮在正文上。
+      const pinned = active && isFollowingRef.current() && isPinningBottomRef.current()
       const stickyBottom = writeSticky(pinned)
       const viewportRect = viewport.getBoundingClientRect()
       const rect = marker.getBoundingClientRect()
       const offset = Math.round(state.applied)
       const natural = rect.top - viewportRect.top - offset
-      // 被 sticky 夹在槽位里且槽位上移（视口变矮、插入排队消息）：直接落位，不从槽外滑回来。
+      // 被 sticky 夹在槽位里：位置跟视口走，滚动不影响它。
       const stuck = pinned && rect.bottom - offset >= viewportRect.bottom - stickyBottom - 0.5
+      // 只平滑墨墨相对上一行的位移（正文长高、留空变化）。滚动、上方行重测等整体移动
+      // 会带着上一行一起动，墨墨也原样跟着走——不然会像在追读者的滚动。
+      const anchor = marker.previousElementSibling ?? marker.parentElement
+      const anchorTop = anchor ? anchor.getBoundingClientRect().top - viewportRect.top : 0
+      if (state.shown != null && !stuck && anchor && anchor === state.anchor) state.shown += anchorTop - state.anchorTop
+      state.anchor = anchor
+      state.anchorTop = anchorTop
+      if (natural + rect.height < 0 || natural > viewportRect.height) {
+        // 不在视野里：直接落位，不为看不见的位移跑动画。
+        state.shown = natural
+        writeOffset(0)
+        return false
+      }
+      // 槽位上移（视口变矮、插入排队消息）：直接落位，不从槽外滑回来。
       if (stuck && state.shown != null && state.shown > natural) state.shown = natural
       // 贴底时正文还会因跟随缓动落后一段；两段落后加起来不超过上限，正文才碰不到墨墨。
       const scrollLag = stuck ? Math.max(0, viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop) : 0
@@ -204,6 +221,7 @@ export function useTrailingMarkerGlide({ marker, viewport, active, live, isFollo
       if (!frame && now > state.settleUntil) {
         // 闲置且已落位：不读布局、不留观察目标，也不带着旧位置等下一轮生成。
         state.shown = null
+        state.anchor = null
         writeSticky(false)
         if (state.applied) writeOffset(0)
         releaseNeighbours()

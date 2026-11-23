@@ -156,3 +156,52 @@ test('a wrapping status note does not move the mascot out of its bottom slot', a
   const after = await page.evaluate(start => window.statusLine.samples.filter(s => s.t >= start), from)
   for (const sample of after) expect(Math.abs(sample.y - before.y)).toBeLessThanOrEqual(1)
 })
+
+// Trackpad-like swipe: small deltas with a momentum tail.
+async function swipe(page, direction) {
+  for (const delta of [4, 8, 14, 20, 24, 22, 18, 14, 10, 7, 5, 3, 2, 1]) {
+    await page.mouse.wheel(0, direction * delta)
+    await page.waitForTimeout(16)
+  }
+}
+
+for (const [where, paragraphs] of [['in the open space', 3], ['at the bottom', 14]]) {
+  test(`scrolling ${where} moves the mascot with the text instead of chasing it`, async ({ page }) => {
+    await open(page)
+    await page.evaluate(() => window.statusLine.startSampling())
+    const streaming = page.evaluate(p => window.statusLine.stream({ paragraphs: p }), paragraphs)
+    if (paragraphs > 3) {
+      await page.waitForFunction(() => {
+        const samples = window.statusLine.samples
+        const sent = samples.find(s => s.t > 450)
+        return sent && samples.at(-1).sticky && samples.at(-1).scrollTop > sent.scrollTop + 50
+      })
+    } else {
+      await page.waitForTimeout(1500)
+    }
+    // Output pauses (turn still live): from here on only scrolling moves anything.
+    await page.evaluate(() => window.statusLine.pause())
+    await streaming
+    await page.waitForTimeout(600)
+    const from = await page.evaluate(() => performance.now() - window.statusLine.t0)
+    await page.mouse.move(640, 400)
+    await swipe(page, -1)
+    await page.waitForTimeout(250)
+    await swipe(page, 1)
+    await swipe(page, 1)
+    await page.waitForTimeout(500)
+    const samples = (await page.evaluate(() => window.statusLine.stopSampling())).filter(s => s.t >= from)
+    expect(samples.some(s => s.scrollTop !== samples[0].scrollTop)).toBe(true)
+    const drift = []
+    for (let index = 1; index < samples.length; index++) {
+      const [a, b] = [samples[index - 1], samples[index]]
+      if (b.y > b.height || a.height !== b.height) continue
+      // Position within the content (y + scrollTop) changes only if the mascot lags the scroll.
+      const moved = (b.y + b.scrollTop) - (a.y + a.scrollTop)
+      // At the bottom slot the mascot is held by sticky while the list settles; that is not a chase.
+      if (Math.abs(moved) > 0.5 && !(a.sticky && b.sticky && !b.transform)) drift.push({ t: Math.round(b.t), moved, transform: b.transform })
+    }
+    expect(drift).toEqual([])
+    expect(samples.at(-1).transform).toBe('')
+  })
+}
