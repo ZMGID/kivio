@@ -86,7 +86,7 @@ Kivio 在 9 月 2 日已经处理 `cursor/ask_question`、`cursor/create_plan` �
 
 ### Kimi Code 2.0.1
 
-Kivio 的实现已经明确指向新 Kimi Code：[`installer.rs`](../../src-tauri/src/external_agents/installer.rs) 使用 `@moonshot-ai/kimi-code` 和 `.kimi-code`，[`defs/acp.rs`](../../src-tauri/src/external_agents/defs/acp.rs) 通过 `kimi acp` 启动，不会把旧 Python `kimi-cli` 当 fallback。这部分**已经适配，不是待迁移事项**。
+Kivio 的实现已经明确指向新 Kimi Code：[`installer.rs`](../../src-tauri/src/external_agents/installer.rs) 使用 `@moonshot-ai/kimi-code` 和 `.kimi-code`，[`defs/acp.rs`](https://github.com/ZMGID/kivio/blob/a95ea119ea01ec143a7e24fc16b7a736dcf2bfd6/src-tauri/src/external_agents/defs/acp.rs) 通过 `kimi acp` 启动，不会把旧 Python `kimi-cli` 当 fallback。这部分**已经适配，不是待迁移事项**。
 
 2.0.1 官方 ACP 文档仍提供 core/session、`session/set_model`、terminal/fs、load/resume/list/close/delete/fork；反向 `elicitation/create` 在客户端不声明表单能力时会回落到 `session/request_permission`。Kivio 当前不声明 elicitation form，且共享 ACP 宿主能处理 permission，因此没有明显的新 wire 断点。Kivio 用量读取仍依赖 `~/.kimi-code/session_index.jsonl` 定位 `wire.jsonl` 的 `usage.record`；2.0.1 源码仍保留旧 index 作为 hint，未发现已删除的证据，但 0.40+ 引擎/索引改造跨度很大，必须在 2.0.1 验证 new/load/resume、模型/思考切换、权限、图片和用量条。
 

@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Kivio Desktop — Your screen, intelligent.</title>
-<meta name="description" content="Kivio Desktop is an open-source desktop agentic AI app for macOS and Windows. Agentic chat, translation, and screen capture Q&A — powered by your own keys, on your own machine." />
+<meta name="description" content="Kivio Desktop is an open-source desktop agentic AI app for macOS and Windows. Agentic chat, translation, and screen capture Q&A — with your choice of model provider and locally stored chats." />
 <meta property="og:title" content="Kivio Desktop" />
 <meta property="og:description" content="Your screen, intelligent. Open-source desktop AI assistant for macOS and Windows." />
 <meta property="og:type" content="website" />
@@ -331,12 +331,12 @@
   <div class="wrap hero-inner">
     <h1 id="brandLine" aria-label="KIVIO DESKTOP">KIVIO DESKTOP</h1>
     <div class="tagline" id="tagLine" data-i18n-split="hero.tagline">屏幕所至，智能所及。</div>
-    <p class="mission" data-i18n="hero.mission">Kivio Desktop 是一款开源桌面 Agentic AI 应用。智能体对话、划词翻译、屏幕取景问答 —— 使用你自己的密钥，数据留在你自己的机器。</p>
+    <p class="mission" data-i18n="hero.mission">Kivio Desktop 是一款开源桌面 Agentic AI 应用。智能体对话、划词翻译、屏幕取景问答 —— 使用你选择的模型服务，对话保存在本机。</p>
     <div class="hero-ctas">
       <a class="btn-solid" href="https://github.com/ZMGID/kivio/releases/latest" target="_blank" rel="noopener"><span data-i18n="hero.cta">下载 Kivio Desktop</span><span class="arr">↓</span></a>
       <a class="link-plain" href="https://github.com/ZMGID/kivio" target="_blank" rel="noopener"><span>GitHub</span><span class="arr">↗</span></a>
     </div>
-    <div class="hero-meta" data-i18n="hero.meta">v2.9.2 — macOS · Windows — GPL-3.0</div>
+    <div class="hero-meta" data-i18n="hero.meta">macOS · Windows — GPL-3.0</div>
   </div>
   <div class="scroll-hint">SCROLL</div>
 </section>
@@ -355,10 +355,10 @@
         </div>
       </div>
       <dl class="spec-list rv">
-        <div class="spec-row"><dt data-i18n="spec.platform">平台</dt><dd>macOS 13+ · Windows 10/11 <span class="m">— Tauri v2, Rust + React</span></dd></div>
+        <div class="spec-row"><dt data-i18n="spec.platform">平台</dt><dd>macOS (Apple Silicon) · Windows 10/11 <span class="m">— Tauri v2, Rust + React</span></dd></div>
         <div class="spec-row"><dt data-i18n="spec.protocols">协议</dt><dd>OpenAI · Anthropic · Gemini · Responses <span class="m" data-i18n="spec.protocols.m">— 四种原生协议，任意服务商</span></dd></div>
         <div class="spec-row"><dt data-i18n="spec.agent">智能体</dt><dd data-i18n="spec.agent.d">工具循环 · 并行子智能体 · MCP · Skills · 上下文自动压缩</dd></div>
-        <div class="spec-row"><dt data-i18n="spec.local">本地化</dt><dd data-i18n="spec.local.d">BYOK 自带密钥 · 无账号 · 无遥测 · 对话与索引全部本地存储</dd></div>
+        <div class="spec-row"><dt data-i18n="spec.local">本地化</dt><dd data-i18n="spec.local.d">自选供应商 · 无需 Kivio 账号 · 无遥测 · 对话与索引全部本地存储</dd></div>
         <div class="spec-row"><dt data-i18n="spec.license">许可</dt><dd>GPL-3.0 <span class="m" data-i18n="spec.license.m">— 全量开源，逐行可审</span></dd></div>
       </dl>
     </div>
@@ -374,9 +374,9 @@
       <div class="right" id="termPane">
         <div><span class="cm">›</span> <span class="pr" data-i18n="ag.l1">把这份销售数据整理成图表，总结三个结论</span></div>
         <div class="cm" data-i18n="ag.l2">◆ plan · 3 steps · claude-fable-5</div>
-        <div><span class="cm">⚙</span> read_file <span class="cm">sales_2026_q2.xlsx</span></div>
-        <div><span class="cm">⚙</span> run_python <span class="cm">pandas · matplotlib</span></div>
-        <div><span class="cm">⚙</span> agent <span class="cm" data-i18n="ag.l5">× 2 并行子智能体 · 区域分析</span></div>
+        <div><span class="cm">⚙</span> read <span class="cm">sales_2026_q2.csv</span></div>
+        <div><span class="cm">⚙</span> eval <span class="cm">Python</span></div>
+        <div><span class="cm">⚙</span> task <span class="cm" data-i18n="ag.l5">× 2 并行子智能体 · 区域分析</span></div>
         <div><span class="ok" data-i18n="ag.l6">✓ 图表已生成</span> <span class="cm">sales_q2.png · 3 insights</span> <span class="cur"></span></div>
       </div>
     </div>
@@ -397,11 +397,11 @@
       <div class="fcell rv"><span class="idx">03</span><span class="plus">+</span><h3 data-i18n="c3.t">MCP 工具</h3><p data-i18n="c3.p">接入任意 Model Context Protocol 服务器，工具即插即用。</p></div>
       <div class="fcell rv"><span class="idx">04</span><span class="plus">+</span><h3 data-i18n="c4.t">Skills</h3><p data-i18n="c4.p">Markdown 定义技能，运行中激活，可挂载可执行脚本。</p></div>
       <div class="fcell rv"><span class="idx">05</span><span class="plus">+</span><h3 data-i18n="c5.t">知识库 RAG</h3><p data-i18n="c5.p">向量 + 全文混合检索，RRF 融合，可选重排。全部本地索引。</p></div>
-      <div class="fcell rv"><span class="idx">06</span><span class="plus">+</span><h3 data-i18n="c6.t">代码沙箱</h3><p data-i18n="c6.p">Pyodide 本地跑 Python：pandas、matplotlib、文档生成。</p></div>
+      <div class="fcell rv"><span class="idx">06</span><span class="plus">+</span><h3 data-i18n="c6.t">代码执行</h3><p data-i18n="c6.p">通过本机 Node.js 或 Python 处理数据和生成文件。</p></div>
       <div class="fcell rv"><span class="idx">07</span><span class="plus">+</span><h3 data-i18n="c7.t">记忆与规划</h3><p data-i18n="c7.p">跨会话记忆、任务清单与计划追踪，长任务不再断片。</p></div>
       <div class="fcell rv"><span class="idx">08</span><span class="plus">+</span><h3 data-i18n="c8.t">任意服务商</h3><p data-i18n="c8.p">四种原生协议直连；每家可配密钥池，限额自动轮换。</p></div>
       <div class="fcell rv"><span class="idx">09</span><span class="plus">+</span><h3 data-i18n="c9.t">连接器</h3><p data-i18n="c9.p">Notion 等远程数据源一键 OAuth 直连，本地保管令牌。</p></div>
-      <div class="fcell rv"><span class="idx">10</span><span class="plus">+</span><h3 data-i18n="c10.t">划词翻译</h3><p data-i18n="c10.p">全局热键，流式出译文，提交即回填原应用。空闲仅 ~50MB。</p></div>
+      <div class="fcell rv"><span class="idx">10</span><span class="plus">+</span><h3 data-i18n="c10.t">划词翻译</h3><p data-i18n="c10.p">全局热键，流式出译文，提交即回填原应用。</p></div>
       <div class="fcell rv"><span class="idx">11</span><span class="plus">+</span><h3 data-i18n="c11.t">Lens 取景问答</h3><p data-i18n="c11.p">圈选屏幕任意区域或窗口，画面直接进入视觉对话。</p></div>
       <div class="fcell rv"><span class="idx">12</span><span class="plus">+</span><h3 data-i18n="c12.t">三引擎 OCR</h3><p data-i18n="c12.p">Apple Vision、Windows OCR、离线 RapidOCR，任何环境可用。</p></div>
     </div>
@@ -437,16 +437,16 @@ const I18N = {
   zh: {
     'nav.product': '产品', 'nav.features': '能力', 'nav.docs': '文档', 'nav.releases': '版本', 'nav.download': '下载',
     'hero.tagline': '屏幕所至，智能所及。',
-    'hero.mission': 'Kivio Desktop 是一款开源桌面 Agentic AI 应用。智能体对话、划词翻译、屏幕取景问答 —— 使用你自己的密钥，数据留在你自己的机器。',
+    'hero.mission': 'Kivio Desktop 是一款开源桌面 Agentic AI 应用。智能体对话、划词翻译、屏幕取景问答 —— 使用你选择的模型服务，对话保存在本机。',
     'hero.cta': '下载 Kivio Desktop',
-    'hero.meta': 'v2.9.2 — macOS · Windows — GPL-3.0',
+    'hero.meta': 'macOS · Windows — GPL-3.0',
     'prod.eyebrow': '当前产品', 'prod.live': '持续构建中',
     'prod.desc': '一个完整的桌面 Agentic AI 工作台。<b>以智能体内核为中心</b>：工具循环、并行子智能体、MCP、Skills、知识库检索，包在一个安静克制的图形界面里。始于一次对话，终于一支舰队。',
     'prod.dl': '下载', 'prod.all': '全部版本',
     'spec.platform': '平台', 'spec.protocols': '协议',
     'spec.protocols.m': '— 四种原生协议，任意服务商',
     'spec.agent': '智能体', 'spec.agent.d': '工具循环 · 并行子智能体 · MCP · Skills · 上下文自动压缩',
-    'spec.local': '本地化', 'spec.local.d': 'BYOK 自带密钥 · 无账号 · 无遥测 · 对话与索引全部本地存储',
+    'spec.local': '本地化', 'spec.local.d': '自选供应商 · 无需 Kivio 账号 · 无遥测 · 对话与索引全部本地存储',
     'spec.license': '许可', 'spec.license.m': '— 全量开源，逐行可审',
     'ag.title': 'Agent Runtime',
     'ag.desc': '对话不止于回答。智能体自主规划、调用工具、并行派发子智能体，全过程在界面里逐步展开 —— 每一次读文件、跑命令、检索知识库，都看得见、可中断、可追溯。',
@@ -463,11 +463,11 @@ const I18N = {
     'c3.t': 'MCP 工具', 'c3.p': '接入任意 Model Context Protocol 服务器，工具即插即用。',
     'c4.t': 'Skills', 'c4.p': 'Markdown 定义技能，运行中激活，可挂载可执行脚本。',
     'c5.t': '知识库 RAG', 'c5.p': '向量 + 全文混合检索，RRF 融合，可选重排。全部本地索引。',
-    'c6.t': '代码沙箱', 'c6.p': 'Pyodide 本地跑 Python：pandas、matplotlib、文档生成。',
+    'c6.t': '代码执行', 'c6.p': '通过本机 Node.js 或 Python 处理数据和生成文件。',
     'c7.t': '记忆与规划', 'c7.p': '跨会话记忆、任务清单与计划追踪，长任务不再断片。',
     'c8.t': '任意服务商', 'c8.p': '四种原生协议直连；每家可配密钥池，限额自动轮换。',
     'c9.t': '连接器', 'c9.p': 'Notion 等远程数据源一键 OAuth 直连，本地保管令牌。',
-    'c10.t': '划词翻译', 'c10.p': '全局热键，流式出译文，提交即回填原应用。空闲仅 ~50MB。',
+    'c10.t': '划词翻译', 'c10.p': '全局热键，流式出译文，提交即回填原应用。',
     'c11.t': 'Lens 取景问答', 'c11.p': '圈选屏幕任意区域或窗口，画面直接进入视觉对话。',
     'c12.t': '三引擎 OCR', 'c12.p': 'Apple Vision、Windows OCR、离线 RapidOCR，任何环境可用。',
     'close.title': '探索屏幕，<br />创造可能。',
@@ -479,16 +479,16 @@ const I18N = {
   en: {
     'nav.product': 'Product', 'nav.features': 'Features', 'nav.docs': 'Docs', 'nav.releases': 'Releases', 'nav.download': 'Download',
     'hero.tagline': 'Your screen, intelligent.',
-    'hero.mission': 'Kivio Desktop is an open-source desktop agentic AI app. Agentic chat, instant translation, and screen capture Q&amp;A — powered by your own keys, on your own machine.',
+    'hero.mission': 'Kivio Desktop is an open-source desktop agentic AI app. Agentic chat, instant translation, and screen capture Q&amp;A — with your choice of model provider and locally stored chats.',
     'hero.cta': 'Download Kivio Desktop',
-    'hero.meta': 'v2.9.2 — macOS · Windows — GPL-3.0',
+    'hero.meta': 'macOS · Windows — GPL-3.0',
     'prod.eyebrow': 'Current product', 'prod.live': 'Under active build',
     'prod.desc': 'A complete desktop agentic AI workspace. <b>Built around one agent core</b>: tool loops, parallel sub-agents, MCP, Skills, and knowledge retrieval — wrapped in a quiet, restrained GUI. It starts with one conversation, and scales to a fleet.',
     'prod.dl': 'Download', 'prod.all': 'All releases',
     'spec.platform': 'Platform', 'spec.protocols': 'Protocols',
     'spec.protocols.m': '— four native protocols, any provider',
     'spec.agent': 'Agent', 'spec.agent.d': 'Tool loop · parallel sub-agents · MCP · Skills · auto context compaction',
-    'spec.local': 'Local-first', 'spec.local.d': 'Bring your own keys · no account · no telemetry · chats & indexes stored locally',
+    'spec.local': 'Local-first', 'spec.local.d': 'Choose your provider · no Kivio account required · no telemetry · chats & indexes stored locally',
     'spec.license': 'License', 'spec.license.m': '— fully open source, line-by-line auditable',
     'ag.title': 'Agent Runtime',
     'ag.desc': 'Chat that does more than answer. The agent plans, calls tools, and dispatches parallel sub-agents on its own — and every file read, command run, and knowledge lookup unfolds visibly in the UI: observable, interruptible, traceable.',
@@ -505,11 +505,11 @@ const I18N = {
     'c3.t': 'MCP Tools', 'c3.p': 'Plug in any Model Context Protocol server. Tools just appear.',
     'c4.t': 'Skills', 'c4.p': 'Markdown-defined skills, activated mid-run, optionally scripted.',
     'c5.t': 'Knowledge RAG', 'c5.p': 'Hybrid vector + full-text retrieval, RRF-fused, optional rerank. All local.',
-    'c6.t': 'Code Sandbox', 'c6.p': 'Python in local WebAssembly: pandas, matplotlib, documents.',
+    'c6.t': 'Code execution', 'c6.p': 'Use local Node.js or Python to process data and generate files.',
     'c7.t': 'Memory & Planning', 'c7.p': 'Cross-session memory, todo lists, and plan tracking for long tasks.',
     'c8.t': 'Any Provider', 'c8.p': 'Four native protocols; key pools per provider with auto rotation.',
     'c9.t': 'Connectors', 'c9.p': 'One-click OAuth to Notion and more. Tokens stay on your machine.',
-    'c10.t': 'Instant Translate', 'c10.p': 'Global hotkey, streamed results, paste-back on commit. ~50MB idle.',
+    'c10.t': 'Instant Translate', 'c10.p': 'Global hotkey, streamed results, paste-back on commit.',
     'c11.t': 'Lens Capture', 'c11.p': 'Select any region or window on screen — straight into a vision chat.',
     'c12.t': 'Triple-engine OCR', 'c12.p': 'Apple Vision, Windows OCR, and offline RapidOCR. Works anywhere.',
     'close.title': 'Explore the screen.<br />Create possibility.',

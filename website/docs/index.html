@@ -195,7 +195,7 @@
 
 <div class="topbar">
   <button class="menu-btn" id="menuBtn" aria-label="Menu">≡</button>
-  <a class="brand" href="../index.html"><img src="../assets/logo.png" alt="" />KIVIO DESKTOP<span class="docs-tag">DOCS · v2.9.2</span></a>
+  <a class="brand" href="../index.html"><img src="../assets/logo.png" alt="" />KIVIO DESKTOP<span class="docs-tag">DOCS</span></a>
   <div class="spacer"></div>
   <a class="top-link" href="../index.html">← 官网</a>
   <a class="icon-link" href="https://github.com/ZMGID/kivio" target="_blank" rel="noopener" aria-label="GitHub">
@@ -220,9 +220,9 @@
       <a class="item" href="#/mcp" data-page="mcp">MCP 服务器</a>
       <a class="item" href="#/skills" data-page="skills">Skills</a>
       <a class="item" href="#/subagents" data-page="subagents">子智能体</a>
-      <a class="item" href="#/local-agents" data-page="local-agents">Kivio Code 与外部 Agent</a>
+      <a class="item" href="#/local-agents" data-page="local-agents">聊天运行时</a>
       <a class="item" href="#/knowledge" data-page="knowledge">知识库</a>
-      <a class="item" href="#/sandbox" data-page="sandbox">代码沙箱</a>
+      <a class="item" href="#/sandbox" data-page="sandbox">代码执行</a>
       <a class="item" href="#/dock" data-page="dock">右侧 Dock</a>
       <a class="item" href="#/plugins" data-page="plugins">插件与格式</a>
       <a class="item" href="#/workflow-hooks" data-page="workflow-hooks">工作流 Hooks</a>
@@ -254,30 +254,30 @@
     <article data-page="overview">
       <div class="crumb">开始</div>
       <h1 class="pixel">Kivio Desktop</h1>
-      <p class="lead">开源桌面 Agentic AI 应用 —— 智能体对话、划词翻译、屏幕取景问答，使用你自己的密钥，数据留在你自己的机器。</p>
+      <p class="lead">开源桌面 Agentic AI 应用 —— 智能体对话、划词翻译、屏幕取景问答，模型由你选择，对话保存在本机。</p>
       <h2 id="overview-what">Kivio Desktop 是什么</h2>
       <p>Kivio Desktop 是一款运行在 macOS 与 Windows 上的桌面应用，以一个完整的智能体内核为中心：规划 → 执行 → 综合的工具循环、并行子智能体、MCP、Skills、知识库检索，包在一个安静克制的图形界面里。</p>
       <p>它始于一个更小的问题 —— 屏幕级的轻交互：全局热键划词翻译、截图 OCR 翻译、圈选屏幕直接提问。这些功能依然是 Kivio Desktop 的一部分，且不会消失；智能体内核是后来长出来的核心，但屏幕工具不会因此边缘化。</p>
-      <p>桌面 GUI 使用 Kivio 自己的智能体循环（<code>run_agent_loop</code>）；应用同时提供基于同一套 Rust 运行时的终端 Agent <code>kivio-code</code>（也可通过 <code>kivio code</code> 启动），并能把 GUI 对话交给本机已安装的 Claude Code、Codex、Cursor、OpenCode、Gemini、Kimi、Pi 或 Hermes。本文档以桌面 GUI 为主，也会说明这些本地 Agent 入口。</p>
+      <p>聊天窗口可以使用内置 Kivio Agent、只读的 Kivio Chat，或由本机已安装的外部 CLI 执行任务。具体选择见<a href="#/local-agents">聊天运行时</a>。</p>
       <h2 id="overview-philosophy">设计理念</h2>
       <blockquote>你的密钥、你的数据、你的机器。</blockquote>
       <ul>
-        <li><b>BYOK（自带密钥）</b> —— 没有账号体系、没有订阅墙。填入你自己的服务商 API Key，请求从你的机器直连服务商，中间没有 Kivio Desktop 的任何服务器。</li>
-        <li><b>本地优先</b> —— 设置、对话、知识库索引、用量统计全部落在本机应用数据目录；<code>settings.json</code> 明文保存 API Key（详见 <a href="#/settings">设置项参考</a>），没有云同步。</li>
+        <li><b>BYOK（自带密钥）</b> —— 模型请求从本机发往所选供应商。可使用 API Key、供应商账号授权或本地模型服务。</li>
+        <li><b>本地优先</b> —— 设置、对话、知识库索引、用量统计全部落在本机应用数据目录；<code>settings.json</code> 明文保存 API Key（详见 <a href="#/settings">设置项参考</a>），可在「备份与同步」手动上传配置或聊天备份到自己的 WebDAV 服务。</li>
         <li><b>开源可审计</b> —— GPL-3.0 全量开源，Rust + React 代码逐行可读。</li>
       </ul>
       <h2 id="overview-capabilities">能力总览</h2>
       <table>
         <thead><tr><th>能力</th><th>说明</th></tr></thead>
         <tbody>
-          <tr><td><a href="#/chat">智能体对话</a></td><td>规划 → 执行 → 综合的完整工具循环，支持 Act / Plan 两种模式</td></tr>
-          <tr><td><a href="#/tools">内置工具</a></td><td>文件读写、Shell、网页抓取、Python 沙箱、记忆、待办清单</td></tr>
+          <tr><td><a href="#/chat">智能体对话</a></td><td>规划 → 执行 → 综合的完整工具循环，支持执行、计划与目标任务</td></tr>
+          <tr><td><a href="#/tools">内置工具</a></td><td>文件读写、Shell、网页抓取、代码执行、记忆、待办清单</td></tr>
           <tr><td><a href="#/mcp">MCP 服务器</a></td><td>接入任意 Model Context Protocol 工具服务器</td></tr>
           <tr><td><a href="#/skills">Skills</a></td><td>Markdown 定义的可复用技能，运行中按需激活</td></tr>
           <tr><td><a href="#/subagents">子智能体</a></td><td>一条消息并行派发多个专职人格</td></tr>
-          <tr><td><a href="#/local-agents">Kivio Code 与外部 Agent</a></td><td>终端编码 Agent，以及 Claude Code、Codex、OpenCode、Pi 等本地 CLI 接管</td></tr>
+          <tr><td><a href="#/local-agents">聊天运行时</a></td><td>内置 Agent、只读 Chat 与本机外部 CLI</td></tr>
           <tr><td><a href="#/knowledge">知识库</a></td><td>向量 + 全文混合检索 RAG，全部本地索引</td></tr>
-          <tr><td><a href="#/sandbox">代码沙箱</a></td><td>Pyodide 本地运行 Python，图表/文档产物自动交付</td></tr>
+          <tr><td><a href="#/sandbox">代码执行</a></td><td>使用本机 Node.js 或 Python 执行代码</td></tr>
           <tr><td><a href="#/dock">右侧 Dock</a></td><td>文件树、Git 审查与真实 PTY 终端，绑定对话工作目录</td></tr>
           <tr><td><a href="#/plugins">插件与格式</a></td><td>Kivio Plugin v1 清单、目录结构、导入和跨格式兼容规则</td></tr>
           <tr><td><a href="#/workflow-hooks">工作流 Hooks</a></td><td>注入上下文、改写工具参数、拒绝执行或请求审批</td></tr>
@@ -292,9 +292,9 @@
     <article data-page="install" class="hidden">
       <div class="crumb">开始</div>
       <h1>安装</h1>
-      <p class="lead">当前稳定版为 v2.9.2，从 GitHub Releases 获取对应平台安装包。</p>
+      <p class="lead">从 <a href="https://github.com/ZMGID/kivio/releases/latest">GitHub Releases</a> 下载对应平台的安装包。</p>
       <h2 id="install-mac">macOS</h2>
-      <p>Apple Silicon 下载 <code>Kivio.Desktop_2.9.2_aarch64.dmg</code>，打开后拖入 Applications。系统要求 macOS 13 及以上（屏幕捕获基于 ScreenCaptureKit）。当前 DMG 未签名，首次启动请在 Finder 中右键 Kivio Desktop →「打开」，或执行：</p>
+      <p>Apple Silicon 下载 <code>Kivio.Desktop_*_aarch64.dmg</code>，打开后拖入 Applications。macOS 的 OCR 辅助程序以 macOS 14 为最低运行版本。DMG 内的应用使用临时签名，未经公证，首次启动请在 Finder 中右键 Kivio Desktop →「打开」，或执行：</p>
       <pre><code>xattr -cr "/Applications/Kivio Desktop.app"</code></pre>
       <p>首次使用以下功能时，系统会请求相应的隐私权限：</p>
       <table>
@@ -304,9 +304,9 @@
           <tr><td>辅助功能</td><td>划词翻译的自动粘贴回填（模拟 ⌘V）；Lens 读取当前选中文本作为上下文</td></tr>
         </tbody>
       </table>
-      <p>在「系统设置 → 隐私与安全性」中为 Kivio Desktop 打开对应开关即可，无需重启应用。</p>
+      <p>在「系统设置 → 隐私与安全性」中为 Kivio Desktop 打开对应开关。更新后若权限仍未生效，退出应用，在对应权限列表重新添加 Applications 中的应用，再启动。</p>
       <h2 id="install-win">Windows</h2>
-      <p>下载并运行 <code>Kivio.Desktop_2.9.2_x64-setup.exe</code>（NSIS），支持 Windows 10/11 x64。手动启动默认打开 AI 客户端；勾选开机自启后，启动时会附带 <code>--from-autostart</code> 参数直接进入后台，不弹出窗口。</p>
+      <p>下载并运行 <code>Kivio.Desktop_*_x64-setup.exe</code>（NSIS），支持 Windows 10/11 x64。也可下载 <code>*_x64-portable.zip</code>，解压后运行 <code>Kivio Desktop.exe</code>。手动启动默认打开 AI 客户端；勾选开机自启后，启动时会附带 <code>--from-autostart</code> 参数直接进入后台，不弹出窗口。</p>
       <h2 id="install-update">更新</h2>
       <p>应用启动时会静默检查一次 GitHub Releases 是否有新版本（<code>autoCheckUpdate</code>，默认开启）。也可以在「设置 → 关于」手动检查；发现新版本后可直接在应用内下载安装包并启动安装。若 GitHub API 检查失败，界面会提供 Releases 页面作为手动下载兜底。</p>
     </article>
@@ -314,11 +314,11 @@
     <article data-page="quickstart" class="hidden">
       <div class="crumb">开始</div>
       <h1>快速上手</h1>
-      <p class="lead">从安装 v2.9.2 到第一轮智能体对话，再试一次屏幕工具与本地 Agent。</p>
+      <p class="lead">从安装到第一轮智能体对话，再试一次屏幕工具与本地 Agent。</p>
       <h2 id="qs-install">第一步 · 安装并启动</h2>
-      <p>从 <a href="https://github.com/ZMGID/kivio/releases/latest" target="_blank" rel="noopener">GitHub Releases ↗</a> 下载最新版：macOS Apple Silicon 使用 <code>.dmg</code>，Windows x64 使用 NSIS <code>-setup.exe</code>。macOS DMG 未签名，首次启动需要右键 →「打开」。详细权限与更新说明见 <a href="#/install">安装</a>。</p>
+      <p>从 <a href="https://github.com/ZMGID/kivio/releases/latest" target="_blank" rel="noopener">GitHub Releases ↗</a> 下载最新版：macOS Apple Silicon 使用 <code>.dmg</code>，Windows x64 使用 NSIS <code>-setup.exe</code>。macOS 应用使用临时签名，未经公证，首次启动需要右键 →「打开」。详细权限与更新说明见 <a href="#/install">安装</a>。</p>
       <h2 id="qs-key">第二步 · 完成首次引导</h2>
-      <p>首次启动会依次引导你添加模型服务商、可选配置联网搜索、确认全局热键。Provider 可以从 DeepSeek、OpenRouter、SiliconFlow、GLM、Ollama 预设开始，也可以手动填写任意 OpenAI Chat Completions、Anthropic Messages、Gemini generateContent 或 OpenAI Responses 兼容服务商。粘贴 API Key 后获取模型列表，并明确勾选要启用的模型。详见 <a href="#/providers">模型服务商</a>。</p>
+      <p>首次启动会依次引导你添加模型服务商、可选配置联网搜索、确认全局热键。Provider 可以从 DeepSeek、OpenRouter、SiliconFlow、GLM、Ollama 预设开始，也可以手动填写任意 OpenAI Chat Completions、Anthropic Messages、Gemini generateContent 或 OpenAI Responses 兼容服务商。按服务要求填入 API Key 或登录授权，再获取并勾选要启用的模型。详见 <a href="#/providers">模型服务商</a>。</p>
       <h2 id="qs-chat">第三步 · 发起第一次对话</h2>
       <p>从托盘菜单选择「打开 AI 客户端」，在模型选择器里选中刚启用的模型，输入一个真实任务。默认 <b>Act</b> 模式会按需使用文件、Shell、网页、Python 等工具；<b>Plan</b> 只研究和制定方案。</p>
       <ul>
@@ -329,7 +329,7 @@
       <h2 id="qs-screen">第四步 · 试试屏幕工具</h2>
       <p>按 <kbd>⌘/Ctrl+Alt+T</kbd> 唤出划词翻译，或按 <kbd>⌘/Ctrl+Shift+G</kbd> 唤出 Lens，圈选屏幕区域后直接提问。macOS 首次使用会请求辅助功能与屏幕录制权限。所有热键都是开关式且可重设，完整列表见 <a href="#/hotkeys">快捷键</a>。</p>
       <h2 id="qs-agents">第五步 · 可选：切换本地 Agent</h2>
-      <p>需要编码工作流时，可以使用内置的 <code>kivio-code</code> / <code>kivio code</code> 终端 Agent；也可以在 GUI 的运行时选择器中，把对话交给本机已安装的 Claude Code、Codex、Cursor、OpenCode、Gemini、Kimi、Pi 或 Hermes。外部 Agent 使用各自已有的登录与配置，Kivio Desktop 负责检测、流式展示和会话管理。详见 <a href="#/local-agents">Kivio Code 与外部 Agent</a>。</p>
+      <p>打开聊天窗口的运行时选择器，选中已配置的本机 CLI。外部代理使用自己的登录和配置，输出显示在当前对话中。详见<a href="#/local-agents">聊天运行时</a>。</p>
     </article>
 
     <article data-page="chat" class="hidden">
@@ -337,30 +337,18 @@
       <h1>智能体对话</h1>
       <p class="lead">对话不止于回答 —— 智能体自主规划、调用工具、并行派发子智能体，全过程可见、可中断、可追溯。</p>
       <h2 id="chat-loop">代理循环</h2>
-      <p>每一轮对话都会经过一个固定的循环（<code>run_agent_loop</code>）：</p>
-      <ol>
-        <li><b>准备</b> —— 组装系统提示（人格设定、已激活的 Skill、记忆、项目绑定），并根据当前模式（见下）决定这一轮可以使用哪些工具。</li>
-        <li><b>规划与执行</b> —— 模型请求调用工具，Kivio Desktop 执行后把结果喂回去，模型再判断是否需要继续调用。这个过程反复进行，直到模型不再请求工具，或触及轮次上限。</li>
-        <li><b>综合</b> —— 不再有工具调用后，模型做最后一次不带工具的调用，生成自然语言总结。若这一步失败，Kivio Desktop 会分级降级：重试 → 换一次干净的追问 → 直接从工具调用记录里拼装一份确定性总结 —— 保证这一轮不会白跑。</li>
-        <li><b>完成</b> —— 最终答案、推理过程、工具调用记录打包展示并保存。</li>
-      </ol>
-      <p>默认每轮对话最多 20 次工具调用（<code>maxToolRounds</code>，可在设置中调整为 1–100）。</p>
-      <h3 id="chat-modes">两种模式</h3>
+      <p>内置 Agent 根据当前模式、授权和已挂载的资源准备可用工具。模型可以直接回答，也可以请求工具并根据执行结果继续工作。聊天记录保留回答、工具结果以及中断或失败状态。</p>
+      <h3 id="chat-modes">对话模式</h3>
       <table>
         <thead><tr><th>模式</th><th>行为差异</th></tr></thead>
         <tbody>
           <tr><td><b>Act</b>（普通）</td><td>默认行为，无额外约束，所有已启用工具都可用。是否把工作派给子智能体由模型按任务判断，派工力度随模型而定。</td></tr>
-          <tr><td><b>Plan</b>（计划）</td><td>强制只读：只能研究/阅读/搜索，不能声称已编辑文件、执行命令；产出结构化的「## 发现」+「## 计划」回复，不直接动手实施。</td></tr>
+          <tr><td><b>Plan</b>（计划）</td><td>先研究并形成计划，确认后再进入实施。</td></tr>
         </tbody>
       </table>
+      <p>需要跨轮追踪目标时，可在输入栏模式菜单中选择 Goal，写下目标后发送。</p>
       <h2 id="chat-context">上下文管理</h2>
-      <p>Kivio Desktop 会在每次调用模型前估算即将发送的上下文大小；一旦超过该模型上下文窗口的 <b>90%</b>，就会自动压缩：</p>
-      <ul>
-        <li>对话尾部约 20,000 token 的「最近窗口」始终原样保留。</li>
-        <li>更早的内容优先做「微压缩」（把旧的工具调用结果替换成一句占位说明），如果这样就能压回预算内，不需要调用模型。</li>
-        <li>否则会调用模型生成一份结构化摘要（意图、关键技术点、涉及文件、报错与修复、待办事项等九个板块），如果对话里已有一份摘要，新摘要会在其基础上合并更新，而不是从头重写。</li>
-      </ul>
-      <p>压缩发生时，界面上会出现「正在压缩上下文…」的状态和一条分隔线，可以展开查看摘要内容；累计压缩 3 次以上会提示「这个对话已被压缩多次，准确性可能下降，建议开始新对话」。</p>
+      <p>点击上下文指示器可查看最近请求的 Token 用量和各类内容的估算占比，也可以手动压缩。自动与手动压缩共用压缩模型设置，按预算保留最近的完整消息和工具轮次。较早内容整理为摘要，用于后续请求。原始聊天记录仍可查看。</p>
       <p>点击 Stop 会立即中断当前生成 —— 已经产出的文本、工具调用结果会被保留在对话记录里，不会丢失这一轮已完成的工作；派生出的子智能体也会随之一起停止。</p>
       <h2 id="chat-projects">对话与项目</h2>
       <p>把一次对话绑定到某个本地文件夹（项目）后，文件工具里的相对路径会默认相对项目根目录解析，减少每次都要写绝对路径的麻烦；显式的绝对路径或 <code>~/</code> 路径依然可以访问项目之外的任意位置（见 <a href="#/tools">内置工具</a> 的安全边界说明）。</p>
@@ -369,12 +357,13 @@
     <article data-page="tools" class="hidden">
       <div class="crumb">智能体</div>
       <h1>内置工具</h1>
-      <p class="lead">文件读写、Shell、网页抓取、Python 沙箱 —— 智能体开箱即用的原生工具集。</p>
+      <p class="lead">文件读写、Shell、网页抓取、代码执行 —— 智能体开箱即用的原生工具集。</p>
       <h2 id="tools-files">文件操作</h2>
       <table>
         <thead><tr><th>工具</th><th>作用</th></tr></thead>
         <tbody>
-          <tr><td><code>read</code></td><td>读取文件（路径是目录则列出目录内容）；图片会被渲染/OCR；PDF/DOCX/XLSX 会被引导去用对应 Skill 读取，而不是读原始字节。支持 <code>offset</code>/<code>limit</code> 按行窗口读取大文件。</td></tr>
+          <tr><td><code>read</code></td><td>读取文件内容，支持 <code>offset</code>/<code>limit</code> 按行窗口读取大文件。</td></tr>
+          <tr><td><code>ls</code></td><td>列出目录内容。</td></tr>
           <tr><td><code>grep</code></td><td>内容搜索，支持字面量或正则、按内容/文件名/计数三种输出模式，遵循 <code>.gitignore</code>。</td></tr>
           <tr><td><code>glob</code></td><td>按文件名模式查找文件，遵循 <code>.gitignore</code>。</td></tr>
           <tr><td><code>write</code></td><td>创建或整体覆写一个文件（原子写入，保留原有的换行/BOM 风格）。</td></tr>
@@ -385,9 +374,9 @@
       <p><code>bash</code> 运行 Shell 命令（Windows 上走 PowerShell，其他平台 <code>sh -c</code>），支持 <code>background</code>、工作目录、超时（1 秒–5 分钟可调）。像 <code>npm run dev</code>、<code>vite</code>、<code>cargo watch</code> 这类开发服务器命令会被自动识别并转入后台运行，不需要手动加 <code>background:true</code>。</p>
       <p>后台任务不会随本轮对话结束而被杀掉 —— 会一直跑到你用 <code>kill_background</code> 手动结束，或应用退出。用 <code>bash_output</code> 增量读取输出和状态；不带任务 ID 调用则列出当前所有后台任务。</p>
       <h2 id="tools-web">网页抓取</h2>
-      <p><code>web_fetch</code> 抓取一个 URL 并转成可读文本，仅限 HTTPS；<code>web_search</code>（需配置搜索服务商 Key 才会出现）用于联网检索。</p>
+      <p><code>web_fetch</code> 用于读取网页正文，<code>web_search</code> 用于检索。可用搜索来源由网络搜索设置决定。低频工具可通过 <code>read tool://</code> 查看，再用 <code>write tool://工具名</code> 调用。</p>
       <h2 id="tools-security">安全边界</h2>
-      <p>单次读取上限 2MB（<code>MAX_READ_FILE_BYTES</code>），超出且未指定行窗口会提示改用 <code>offset</code>/<code>limit</code>。</p>
+      <p>大文本按行读取。单次输出最多 2,000 行、50 KiB，较长的文件可用 <code>offset</code> 和 <code>limit</code> 继续阅读。</p>
       <p>Kivio Desktop 对文件/Shell 工具采用「<b>无路径边界</b>」模型：<b>没有</b>针对 <code>.ssh</code>、<code>.gnupg</code>、系统钥匙串等目录的硬编码写入拦截，显式的绝对路径或 <code>~/</code> 路径可以读写磁盘上的任意位置，<code>..</code> 路径穿越也被允许。安全性由另一层机制保证：<code>read</code>/<code>grep</code>/<code>glob</code>/<code>write</code>/<code>edit</code>/<code>bash</code> 这一组工具需要在每个对话里获得一次性的「允许本对话读写文件与执行命令」授权，授权之后才能不受限地使用；此外部分高敏感的单次工具调用仍可能单独弹出一次性确认。项目对话里的相对路径默认解析到项目根目录，仅作为默认基准，不构成访问边界。</p>
     </article>
 
@@ -401,7 +390,7 @@
         <li><b>stdio</b>（默认）—— 本地长驻子进程，填写启动命令、参数、环境变量；启动一次后保持连接，不会每次调用都重新拉起。</li>
         <li><b>streamable_http</b> —— 远程 HTTP MCP 服务器，填写 URL（及可选请求头）；也支持完整的 <b>OAuth 2.1</b> 授权流程（PKCE + 动态客户端注册 + 本地回调），点一下「连接」，浏览器里登录授权即可，无需手动粘贴 Token —— 这套机制也是 <a href="#/connectors">连接器</a> 里 Notion 等一键连接的底层实现。</li>
       </ul>
-      <p>部分服务器会被打上「连接器」标记（如 Notion、GitHub），归到设置里的连接器页面单独管理，但本质上仍是同一套 MCP 服务器配置。</p>
+      <p>部分服务器会被打上「连接器」标记（如 Notion、GitHub），可在连接器入口管理，但本质上仍是同一套 MCP 服务器配置。</p>
       <h2 id="mcp-manage">管理与调试</h2>
       <p>MCP 服务器暴露的工具会动态并入模型可用的工具列表，与 Kivio Desktop 内置工具区别对待（内置工具走静态注册表，MCP 工具按服务器实时发现）。可以单独禁用某个服务器，或勾选只启用它提供的部分工具。</p>
     </article>
@@ -411,87 +400,41 @@
       <h1>Skills</h1>
       <p class="lead">用 Markdown 定义技能，运行中按需激活，可挂载可执行脚本。</p>
       <h2 id="skills-builtin">内置技能</h2>
-      <table>
-        <thead><tr><th>技能</th><th>用途</th></tr></thead>
-        <tbody>
-          <tr><td><code>pdf</code></td><td>读取、提取、总结、分析 PDF 附件</td></tr>
-          <tr><td><code>docx</code></td><td>读取、总结、修订、分析 Word 文档</td></tr>
-          <tr><td><code>xlsx</code></td><td>读取、总结、计算、分析 Excel/CSV/TSV 表格</td></tr>
-          <tr><td><code>diagram</code></td><td>把架构图、流程图、时序图、ER 图渲染成 Mermaid 或 HTML 图，而不是纯文字描述</td></tr>
-          <tr><td><code>doc-coauthoring</code></td><td>三阶段引导式文档协作：收集上下文 → 打磨 → 读者视角测试</td></tr>
-          <tr><td><code>frontend-design</code></td><td>构建有辨识度的前端界面，避免千篇一律的「AI 味」设计</td></tr>
-          <tr><td><code>himalaya</code></td><td>通过 Himalaya CLI 收发/搜索/整理邮件（IMAP/SMTP）</td></tr>
-          <tr><td><code>mcp-builder</code></td><td>指导如何写一个高质量的 MCP 服务器</td></tr>
-          <tr><td><code>skill-creator</code></td><td>创建新技能、迭代优化已有技能、跑评测打分</td></tr>
-          <tr><td><code>json-canvas</code></td><td>创建/编辑 JSON Canvas（<code>.canvas</code>）文件</td></tr>
-          <tr><td><code>obsidian-*</code></td><td>与 Obsidian 笔记库交互：Markdown 写法、Bases 视图、CLI 操作（三个细分技能）</td></tr>
-        </tbody>
-      </table>
+      <p>应用附带 <code>automation</code>（创建和运行自动化工作流）与 <code>kivio-configuration-guide</code>（配置和排查 Kivio）。在技能页可查看来源、导入其他技能或停用技能。</p>
       <h2 id="skills-custom">自定义技能</h2>
-      <p>一个 Skill 是一个包含 <code>SKILL.md</code> 的文件夹：YAML frontmatter（<code>name</code>、<code>description</code> 必填，可选 <code>allowed-tools</code>、<code>triggers</code> 斜杠命令别名、<code>arguments</code> 参数占位）加上 Markdown 正文。</p>
-      <p>三层扫描目录，后者覆盖前者（按 id 同名覆盖）：</p>
-      <ul>
-        <li><b>内置</b> —— 应用自带资源目录</li>
-        <li><b>用户</b> —— 应用数据目录下的 <code>skills/</code></li>
-        <li><b>外部</b> —— 设置里额外配置的扫描路径</li>
-      </ul>
-      <p>激活方式：模型觉得相关时自己调用 <code>skill</code> 工具按名激活，或用户输入 <code>/</code> 加技能名手动触发（若技能声明了 <code>triggers</code>）。技能的完整正文默认不会预先塞进系统提示里，只有被激活的那一刻才注入 —— 这样可以装很多技能而不占用上下文。一旦技能声明了工具白名单，本轮对话可用的工具集会收窄到「技能运行时工具 ∪ Kivio Desktop 内置工具 ∪ 该技能允许的工具」。</p>
+      <p>每个技能目录包含 <code>SKILL.md</code>。文件开头的 YAML 填写 <code>name</code> 和单行 <code>description</code>，正文写操作步骤。工具建议字段用于提示模型，实际权限由运行时决定。</p>
+      <p>个人技能默认安装到 <code>~/.kivio/skills</code>，项目技能放在项目的 <code>.kivio/skills</code>。普通技能遇到同一 ID 时，按项目、预设插件、个人与共享目录、额外扫描目录、安装包的顺序采用首先发现的定义。</p>
     </article>
 
     <article data-page="subagents" class="hidden">
       <div class="crumb">智能体</div>
       <h1>子智能体</h1>
       <p class="lead">一条消息派发多个专职人格，并发执行，结果内联返回。</p>
-      <h2 id="sub-personas">人格定义</h2>
-      <p>三层覆盖，后者按 id 覆盖前者：</p>
-      <table>
-        <thead><tr><th>类型</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><b>内置</b></td><td><code>general-purpose</code>（通用，无限制）、<code>researcher</code>（只读：读文件/搜索/网页）、<code>coder</code>（可读写编辑）、<code>reviewer</code>（只读，只产出评审意见不改代码）</td></tr>
-          <tr><td><b>用户</b></td><td>应用数据目录下的 <code>agents/*.md</code></td></tr>
-          <tr><td><b>项目</b></td><td>项目根目录下的 <code>.kivio/agents/*.md</code>，仅在对话绑定了项目时生效</td></tr>
-        </tbody>
-      </table>
-      <h2 id="sub-parallel">并行执行</h2>
-      <p>子智能体通过 <code>agent</code> 工具调用 —— <b>阻塞式、单结果返回</b>：每次调用都会等子智能体完整跑完，把最终结果整段返回给发起方，没有轮询或后台等待这类中间态。并行的方式是模型在<b>同一条消息里发出多个 <code>agent</code> 调用</b>，Kivio Desktop 会并发执行这些调用。</p>
-      <ul>
-        <li>全局最多同时跑 <b>12</b> 个子智能体（可在设置里调整为 1–64）。</li>
-        <li>单轮最多并发执行 <b>12</b> 个工具调用（含 <code>agent</code>）。</li>
-        <li>子智能体最多嵌套 <b>3</b> 层，超过会被拒绝派生新的子智能体。</li>
-        <li>子智能体不能触发需要用户确认的敏感操作（会被自动拒绝），也没有待办清单工具 —— 它是纯粹的执行者，只有发起方能读写待办清单。</li>
-      </ul>
-      <p>停止父对话会级联停止其下所有正在运行的子智能体；被取消的子智能体会明确标记为「已取消」而非「失败」，且不会重试。</p>
+      <h2 id="sub-personas">选择角色</h2>
+      <p>内置角色有 <code>task</code>、<code>sonic</code>、<code>scout</code>、<code>reviewer</code>、<code>security-reviewer</code> 和 <code>seance</code>。可用工具和能否继续派工取决于角色与当前任务的设置。</p>
+      <h2 id="sub-parallel">派工与收取结果</h2>
+      <p>主代理用 <code>task</code> 批量派工。异步任务先返回 ID，主代理可继续工作，完成后会收到结果。需要等待时使用 <code>wait</code>。代理之间可以通过 <code>write agent://&lt;id&gt;</code> 补充信息或继续已有工作。</p>
     </article>
 
     <article data-page="local-agents" class="hidden">
       <div class="crumb">智能体</div>
-      <h1>Kivio Code 与外部 Agent</h1>
-      <p class="lead">既可以使用 Kivio 自己的终端编码 Agent，也可以让已安装的第三方 CLI 接管 GUI 对话。</p>
-      <h2 id="local-kivio-code">Kivio Code</h2>
-      <p><code>kivio-code</code> 是基于 Kivio Rust 智能体运行时构建的 CLI/TUI，也可通过主程序的 <code>kivio code</code> 子命令启动。它复用桌面端模型服务商设置，并提供独立会话、MCP 配置、Skills 装载、项目工作目录和只读模式。</p>
-      <pre><code># 进入交互模式
-kivio code
-
-# 在指定项目执行一次任务
-kivio code -C /path/to/project -p "检查这个项目并修复测试失败"
-
-# 只允许读取和分析，不允许 write/edit/bash
-kivio code --no-approve -p "审查当前项目"</code></pre>
-      <p>如果终端找不到 <code>kivio</code>，需要先把安装包内的可执行文件或自行构建的 <code>kivio</code>/<code>kivio-code</code> 加入 <code>PATH</code>。</p>
+      <h1>聊天运行时</h1>
+      <p class="lead">在聊天窗口选择负责回答和调用工具的运行时。</p>
+      <h2 id="local-kivio-code">内置运行时</h2>
+      <p>Kivio Agent 可使用授权的文件、命令和扩展工具。Kivio Chat 适合网页检索、抓取和知识库问答等只读任务。两者都使用 Kivio 中配置的模型。</p>
       <h2 id="local-external">外部 CLI Agent</h2>
-      <p>聊天窗口的运行时选择器可以检测并调用本机的 Claude Code、Codex、Cursor、OpenCode、Gemini、Kimi、Pi 和 Hermes。选择某个外部运行时后，Kivio Desktop 会把当前提示与项目工作目录交给对应 CLI，并在 GUI 中持续显示输出、维护会话和停止状态。</p>
+      <p>支持 Claude Code、Codex、OpenCode、Gemini、Kimi、Pi、Hermes、Grok、DeepSeek Harness 和 Antigravity。进入「设置 → 本地 CLI 管理」查看安装和检测状态，再到聊天窗口选择运行时与模型。</p>
       <ul>
         <li>外部 Agent 必须先独立安装并完成自己的登录或 API 配置。</li>
         <li>检测结果按项目目录隔离；切换项目后会重新发现可用运行时与模型。</li>
         <li>OpenCode 会同时读取全局配置和项目目录中的 <code>opencode.jsonc</code>，因此项目级自定义服务商模型也会出现在选择器中。</li>
-        <li>设置中的「外部 Agent」页面可以查看检测状态、命令路径和可用模型。</li>
+        <li>在项目中可导入 Claude、Codex、Grok、Kimi 或 OpenCode 的原生会话，随后由原 CLI 在原工作目录续聊。</li>
       </ul>
       <h2 id="local-choose">怎么选择</h2>
       <table>
         <thead><tr><th>场景</th><th>建议</th></tr></thead>
         <tbody>
           <tr><td>桌面聊天、文档、翻译、Lens</td><td>使用默认 Kivio 运行时，功能最完整</td></tr>
-          <tr><td>在终端持续处理代码项目</td><td>使用 Kivio Code，复用 Kivio 模型、MCP 与 Skills</td></tr>
           <tr><td>已有成熟的 Claude Code / Codex / OpenCode 工作流</td><td>从 GUI 选择对应外部 Agent，让它接管当前项目任务</td></tr>
         </tbody>
       </table>
@@ -510,33 +453,24 @@ kivio code --no-approve -p "审查当前项目"</code></pre>
         <li><code>docx</code> / <code>xlsx</code> / <code>pdf</code>（仅文字层）—— 内置解析器，单文件上限 20MB</li>
         <li>图片（<code>png/jpg/webp</code> 等）—— 按「文档处理」设置里选定的 OCR 引擎识别后入库；OCR 引擎设为「关闭」时会拒绝导入图片</li>
       </ul>
-      <p>扫描版 PDF（没有文字层）目前<b>不支持</b>：选择「强制 OCR」策略也只会报错提示暂未启用，内置解析器只能读取 PDF 自带的文字层。</p>
+      <p>内置 PDF 解析器读取文字层。扫描件可在「文档处理」配置第三方解析服务和回退策略。若只用内置解析器，无文字层的 PDF 无法通过强制 OCR 入库。</p>
       <p>URL 导入会抓取网页正文并保存为一份 <code>.md</code> 快照（重新索引时不会再次联网抓取），按抓取内容的哈希去重 —— 重复导入同一篇未变化的网页是空操作。</p>
       <h2 id="kb-retrieval">检索配置</h2>
-      <p>检索默认是<b>混合模式</b>：向量相似度和 FTS5 全文检索各自取一批候选，用 Reciprocal Rank Fusion（RRF）按排名融合打分，而不是简单加权分数。设置里可以：</p>
-      <ul>
-        <li>关闭「Hybrid 融合」—— 退化为纯向量检索。</li>
-        <li>调整「向量权重」与「关键词权重」的相对比例（开启混合时才生效）。</li>
-      </ul>
+      <p>检索设置提供混合、纯关键词和纯向量三种模式。混合检索按权重合并向量与全文排名，纯关键词查询只使用全文索引。</p>
       <p><b>重排（Rerank）</b>是可选的全局设置，对所有知识库统一生效：配置一个兼容 Cohere/Jina 重排接口的服务商 + 模型后，检索结果会先多召回一批候选送去重排服务打分再排序截断。不配置时这一步直接跳过；重排服务调用失败也不会导致检索失败，只是退回混合检索本身的排序。</p>
       <h2 id="kb-cite">引用与溯源</h2>
-      <p>把一个或多个知识库「挂载」到某个对话（聊天输入框的图书图标），模型才会用 <code>knowledge_search</code> 工具检索它们 —— 未挂载任何库时不会去搜索全部知识库兜底，而是提示模型请用户先挂载。</p>
+      <p>把一个或多个知识库「挂载」到某个对话，模型才会用 <code>knowledge_search</code> 工具检索它们 —— 未挂载任何库时不会去搜索全部知识库兜底，而是提示模型请用户先挂载。</p>
       <p>回答中引用某个检索片段时，模型会在正文里标注 <code>[n]</code>；界面上这是一个可点击的小徽标，点开会弹出该片段的来源文档名、标题路径和原文片段。展开对应的检索工具调用卡片，还能看到这一轮全部命中的来源列表。</p>
     </article>
 
     <article data-page="sandbox" class="hidden">
       <div class="crumb">智能体</div>
-      <h1>代码沙箱</h1>
-      <p class="lead">Pyodide 在本地 WebAssembly 里运行 Python —— 数据不出机器，断网也能算。</p>
-      <p>模型调用 <code>run_python</code> 工具执行代码，运行在一个<b>没有主机文件系统访问权限</b>的沙箱里 —— 不是在你的真实电脑上跑 Python，而是应用内置的一个虚拟环境，执行完全离线、随开随用。</p>
-      <h2 id="sandbox-packages">可用包</h2>
-      <p>以下包随应用打包，完全离线可用（无需联网）：</p>
-      <p><code>numpy</code> · <code>pandas</code> · <code>matplotlib</code> · <code>pillow</code> · <code>micropip</code> · <code>seaborn</code> · <code>openpyxl</code> · <code>xlrd</code> · <code>pypdf</code></p>
-      <p>图表和文本渲染内置了中文字体（Noto Sans CJK），中英文都能正常显示；沙箱字体不含 emoji/符号字形，这类字符会渲染成空方块。</p>
-      <p><code>scipy</code>、<code>sympy</code>、<code>scikit-learn</code>、<code>statsmodels</code> 等未预装的包，以及任何其他 PyPI 包，会在导入时自动尝试联网安装 —— 这部分<b>需要网络连接</b>，离线环境下会失败。</p>
-      <h2 id="sandbox-artifacts">产物导出</h2>
-      <p>没有单独的「导出」工具 —— 沙箱运行前后会自动扫描虚拟文件系统里新增/变化的文件（图片、表格、CSV、HTML、Markdown 等），把它们作为产物提取出来，写入这次对话专属的交付目录（<code>~/Kivio/outputs/&lt;对话ID&gt;/</code>），并在聊天界面里渲染成可下载的文件卡片。</p>
-      <p>每次对话最多累计 16 个交付文件，超出时按最旧优先淘汰；这些文件会一直保留，直到对话本身被删除。</p>
+      <h1>代码执行</h1>
+      <p class="lead">内置 Agent 可通过 <code>eval</code> 运行 JavaScript 或 Python，通过 <code>bash</code> 执行 Shell 命令。</p>
+      <h2 id="sandbox-packages">运行环境</h2>
+      <p><code>eval</code> 在对话工作目录启动本机解释器。JavaScript 需要 <code>node</code>，Python 在 Windows 上使用 <code>py</code>，其他平台使用 <code>python3</code>。脚本可用的库取决于该解释器环境。运行用户提供的脚本前，请确认其来源和文件访问范围。</p>
+      <h2 id="sandbox-artifacts">查看结果</h2>
+      <p>工具调用卡显示执行结果。需要交付文件时可用 <code>present_artifacts</code> 展示已有文件，图表或交互页面也可通过 <code>html_render</code> 直接显示在对话中。</p>
     </article>
 
     <article data-page="dock" class="hidden">
@@ -709,9 +643,12 @@ kivio code --no-approve -p "审查当前项目"</code></pre>
 </code></pre>
 <p>支持 stdio 与 Streamable HTTP（<code>type: "http"</code>、<code>url</code>）。加载器也接受直接 server map 和 Codex 的 <code>mcp_servers</code> 包装。MCP 服务名应唯一，注册时带插件身份；停用/移除会撤销所属注册。环境变量缺失产生诊断，依赖程序不自动安装。</p>
 <h2 id="plugins-6">安装及兼容</h2>
-<p>扩展 → 插件 → 通用插件，导入本地包根或 HTTPS Git 仓库及子目录。导入后默认停用，启用后允许执行脚本，作用域为个人。卸载只删除托管副本（包含插件 data）及所属 MCP 注册。</p>
-<p>清单优先级为 <code>.kivio-plugin</code> → <code>.codex-plugin</code> → <code>.claude-plugin</code>，只加载最高优先级的一份，解析失败不回退。不修改来源仓库的清单。原生包与外部格式共享内部运行设施，但外部格式有独立兼容规则。</p>
-<p>当前没有原生 marketplace 索引、项目作用域、自动更新、安装器、平台托管 apps、LSP 或额外 Hook 事件；这些不属于 v1 格式承诺。</p>
+<p>插件市场 → 添加，可导入本地包根或 HTTPS Git 仓库及子目录。导入后默认停用，启用后允许执行脚本，作用域为个人。卸载只删除托管副本（包含插件 data）及所属 MCP 注册。</p>
+<p>直接导入的清单优先级为 <code>.kivio-plugin</code> → <code>.codex-plugin</code> → <code>.claude-plugin</code>，只加载最高优先级的一份，解析失败不回退。不修改来源仓库的清单。原生包与外部格式共享内部运行设施，但外部格式有独立兼容规则。</p>
+<p>也可通过「添加插件市场」接入 Claude Code 的 <code>.claude-plugin/marketplace.json</code>。市场来源接受 GitHub <code>owner/repo</code>、HTTPS Git 地址（可附 <code>#ref</code>）、本地目录/清单文件、HTTPS JSON 地址；官方市场为 <code>anthropics/claude-plugins-official</code>。添加后在「个人」页浏览、搜索、安装。管理入口可以刷新目录、移除来源；移除市场保留已安装插件。刷新目录不自动更新已安装副本。</p>
+<p>市场清单要求 <code>name</code>、<code>owner.name</code>、<code>plugins[]</code>；条目要求 <code>name</code>、<code>source</code>。支持仓库内 <code>./</code> 路径、<code>metadata.pluginRoot</code> 下的裸目录名、<code>github</code>、<code>url</code>、<code>git-subdir</code> 插件来源，以及 <code>ref</code>/完整 <code>sha</code>；<code>url</code>/<code>github</code> 的可选 <code>path</code> 与 <code>git-subdir.path</code> 共用目录边界检查。只下载 JSON 的市场无法解析仓库相对路径。暂不支持 npm/archive/command 来源、SSH/HTTP、认证辅助脚本；条目会显示不可安装原因。来源和目录缓存归 <code>plugins/marketplaces.rs</code>；安装继续调用 <code>packages.rs</code>，记录市场来源身份并默认停用。</p>
+<p>无 <code>plugin.json</code> 时使用市场条目生成托管副本中的清单；有清单时按 Claude 的 strict 规则合并组件，<code>strict:false</code> 与条目组件冲突会拒绝。条目 hooks 只接受内联事件对象；同名事件覆盖，不重复注册。不改来源仓库；Claude 市场条目固定读取归一化的 Claude 清单，预览、安装及后续加载保持一致；同目录中的 Kivio/Codex 清单保留但不参与该条目的解析。格式兼容不代表支持 Claude 的全部运行时能力，诊断仍会阻止不完整插件启用。</p>
+<p>当前没有项目作用域、自动更新、安装器、平台托管 apps、LSP 或额外 Hook 事件；这些不属于 v1 格式承诺。</p>
 <p>可直接导入的示例：<code>tests/fixtures/plugins/kivio-example</code>。示例依赖 Node.js，其 Hook 只演示拒绝写入 <code>protected</code> 目录的操作，不修改文件，也不是文件系统安全边界。</p>
 
 </article>
@@ -883,9 +820,9 @@ kivio code --no-approve -p "审查当前项目"</code></pre>
         <li><b>悬停高亮</b> —— 鼠标移到某个应用窗口上会自动高亮整个窗口，松开鼠标（不拖拽）即捕获该窗口（macOS 支持窗口枚举；Windows 上以拖拽区域为主）。</li>
         <li><b>拖拽圈选</b> —— 按住拖出一个矩形区域，松开即捕获该区域画面。</li>
       </ul>
-      <p>捕获后会弹出一个贴着选区的聊天输入框，可以直接输入问题追问 —— 支持多轮对话。默认情况下 Lens 的回答会转入完整的聊天窗口展示，而不是停留在悬浮的小窗口里。</p>
+      <p>捕获后会弹出一个贴着选区的聊天输入框，可以直接输入问题追问 —— 支持多轮对话。默认在 Lens 中查看回答。需要在完整聊天窗口继续时，可以将对话转入客户端。</p>
       <h2 id="lens-search">联网搜索</h2>
-      <p>Lens 可以在必要时自动联网搜索补充上下文（时效性信息、截图里不熟悉的名词/产品/地点等），支持 Tavily、Exa、Ollama、Grok 等搜索服务商 —— <b>这些 API Key 需要在 Lens 设置里单独配置</b>，与翻译/聊天用的模型服务商密钥完全独立。是否搜索由一次轻量的规划调用自动判断，纯粹的截图翻译/摘要类问题不会触发搜索。</p>
+      <p>在「设置 → 网络搜索」选择搜索来源并按服务要求配置凭据。Lens 可用搜索结果补充截图的上下文；使用 DeepSeek 搜索来源时也可进行以图搜索。</p>
       <p>Lens 使用自己的服务商与模型设置（留空则回退到「划词翻译」的服务商与模型）。</p>
     </article>
 
@@ -900,7 +837,7 @@ kivio code --no-approve -p "审查当前项目"</code></pre>
         <tbody>
           <tr><td><b>直接视觉识别</b>（默认）</td><td>不做本地 OCR，截图直接交给一个支持视觉的模型，一次调用完成识别+翻译。任意平台可用，但需要一个视觉模型。</td></tr>
           <tr><td><b>系统 OCR</b></td><td>macOS 用 Apple Vision（通过 <code>kivio-ocr-helper</code> Swift 常驻子进程）；Windows 用系统自带的 <code>Windows.Media.Ocr</code>。识别出文字后再交给文本模型翻译。</td></tr>
-          <tr><td><b>RapidOCR（离线）</b></td><td>跨平台的本地 ONNX 识别引擎，不依赖系统 OCR，也不需要联网即可识别（识别后的翻译步骤仍需要联网调用模型）。</td></tr>
+          <tr><td><b>RapidOCR（离线）</b></td><td>跨平台的本地 ONNX 识别引擎，不依赖系统 OCR，也不需要联网即可识别（翻译步骤仍需连接配置的模型）。</td></tr>
         </tbody>
       </table>
       <p>「原位替换翻译」这一功能固定使用 RapidOCR，与全局 OCR 引擎设置无关。</p>
@@ -924,6 +861,8 @@ kivio code --no-approve -p "审查当前项目"</code></pre>
         </tbody>
       </table>
       <p>内置了几个预设，仅预填名称和接口地址，模型列表仍需自己拉取并勾选启用：DeepSeek、OpenRouter、SiliconFlow、智谱 GLM、Ollama。也可以完全自定义任意服务商。</p>
+      <h2 id="pv-auth">供应商账号授权</h2>
+      <p>可添加 ChatGPT、Codex OAuth、Kimi OAuth 或 Antigravity OAuth 预设，按提示在浏览器完成授权，然后获取并启用该账号可用的模型。ChatGPT 登录和 Codex OAuth 单独管理。对于允许匿名访问的兼容端点，API Key 可留空。</p>
       <h2 id="pv-keys">密钥池与容灾</h2>
       <p>每个服务商可以配置一组 API Key（数组），第一个是主 Key，其余是备用。触发规则：</p>
       <ul>
@@ -939,7 +878,7 @@ kivio code --no-approve -p "审查当前项目"</code></pre>
         <li><b>划词翻译</b> —— 独立设置，不受其他功能影响。</li>
         <li><b>截图翻译</b> —— 独立设置。</li>
         <li><b>Lens</b> —— 留空则回退到划词翻译的服务商/模型。</li>
-        <li><b>聊天</b> —— 每个对话可在 <code>ModelSelector</code> 里单独切换模型；未指定时按「默认模型 → Lens → 翻译」的顺序逐级回退到第一个已配置的选项。</li>
+        <li><b>聊天</b> —— 可在对话的模型选择器中切换型号。新建对话优先沿用最近手动选择且仍可用的模型。</li>
       </ul>
     </article>
 
@@ -950,11 +889,9 @@ kivio code --no-approve -p "审查当前项目"</code></pre>
       <h2 id="cn-oauth">OAuth 连接</h2>
       <p>点击「连接」，系统默认浏览器打开对应服务的授权页面，登录并同意授权后自动跳回 —— 全程不需要手动复制粘贴任何 Token。内置目录里的 Notion 走这套流程；也支持连接任意实现了 OAuth 2.1 动态客户端注册的自定义远程 MCP 服务器，不限于预置列表。</p>
       <p>Access Token 到期前会自动静默刷新，无需重新走一遍授权。授权信息（含 Token）保存在本地设置文件里。</p>
-      <h2 id="cn-local">本地连接器</h2>
-      <ul>
-        <li><b>Obsidian</b> —— 纯本地，读取 Obsidian 客户端自身记录的库列表，选定一个库路径即可；智能体通过普通文件工具读取笔记，不涉及 MCP 或 OAuth。</li>
-        <li><b>邮件（Himalaya）</b> —— 基于 Himalaya CLI（可一键自动安装），填入邮箱账号 + IMAP/SMTP 信息即可；智能体通过内置的邮件 Skill 驱动这个 CLI 收发邮件。</li>
-      </ul>
+      <h2 id="cn-local">GitHub 授权</h2>
+      <p>连接 GitHub 官方 MCP 时，浏览器会打开授权页面。输入 Kivio 显示的短码，核对申请的权限并确认，即可返回应用使用所授权的工具。</p>
+      <p>Obsidian 的笔记和 Canvas 工具可从插件市场安装。</p>
     </article>
 
     <article data-page="hotkeys" class="hidden">
@@ -965,14 +902,16 @@ kivio code --no-approve -p "审查当前项目"</code></pre>
       <table>
         <thead><tr><th>功能</th><th>默认组合</th><th>作用</th></tr></thead>
         <tbody>
-          <tr><td>划词翻译</td><td><code>⌘/Ctrl+Alt+T</code></td><td>打开/关闭悬浮翻译窗口</td></tr>
+          <tr><td>打开 / 关闭聊天窗口</td><td><code>⌘/Ctrl+Shift+K</code> / <code>⌘/Ctrl+Shift+W</code></td><td>打开或关闭客户端窗口</td></tr>
+          <tr><td>截图标注</td><td><code>⌘/Ctrl+Shift+S</code></td><td>截取屏幕并标注</td></tr>
+          <tr><td>快速翻译</td><td><code>⌘/Ctrl+Alt+T</code></td><td>打开/关闭悬浮翻译窗口</td></tr>
           <tr><td>Lens 取景</td><td><code>⌘/Ctrl+Shift+G</code></td><td>打开/关闭 Lens 屏幕取景问答</td></tr>
           <tr><td>截图翻译</td><td><code>⌘/Ctrl+Shift+A</code></td><td>截取一块屏幕区域并翻译</td></tr>
           <tr><td>选中文字翻译</td><td><code>⌘/Ctrl+Shift+T</code></td><td>直接翻译当前选中的文字，不截图</td></tr>
           <tr><td>原位替换翻译</td><td><code>⌘/Ctrl+Shift+R</code></td><td>圈选区域，译文直接叠加在原文位置上</td></tr>
         </tbody>
       </table>
-      <p>每一个都是「再按一次即关闭」的开关式热键，且都可以在设置里单独禁用。</p>
+      <p>表中为正式版的默认值。可在设置中修改或清空热键；Kivio Dev 的全局热键初始为空。</p>
       <h2 id="hk-custom">自定义</h2>
       <p>设置面板里点击热键输入框，直接按下想要的组合键即可录制，无需手动输入字符串。修饰键的常见写法（<code>cmd</code>/<code>command</code>、<code>ctrl</code>/<code>control</code>、<code>opt</code>/<code>option</code>/<code>alt</code> 等）都会被自动规范化成统一形式，不用担心大小写或别名问题。</p>
       <p>保存前会做重复检测，如果新组合和另一个已启用的热键冲突，会在输入框旁提示冲突对象。留空即可完全禁用某个热键。</p>
@@ -993,7 +932,7 @@ kivio code --no-approve -p "审查当前项目"</code></pre>
           <tr><td><code>screenshotTranslation</code></td><td>截图翻译三个热键、OCR 引擎、提示词模板、流式与直译开关</td></tr>
           <tr><td><code>lens</code></td><td>Lens 热键、服务商模型、联网搜索子配置（Tavily/Exa/Grok 等）</td></tr>
           <tr><td><code>chat</code></td><td>聊天窗口行为：流式/思考开关、最大输出长度、自定义系统提示词</td></tr>
-          <tr><td><code>chatTools</code></td><td>MCP 服务器列表、Skills 扫描路径与开关、工具轮次/超时上限、审批策略、子智能体并发数</td></tr>
+          <tr><td><code>chatTools</code></td><td>MCP 服务器列表、Skills 扫描路径与开关、工具开关、超时与审批策略</td></tr>
           <tr><td><code>chatMemory</code></td><td>长期记忆功能开关</td></tr>
           <tr><td><code>documentProcessing</code></td><td>知识库文档入库时的 OCR 引擎与 PDF 处理策略</td></tr>
           <tr><td><code>knowledgeBase</code></td><td>混合检索权重、重排服务商配置</td></tr>
@@ -1015,13 +954,15 @@ kivio code --no-approve -p "审查当前项目"</code></pre>
       <h2 id="faq-hotkey-conflict">热键不生效/提示冲突怎么办？</h2>
       <p>大概率是被系统或其他应用占用了同一个组合键。设置面板会明确提示是「与 Kivio Desktop 自己的其他热键冲突」还是「被外部程序占用」，换一个组合键即可。</p>
       <h2 id="faq-offline">断网还能用哪些功能？</h2>
-      <p>代码沙箱（<code>run_python</code>）里预装的包（numpy/pandas/matplotlib 等）完全离线可用；但任何需要调用模型的功能（对话、翻译、知识库检索的 Embedding/生成步骤）都需要网络连接到你配置的服务商。</p>
+      <p>本机文件、已有聊天和本地索引可以离线使用。模型请求需要能连接所选端点；配置在本机运行的模型时可离线推理。联网搜索和远程模型需要网络。</p>
     </article>
 
     <article data-page="changelog" class="hidden">
       <div class="crumb">更多</div>
       <h1>更新日志</h1>
       <p class="lead">每个版本的变化。完整发布记录见 <a href="https://github.com/ZMGID/kivio/releases" target="_blank" rel="noopener" style="border-bottom:1px solid var(--fg)">GitHub Releases ↗</a>。</p>
+      <h2 id="changelog-400">v4.0.0</h2>
+      <p>本版更新了聊天加载、外部 CLI 集成和桌面打包。<a href="https://github.com/ZMGID/kivio/releases/tag/v4.0.0">查看完整说明和安装包</a>。其余版本可在上方完整发布记录中按标签查找。</p>
       <h2 id="changelog-292">v2.9.2 · 2026-08-19</h2>
       <ul>
         <li><b>Pi</b> —— 常驻会话补齐问用户、原生图片、轮内引导和下一轮排队，控制不再每轮丢掉。右侧 Dock「轨迹」可查看、分叉、克隆分支成新对话。设置里管理 Pi Package（npm / git / 本地）和本地扩展，以及 <code>~/.pi</code>、共享 <code>~/.agents</code>、Package 和额外扫描路径里的 Skill（可挂 Claude Code / Codex 目录，不复制文件）。</li>

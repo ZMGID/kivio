@@ -54,7 +54,7 @@ GitHub release packaging (this is the official path — do not build installers 
    - `windows-latest` (x64) with `--bundles nsis` → `Kivio.Desktop_X.Y.Z_x64-setup.exe`
    - Windows extracts the NSIS installer to verify its resources, then checks and packages the portable ZIP with `scripts/package-windows-portable.ps1`. Both artifacts upload after these checks pass. Unzip `Kivio.Desktop_X.Y.Z_x64-portable.zip` and run `Kivio Desktop.exe` for portable use. In-app update still downloads the NSIS installer.
    - GitHub normalizes spaces in `productName` to dots in the asset file names.
-   - The macOS DMG is **unsigned** (no signing secrets configured); first launch needs right-click → Open, or `xattr -cr "/Applications/Kivio Desktop.app"`.
+   - The app in the DMG is **ad-hoc signed and unnotarized**. CI verifies its signature and bundled resources. On first launch, use right-click → Open, or `xattr -cr "/Applications/Kivio Desktop.app"`.
 6. Watch the workflow and inspect the release assets:
    ```bash
    gh run watch <RUN_ID> --repo ZMGID/kivio --exit-status
@@ -63,7 +63,7 @@ GitHub release packaging (this is the official path — do not build installers 
 7. **Replace the CI-generated release body with hand-written bilingual notes.** The
    workflow publishes the release with a boilerplate body ("Automated macOS…");
    overwrite it to match the prior `v2.7.x` release format — title, a `## 下载 / Downloads`
-   block (Windows NSIS + Windows portable zip + macOS DMG, plus the macOS "unsigned / first launch" note), a
+   block (Windows NSIS + Windows portable zip + macOS DMG, plus the macOS ad-hoc signing and first-launch note), a
    `## 新版本亮点 / What's New` bilingual bullet list (中文 + English inline per bullet,
    matching `docs/releases/vX.Y.Z.md`, not an inline README changelog), and a `完整变更 / Full changelog: …compare/vPREV...vX.Y.Z`
    link:
@@ -76,12 +76,12 @@ GitHub release packaging (this is the official path — do not build installers 
 `src-tauri/tauri.conf.json` controls app resources.
 
 After Tauri copies resources, `src-tauri/build.rs` prunes files no longer present
-in the source from the profile's `skills/` and `licenses/` directories. Keep
+in the source from the profile's `skills/`, `word/` and `licenses/` directories. Keep
 these directory mappings aligned with `bundle.resources`; this prevents retired
 skills from surviving incremental builds. Resource roots are watched for additions
 and removals. The cleanup does not touch user-installed skills or app data.
 
-Validate this behavior with `cargo test --test bundled-resources` (on Windows,
+From the repository root, validate this behavior with `cargo test --manifest-path src-tauri/Cargo.toml --test bundled-resources` (on Windows,
 use `scripts/win-cargo-test.ps1 --test bundled-resources`).
 
 Bundled skills are ordinary skill directories shipped as application resources;
@@ -90,6 +90,8 @@ they need no separate installation or per-skill registration. Keep these mapping
 ```json
 "resources": {
   "resources/skills": "skills",
+  "resources/plugins": "plugins",
+  "resources/word": "word",
   "../docs/licenses": "licenses"
 }
 ```

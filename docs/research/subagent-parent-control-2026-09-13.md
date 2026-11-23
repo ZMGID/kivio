@@ -24,18 +24,18 @@
 
 | 环节 | 当前代码事实 | 后果 |
 | --- | --- | --- |
-| 创建执行 | 每次执行设置 `requires_review: true`，结束且无 `resolution` 即 `needs_review`。[runtime.rs](../../src-tauri/src/chat/sub_agent/runtime.rs#L129)、[初始化](../../src-tauri/src/chat/sub_agent/runtime.rs#L1130) | 普通输出默认变成待验收事项。 |
-| 主代理收到结果 | `supervision_message` 注入 system 要求，指定 `resolve` 并禁止先给最终回答。[runtime.rs](../../src-tauri/src/chat/sub_agent/runtime.rs#L391) | 接收信息被改造成强制走业务流程。 |
-| 登记处置 | `resolve` 限定四类判决及理由，还校验继任执行和是否存在输出。[runtime.rs](../../src-tauri/src/chat/sub_agent/runtime.rs#L411) | 主代理即使已经使用结果，也要满足额外台账格式。 |
-| 等待其他分支 | `wait` 将未登记结果作为 `needs_review` 返回，独立于报告是否已经投递、游标是否推进。[control.rs](../../src-tauri/src/chat/sub_agent/control.rs#L385) | 已收到的 A 可能反复干扰等待 B；传输与验收耦合。 |
-| 尝试结束 | 检测到监督消息累计超过两次，或达到工具轮数上限，退出规划。[loop_.rs](../../src-tauri/src/chat/agent/loop_.rs#L390) | 纠偏次数成为结束触发器，未必与用户目标有关。 |
-| 替代最终答复 | `finalize_supervision` 自动给无处置记录填 `blocked`，包括仍在运行的执行；`collaboration_blocked_result` 生成“协作尚未完成”。[runtime.rs](../../src-tauri/src/chat/sub_agent/runtime.rs#L477)、[loop_.rs](../../src-tauri/src/chat/agent/loop_.rs#L555) | 框架代替主代理决定并书写结论。 |
-| 清理 | 生产 `ChatAgentHost::run_ended` 不区分退出原因，调用 `stop_parent`。[agent_host.rs](../../src-tauri/src/chat/commands/agent_host.rs#L27) | 上述主轮退出会继续停止其他分支。 |
-| 界面 | `requiresReview` 投影成“等待主代理验收／处理”。[subAgentStatus.ts](../../src/chat/subAgentStatus.ts#L13) | 即使输出已可用，仍展示人为的验收关卡。 |
+| 创建执行 | 每次执行设置 `requires_review: true`，结束且无 `resolution` 即 `needs_review`。[runtime.rs](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/sub_agent/runtime.rs#L129)、[初始化](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/sub_agent/runtime.rs#L1130) | 普通输出默认变成待验收事项。 |
+| 主代理收到结果 | `supervision_message` 注入 system 要求，指定 `resolve` 并禁止先给最终回答。[runtime.rs](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/sub_agent/runtime.rs#L391) | 接收信息被改造成强制走业务流程。 |
+| 登记处置 | `resolve` 限定四类判决及理由，还校验继任执行和是否存在输出。[runtime.rs](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/sub_agent/runtime.rs#L411) | 主代理即使已经使用结果，也要满足额外台账格式。 |
+| 等待其他分支 | `wait` 将未登记结果作为 `needs_review` 返回，独立于报告是否已经投递、游标是否推进。[control.rs](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/sub_agent/control.rs#L385) | 已收到的 A 可能反复干扰等待 B；传输与验收耦合。 |
+| 尝试结束 | 检测到监督消息累计超过两次，或达到工具轮数上限，退出规划。[loop_.rs](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/agent/loop_.rs#L390) | 纠偏次数成为结束触发器，未必与用户目标有关。 |
+| 替代最终答复 | `finalize_supervision` 自动给无处置记录填 `blocked`，包括仍在运行的执行；`collaboration_blocked_result` 生成“协作尚未完成”。[runtime.rs](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/sub_agent/runtime.rs#L477)、[loop_.rs](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/agent/loop_.rs#L555) | 框架代替主代理决定并书写结论。 |
+| 清理 | 生产 `ChatAgentHost::run_ended` 不区分退出原因，调用 `stop_parent`。[agent_host.rs](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/commands/agent_host.rs#L27) | 上述主轮退出会继续停止其他分支。 |
+| 界面 | `requiresReview` 投影成“等待主代理验收／处理”。[subAgentStatus.ts](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src/chat/subAgentStatus.ts#L13) | 即使输出已可用，仍展示人为的验收关卡。 |
 
 因此准确因果不是“任何子代理报错就立即停止主代理”，而是：**子输出进入强制验收 → 未登记可能触发主轮收尾 → 统一退出清理停止其他子代理。** 此前那次实际 HTTP 400 是主代理模型请求出错，属于另一条触发主轮退出的路径，不应混为同一个问题。
 
-`worker_output` 也把带降级标记的输出转换为 `Err`，但 `partial` 会保存正文，不能误称所有这些输出已经丢失。[输出转换](../../src-tauri/src/chat/sub_agent/control.rs#L253)、[保存结果](../../src-tauri/src/chat/sub_agent/runtime.rs#L931)。需要调整的是跨层表达和控制后果，不只是改一个颜色。
+`worker_output` 也把带降级标记的输出转换为 `Err`，但 `partial` 会保存正文，不能误称所有这些输出已经丢失。[输出转换](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/sub_agent/control.rs#L253)、[保存结果](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/sub_agent/runtime.rs#L931)。需要调整的是跨层表达和控制后果，不只是改一个颜色。
 
 ## 对上次研究和规范的修正
 
@@ -74,6 +74,6 @@
 - 用户停止单个分支不影响其他分支；用户停止整个协作仍覆盖全部；重启不会隐式恢复执行。
 - 主模型 API 出错单独显示来源和详情；不能用“子任务未完成”隐藏原因。正常主答复不被框架文字替换。
 
-这些测试应走生产 `ChatAgentHost` 的 checkpoint 和退出路径。`ProbeAgentHost` 缺少对应完整生命周期实现；此前接口 200 或报告角色测试通过，只能证明消息格式相关路径，不能证明整个调度流程。[生产与探针宿主](../../src-tauri/src/chat/commands/agent_host.rs#L268)。已有模拟监督测试即使通过，若断言的就是“未登记则合成未完成”，也只是在验证被用户否定的旧策略；这些预期必须随行为一起修正。
+这些测试应走生产 `ChatAgentHost` 的 checkpoint 和退出路径。`ProbeAgentHost` 缺少对应完整生命周期实现；此前接口 200 或报告角色测试通过，只能证明消息格式相关路径，不能证明整个调度流程。[生产与探针宿主](https://github.com/ZMGID/kivio/blob/7c5b3f5629e6c13076aa739210d7c6a7e5103ab8/src-tauri/src/chat/commands/agent_host.rs#L268)。已有模拟监督测试即使通过，若断言的就是“未登记则合成未完成”，也只是在验证被用户否定的旧策略；这些预期必须随行为一起修正。
 
 本次结论来自官方文档和当前源码的静态对照，没有在桌面执行完整协作回归。后续实施应同步删除规范中的强制验收要求，再调整运行时、工具、主循环、界面和相应测试；仅修改提示词不能解决已经编码的退出链路。

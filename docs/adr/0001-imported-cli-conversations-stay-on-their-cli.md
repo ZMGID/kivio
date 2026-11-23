@@ -11,7 +11,7 @@
 ## Consequences
 
 - 导入是**项目内的动作**：只列出工作目录等于当前项目根的那些原生会话。
-- 支持 6 个 CLI：claude、codex、grok、kimi、gemini、opencode。**pi** 没有本地历史（会话 id 是 Kivio 自己生成的），**hermes** 的 `sessions` 表不记工作目录、无法判断归属，**cursor** 的 `cursor-agent` 未验证——三个都不支持。
+- 当前可导入 Claude、Codex、Grok、Kimi 和 OpenCode 的会话。各代理的导入能力由其注册定义声明，Kimi 和 OpenCode 还需通过 ACP 枚举并重放历史，见 [ADR-0003](0003-acp-agents-import-via-protocol.md)。
 - 原工作目录不存在时（换机器、目录已删）不能导入，需要在导入前就明说，而不是让用户导进来之后每轮踩一次上下文重置。
 
 ## 本机实测依据（2026-08-01）

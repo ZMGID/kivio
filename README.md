@@ -22,7 +22,7 @@
 
 常驻托盘。热键翻译输入、选中文字或屏幕内容，框选后直接问 AI。打开客户端则是完整 Agent：工具、子代理、Skills、MCP、知识库、多模型并排。
 
-自带 Key，无账号、无中转；数据只留本机，无遥测。
+无需注册 Kivio 账号。对话保存在本机，模型请求从本机发往所选供应商。可使用 API Key、供应商账号授权或本地模型服务。
 
 ## ❤️ 赞助
 
@@ -48,7 +48,7 @@
 
 屏幕上的字、框选的画面、本机已装的编码 CLI，不必拆成三套软件。Kivio 把它们收进同一个托盘应用：热键随时呼出，对话走你自己的供应商。
 
-- **一个循环，多种宿主** — 内置 Agent、只读研究用的 Kivio Chat、以及本机外部 CLI（Claude Code、Codex、Cursor、OpenCode、Gemini、Kimi、Pi、Hermes、Grok、DeepSeek Harness），共用同一套聊天界面
+- **一个循环，多种宿主** — 内置 Agent、只读研究用的 Kivio Chat、以及本机外部 CLI（Claude Code、Codex、Antigravity、OpenCode、Gemini、Kimi、Pi、Hermes、Grok、DeepSeek Harness），共用同一套聊天界面
 - **屏幕级工具** — 快速翻译、选中翻译、截图翻译、替换翻译（译文画回原位置）；Lens 冻结屏幕后提问、标注，并可把对话交回客户端
 - **自带 Key** — OpenAI Chat Completions / Responses、Anthropic、Gemini、Grok（xAI Responses）；翻译、截图、Lens、每条对话可各用不同模型
 - **扩展** — Skills、MCP、知识库、子代理、插件、连接器；右侧 Dock 带文件树、Git 与终端
@@ -78,7 +78,7 @@
 - 三种运行时：Kivio Agent（完整工具）、Kivio Chat（检索 / 抓取 / 知识库等只读能力）、外部 CLI
 - 模型供应商的 API Key 可留空：聊天、获取模型和测试连接会直接请求配置的地址，不再要求填占位密钥；空密钥不发送密钥认证头，服务端返回的认证错误仍会显示。OAuth 方式仍需先登录。
 - Goal 模式可通过底栏菜单或 Shift+Tab 选择：未发送的目标保存在当前会话草稿中，只保留一个 `/goal` 标签，底栏同步显示 Goal，输入框移到底部并将光标放在草稿末尾；切换到其他模式时移除标签、保留正文。
-- 对话可交给本机已装的 Claude Code、Codex、Cursor、OpenCode、Gemini、Kimi、Pi、Hermes、Grok 或 DeepSeek Harness
+- 对话可交给本机已装的 Claude Code、Codex、Antigravity、OpenCode、Gemini、Kimi、Pi、Hermes、Grok 或 DeepSeek Harness
 - 可从本机 CLI 导入原生会话（钉在原 CLI 与原工作目录上续聊）
 - 内置上下文面板区分总容量与分类：顶部显示最近主请求 API 实报的输入＋输出 Token，数值使用 k（如 `53.0k/1000.0k`），不使用万或百万缩写。分类合并为系统提示词（含设定、记忆等注入内容）、工具（含系统工具、MCP、技能）、对话（含消息、摘要、附件）；各行显示独立估算用量（`≈`）及明确标注的字符占比，按占比排序，只为已用区域分色。分类直接统计实际请求材料，不在刷新时重建另一份提示词；分项估算不按总量缩放，合计可能与顶部实报不同。平均缓存命中率只累计同时上报输入与缓存读取的主请求，按缓存读取 / 输入加权，缺失字段不按零计，低于 78% 或未知时隐藏。刷新、恢复和流式事件遵循同一计量序号，旧快照不覆盖新实报。无实报、压缩 / 清空后或切换模型时等待新实报，切回原模型也不复活旧值；本地估算不替代顶部实报，外部 CLI 保持自己的统计口径。
 - 上下文弹层采用紧凑布局；无计量时只显示 `—`，不显示等待或待刷新提示，分类为空时不占位。刷新、压缩和清空操作仍保留。
@@ -119,7 +119,7 @@
 
 ## 热键
 
-都是开关，可在设置里改。
+以下为正式版的默认热键，可在设置中修改。
 
 | 功能 | macOS | Windows |
 |---|---|---|
@@ -129,6 +129,8 @@
 | 选中翻译 | `⌘⇧T` | `Ctrl+Shift+T` |
 | 替换翻译 | `⌘⇧R` | `Ctrl+Shift+R` |
 | Lens | `⌘⇧G` | `Ctrl+Shift+G` |
+| 截图标注 | `⌘⇧S` | `Ctrl+Shift+S` |
+| 关闭聊天窗口 | `⌘⇧W` | `Ctrl+Shift+W` |
 
 ## 下载安装
 
@@ -162,7 +164,7 @@ macOS 需要**辅助功能**与**屏幕录制**权限。启动后按引导填供
 ## 快速开始
 
 1. 安装并打开 Kivio，完成首次引导（供应商 + 热键）。
-2. **添加供应商**：设置 → 供应商 → 添加驱动 → 选预设（或自定义），填入 API Key。
+2. **添加供应商**：设置 → 供应商 → 添加驱动 → 选预设或自定义地址。按服务要求填写 API Key 或登录授权，获取模型后勾选要使用的型号。[供应商账号授权](docs/provider-oauth.md)
 3. **聊天**：`⌘⇧K` / `Ctrl+Shift+K` 打开客户端，选模型后发送。需要本机 CLI 时，在运行时选择器里切换。
 4. **屏幕**：用热键翻译或打开 Lens；需要的权限在系统设置里打开。
 
@@ -171,19 +173,19 @@ macOS 需要**辅助功能**与**屏幕录制**权限。启动后按引导填供
 <details>
 <summary><strong>需要注册账号吗？数据存在哪？</strong></summary>
 
-不需要账号。Key 写在本机 `settings.json` 里，对话、知识库、笔记都在应用数据目录：
+使用 Kivio 无需注册。API Key 写在本机 `settings.json` 里，对话、知识库、笔记都在应用数据目录：
 
 - Windows：`%APPDATA%\com.zmair.kivio`
 - macOS：`~/Library/Application Support/com.zmair.kivio`
 
-无遥测，请求只发往你配置的供应商。
+模型请求发往所选供应商。启用联网搜索或手动 WebDAV 备份时，数据也会发往对应服务。[备份与恢复](docs/backup.md)
 
 </details>
 
 <details>
 <summary><strong>支持哪些外部 CLI？</strong></summary>
 
-本机已安装即可作为对话后端：Claude Code、Codex、Cursor、OpenCode、Gemini、Kimi、Pi、Hermes、Grok、DeepSeek Harness。可用性按本机探测；模型列表按所选 CLI 懒加载。
+本机已安装即可作为对话后端：Claude Code、Codex、Antigravity、OpenCode、Gemini、Kimi、Pi、Hermes、Grok、DeepSeek Harness。可用性按本机探测；模型列表按所选 CLI 懒加载。
 
 </details>
 
@@ -195,7 +197,7 @@ macOS 需要**辅助功能**与**屏幕录制**权限。启动后按引导填供
 </details>
 
 <details>
-<summary><strong>导入的 CLI 对话为什么不能换模型续聊？</strong></summary>
+<summary><strong>导入的 CLI 对话为什么要用原来的 CLI 续聊？</strong></summary>
 
 导入只做显示快照，历史真身仍在原 CLI。续聊走该 CLI 的原生会话，并钉在原来的工作目录。详见 [ADR-0001](docs/adr/0001-imported-cli-conversations-stay-on-their-cli.md)、[ADR-0002](docs/adr/0002-imported-history-is-a-snapshot.md)。
 
@@ -222,13 +224,13 @@ npm test
 `Kivio Dev` 使用橙色 DEV 图标和 `com.zmair.kivio.dev` 应用标识。macOS 数据目录为
 `~/Library/Application Support/com.zmair.kivio.dev`；Windows / Linux 同样按独立标识分目录。
 正式版的 `com.zmair.kivio` 数据保持原位，开发版不自动复制或迁移现有配置、对话、附件、任务及备份设置。
-Dev 的用户技能写入 `~/.kivio-dev/skills`，OAuth 钥匙串、Study Word 插件及本机端口也独立；首次启动全局快捷键为空，自动检查更新关闭，开发版不能安装正式版更新。
+Dev 的用户技能写入 `~/.kivio-dev/skills`，供应商 OAuth 凭据、Study Word 插件及本机端口也独立；首次启动全局快捷键为空，自动检查更新关闭，开发版不能安装正式版更新。
 需要测试的模型请在 Dev 单独配置。项目源文件、项目技能、共享 `~/.agents/skills` 和外部 CLI 的安装及其原生会话仍是本机共享资源；不要在两个版本同时续聊同一条外部 CLI 原生会话。
 
 直接调用 Tauri 时，开发版使用 `npx tauri dev --config src-tauri/tauri.dev.conf.json`，或
 `npx tauri build --debug --bundles app --config src-tauri/tauri.dev.conf.json`（macOS 原生验证包）。
 未传开发配置的 debug GUI 会在访问用户数据前拒绝启动；正式版 release 构建继续使用原身份。
-`npm run test:probe` 默认连接 Dev；其他目录可显式传 `--probe-dir`。
+外部 CLI 验收脚本 `npm run probe:e2e` 默认连接 Dev。运行 `npm run probe:e2e -- --list` 可查看场景，自定义目录用 `--probe-dir` 指定。[Probe 使用说明](docs/chat-probe.md)
 
 Lint 配置位于 [`eslint.config.mjs`](eslint.config.mjs)。`@shadcn/lint` 已注册，尚未启用新规则；需要时在其中的 `rules` 对象添加所选的 `shadcn/*` 规则。参见[可用规则](https://github.com/shadcn-ui/lint#rules)和[配置示例](https://github.com/shadcn-ui/lint/blob/main/docs/design-systems.md)。
 
@@ -256,20 +258,7 @@ npm run protocol:check
 <details>
 <summary><strong>架构总览</strong></summary>
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                 前端（React 18 + Vite + Tailwind）            │
-│   同一套 bundle，四个窗口：main / chat / lens / translate     │
-└────────────────────────┬────────────────────────────────────┘
-                         │ Tauri IPC · chat-protocol
-┌────────────────────────▼────────────────────────────────────┐
-│                  后端（Tauri 2 + Rust）                       │
-│   AgentHost 循环（prepare → planning → rounds → synthesis）  │
-│     ├─ GUI 聊天                                              │
-│     ├─ 外部 CLI 代理                                         │
-│     └─ 子代理                                                │
-└─────────────────────────────────────────────────────────────┘
-```
+桌面界面使用 React 18、Vite 和 Tailwind，通过 Tauri IPC 调用 Rust 后端。内置聊天、自动化与 OMP 子代理共用 Kivio Agent SDK 的工具循环。外部 CLI 通过各自的协议运行，Kivio 将输出显示在同一聊天界面。模块归属见[架构总览](docs/ARCHITECTURE.md)。
 
 - 实时聊天走版本化 `chat-protocol`（`npm run protocol:check` 校验生成物）
 - 供应商适配器：OpenAI Chat、Anthropic Messages、Gemini、OpenAI Responses（含 xAI Grok）

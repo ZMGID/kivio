@@ -13,11 +13,11 @@
 | 证据 | 已证明的行为 | 设计含义 |
 | --- | --- | --- |
 | [旧规范](../prd/subagent-runtime-refactor-spec.md#L28)、[生命周期](../prd/subagent-runtime-refactor-spec.md#L90)、[A16](../prd/subagent-runtime-refactor-spec.md#L219) | 完成、失败、中断终结当前执行；失败报告算收齐结果，允许父代理说明缺失后结束。身份仍保留。 | 当前行为符合旧规范，但旧规范没有要求对未满足的委派目标作出明确处置。 |
-| [worker_output](../../src-tauri/src/chat/sub_agent/control.rs#L188)、[finish](../../src-tauri/src/chat/sub_agent/runtime.rs#L716) | 当前已接受非空、非降级的恢复答复；其余走错误字符串并可记录为 `Failed`，同时释放运行资源。 | 运行资源释放合理；它不应兼任任务验收。旧记录不会因此自动重写。 |
-| [恢复分类](../../src-tauri/src/chat/agent/recovery.rs#L27)、[输出转换](../../src-tauri/src/chat/sub_agent/control.rs#L188) | 共享恢复层已有 `DegradedAnswer`、`FailureKind`；子代理边界仅传递 `degraded.is_some()`，再压成 `Result<..., String>`。 | 已有恢复能力，但跨边界丢失结构化原因和部分产出的含义。 |
-| [collect_results](../../src-tauri/src/chat/sub_agent/control.rs#L51) | `pending` 跟踪活跃执行；终态报告选 `result` 或 `error`，持久投递后确认 delivered。 | 已投递表示父方收到，不表示主代理接受成果或安排补救。 |
-| [父方 checkpoint](../../src-tauri/src/chat/commands/agent_host.rs#L35)、[正常收尾](../../src-tauri/src/chat/agent/loop_.rs#L378) | checkpoint 可收到异常报告；正常 `FinalAnswer` 遇到新结果会返回规划循环。 | 不能说主代理不能继续、完全没有控制通路。 |
-| [轮数上限出口](../../src-tauri/src/chat/agent/loop_.rs#L439)、[最后 checkpoint](../../src-tauri/src/chat/agent/loop_.rs#L490)、[合成阶段](../../src-tauri/src/chat/agent/synthesis.rs#L37) | 上限出口后的新报告直接进入合成；存在子代理持久消息时追加收尾指令，合成请求不提供工具。 | 此出口可能在刚收到需要处理的异常时失去继续控制机会；属于静态路径发现，本轮没有复现。 |
+| [worker_output](https://github.com/ZMGID/kivio/blob/228a208587ed8a9aa2e8d5e1b3e62a574987389b/src-tauri/src/chat/sub_agent/control.rs#L188)、[finish](https://github.com/ZMGID/kivio/blob/228a208587ed8a9aa2e8d5e1b3e62a574987389b/src-tauri/src/chat/sub_agent/runtime.rs#L716) | 当前已接受非空、非降级的恢复答复；其余走错误字符串并可记录为 `Failed`，同时释放运行资源。 | 运行资源释放合理；它不应兼任任务验收。旧记录不会因此自动重写。 |
+| [恢复分类](https://github.com/ZMGID/kivio/blob/228a208587ed8a9aa2e8d5e1b3e62a574987389b/src-tauri/src/chat/agent/recovery.rs#L27)、[输出转换](https://github.com/ZMGID/kivio/blob/228a208587ed8a9aa2e8d5e1b3e62a574987389b/src-tauri/src/chat/sub_agent/control.rs#L188) | 共享恢复层已有 `DegradedAnswer`、`FailureKind`；子代理边界仅传递 `degraded.is_some()`，再压成 `Result<..., String>`。 | 已有恢复能力，但跨边界丢失结构化原因和部分产出的含义。 |
+| [collect_results](https://github.com/ZMGID/kivio/blob/228a208587ed8a9aa2e8d5e1b3e62a574987389b/src-tauri/src/chat/sub_agent/control.rs#L51) | `pending` 跟踪活跃执行；终态报告选 `result` 或 `error`，持久投递后确认 delivered。 | 已投递表示父方收到，不表示主代理接受成果或安排补救。 |
+| [父方 checkpoint](https://github.com/ZMGID/kivio/blob/228a208587ed8a9aa2e8d5e1b3e62a574987389b/src-tauri/src/chat/commands/agent_host.rs#L35)、[正常收尾](https://github.com/ZMGID/kivio/blob/228a208587ed8a9aa2e8d5e1b3e62a574987389b/src-tauri/src/chat/agent/loop_.rs#L378) | checkpoint 可收到异常报告；正常 `FinalAnswer` 遇到新结果会返回规划循环。 | 不能说主代理不能继续、完全没有控制通路。 |
+| [轮数上限出口](https://github.com/ZMGID/kivio/blob/228a208587ed8a9aa2e8d5e1b3e62a574987389b/src-tauri/src/chat/agent/loop_.rs#L439)、[最后 checkpoint](https://github.com/ZMGID/kivio/blob/228a208587ed8a9aa2e8d5e1b3e62a574987389b/src-tauri/src/chat/agent/loop_.rs#L490)、[合成阶段](https://github.com/ZMGID/kivio/blob/228a208587ed8a9aa2e8d5e1b3e62a574987389b/src-tauri/src/chat/agent/synthesis.rs#L37) | 上限出口后的新报告直接进入合成；存在子代理持久消息时追加收尾指令，合成请求不提供工具。 | 此出口可能在刚收到需要处理的异常时失去继续控制机会；属于静态路径发现，本轮没有复现。 |
 
 因此需要修的是“报告已收到”与“委派已处理”之间的缺口，不能把已有传输重试和子执行恢复误说成完全不存在，也不能只新增一种颜色或状态文字。
 

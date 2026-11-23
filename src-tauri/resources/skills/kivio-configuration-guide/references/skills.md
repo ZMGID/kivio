@@ -8,7 +8,7 @@
 
 1. 检查输入：`SKILL.md` 所在目录才是一个技能根，保留其中 `scripts/`、`references/`、`assets/`。含插件 manifest 的包交给插件流程；不要把插件拆成技能后宣称整包可用。
 2. 最小格式是 UTF-8、文件开头 `---` 包围的 `name` 和 `description`，之后为正文。Kivio 是轻量 frontmatter 解析器，描述用**单行**；不要使用 YAML 的 `>` / `|` 多行块。新技能的目录名与小写连字符名称一致。高级字段见 [发现与调用](discovery.md)。
-3. 默认安装位置 `~/.kivio/skills/<name>/SKILL.md`；仅此项目使用 `<工作目录>/.kivio/skills/<name>/SKILL.md`。`~/.agents/skills` 为共享扫描目录，非 Kivio 默认写入位置。`.codex/skills`、`.claude/skills` 不是 Kivio 默认扫描根。
+3. 正式版默认安装位置 `~/.kivio/skills/<name>/SKILL.md`，Dev 版为 `~/.kivio-dev/skills/<name>/SKILL.md`；仅此项目使用 `<工作目录>/.kivio/skills/<name>/SKILL.md`。`~/.agents/skills` 为共享扫描目录，非 Kivio 默认写入位置。`.codex/skills`、`.claude/skills` 不是 Kivio 默认扫描根。
 4. 可使用扩展的技能页导入一个目录或 ZIP；目录必须直接含 SKILL.md。技能 ZIP 导入只取首个找到的 SKILL.md，不能一次导入整套多技能 ZIP。仓库先找到每个技能根；网页 URL 不能当作 ZIP 下载链接。
 5. 只有本机文件工具时，可将一个完整技能目录复制到目标。先检查同名 ID、符号链接及路径边界，更新保留备份，再复制并读回。ZIP 先在临时目录解压并检查；拒绝绝对路径和 `..` 越界，不执行包内脚本来“完成安装”。官方导入存在覆盖旧同名目录的行为，不把重装当无损操作。
 6. 刷新技能页，确认实际 ID、source、path；再开下一轮加载该技能。运行中的 skill registry 每轮只建一次，新文件不保证在同一轮立即可见。

@@ -1,5 +1,7 @@
 # Kivio AI 客户端架构设计文档
 
+> 本文保留早期桌面聊天设计和当时的目录布局。当前模块归属见[架构总览](ARCHITECTURE.md)，内置运行时接口见 [Kivio Agent SDK](../crates/kivio-agent-sdk/README.md)。
+
 ## 概述
 
 本文档记录了 Kivio 从"翻译+截图工具"向"完整 AI 桌面客户端"演进的架构设计决策。

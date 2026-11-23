@@ -22,7 +22,7 @@
 
 Lives in the tray. Hotkeys translate typing, selection, or what's on screen; capture a region and ask. The client is a full agent: tools, sub-agents, Skills, MCP, knowledge base, multi-model replies.
 
-Bring your own keys. No account, no proxy, no telemetry. Data stays on disk.
+No Kivio account is required. Chats are stored locally. Model requests go directly to your chosen provider using an API key, provider sign-in or a local endpoint.
 
 ## ❤️ Sponsor
 
@@ -48,7 +48,7 @@ Thanks to Crab-ai for sponsoring this project. Crab-ai gives you access to multi
 
 Text on screen, a captured region, and coding CLIs you already installed do not need three apps. Kivio keeps them in one tray process: hotkeys anywhere, your own providers.
 
-- **One loop, many hosts** — built-in Agent, research-only Kivio Chat, and local external CLIs (Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Pi, Hermes, Grok, DeepSeek Harness) share the same chat UI
+- **One loop, many hosts** — built-in Agent, research-only Kivio Chat, and local external CLIs (Claude Code, Codex, Antigravity, OpenCode, Gemini, Kimi, Pi, Hermes, Grok, DeepSeek Harness) share the same chat UI
 - **Screen tools** — quick, selection, screenshot, and in-place replace translation; Lens freezes the display, lets you ask and annotate, and can hand the thread back to chat
 - **Bring your own keys** — OpenAI Chat Completions / Responses, Anthropic, Gemini, Grok (xAI Responses). Translator, screenshot, Lens, and each conversation can use a different model
 - **Extensions** — Skills, MCP, knowledge base, sub-agents, plugins, connectors; a right dock with file tree, Git, and a terminal
@@ -77,7 +77,8 @@ Full history: [Releases](https://github.com/ZMGID/kivio/releases) · current not
 - Tool loop, sub-agents, Skills, MCP, knowledge base, attachments; one question, many models
 - Three runtimes: Kivio Agent (full tools), Kivio Chat (search / fetch / knowledge base, read-only), external CLI
 - Model provider API keys are optional: chat, model discovery, and connection tests can call the configured endpoint without a placeholder key. Empty keys omit key-authentication headers; server authentication errors are still reported. OAuth providers still require login.
-- Hand a conversation to Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Pi, Hermes, Grok, or DeepSeek Harness if they are installed
+- Select Goal from the mode menu or with Shift+Tab to draft a goal for the current conversation. Switching modes preserves the draft text.
+- Hand a conversation to Claude Code, Codex, Antigravity, OpenCode, Gemini, Kimi, Pi, Hermes, Grok, or DeepSeek Harness if they are installed
 - Import native CLI sessions (pinned to the original CLI and working directory)
 - The built-in context panel separates capacity from breakdown: the header uses the latest main request's API-reported input + output tokens, formatted in k (e.g. `53.0k/1000.0k`). Three ranked categories—system prompt (including instructions, memory and injected context), tools (including system tools, MCP and skills), and conversation (including messages, summaries and attachments)—show independent estimated token amounts (`≈`) alongside explicitly labeled character shares. Categories measure the actual prepared request, not a separately reconstructed prompt on refresh. Shares color only the occupied portion; estimates are never scaled to API totals and may not sum to reported usage. Average cache hit rate sums only complete main-request input/cache-read pairs; missing fields are not zero. It is hidden below 78% or when unknown. Refreshes, restores and streaming updates share a measurement sequence, so older snapshots cannot replace newer reports. Missing or invalidated reports remain unknown after compaction, clearing or model switches, including switching back. Local estimates never replace the reported total; external CLIs retain their own measurement contract.
 - The context popover uses a compact layout. Missing measurements display `—` without waiting or refresh notices; empty categories take no space. Refresh, compact and clear actions remain available.
@@ -117,7 +118,7 @@ Full history: [Releases](https://github.com/ZMGID/kivio/releases) · current not
 
 ## Hotkeys
 
-Toggles, remappable in Settings.
+These are the release defaults. You can change them in Settings.
 
 | Action | macOS | Windows |
 |---|---|---|
@@ -127,12 +128,14 @@ Toggles, remappable in Settings.
 | Selection translate | `⌘⇧T` | `Ctrl+Shift+T` |
 | Replace translate | `⌘⇧R` | `Ctrl+Shift+R` |
 | Lens | `⌘⇧G` | `Ctrl+Shift+G` |
+| Annotate screenshot | `⌘⇧S` | `Ctrl+Shift+S` |
+| Close chat | `⌘⇧W` | `Ctrl+Shift+W` |
 
 ## Download
 
 ### Requirements
 
-- **macOS**: Apple Silicon (`.dmg` is unsigned)
+- **macOS**: Apple Silicon (the app in the DMG is ad-hoc signed and unnotarized)
 - **Windows**: Windows 10 / 11 (Edge WebView2; usually already installed)
 
 Get the latest from [Releases](https://github.com/ZMGID/kivio/releases/latest):
@@ -141,7 +144,7 @@ Get the latest from [Releases](https://github.com/ZMGID/kivio/releases/latest):
 - Windows installer: `Kivio.Desktop_*_x64-setup.exe`
 - Windows portable: `Kivio.Desktop_*_x64-portable.zip`
 
-The DMG is unsigned. First launch: right-click → Open, or:
+On first launch, right-click → Open, or:
 
 ```bash
 xattr -cr "/Applications/Kivio Desktop.app"
@@ -158,7 +161,7 @@ macOS needs **Accessibility** and **Screen Recording**. Then follow the onboardi
 ## Quick start
 
 1. Install Kivio and finish onboarding (provider + hotkeys).
-2. **Add a provider**: Settings → Providers → Add → pick a preset (or custom) and paste an API key.
+2. **Add a provider**: Settings → Providers → Add → pick a preset or custom endpoint. Enter an API key or sign in if the service requires it, then fetch and enable a model. [Provider sign-in](docs/provider-oauth.md)
 3. **Chat**: `⌘⇧K` / `Ctrl+Shift+K`, pick a model, send. Switch to a local CLI from the runtime picker when you need one.
 4. **Screen**: use a translate hotkey or Lens; grant permissions in system settings.
 
@@ -167,31 +170,31 @@ macOS needs **Accessibility** and **Screen Recording**. Then follow the onboardi
 <details>
 <summary><strong>Do I need an account? Where is my data?</strong></summary>
 
-No account. Keys live in local `settings.json`. Conversations, knowledge bases, and notes live under the app data directory:
+No Kivio account is required. API keys live in local `settings.json`. Conversations, knowledge bases, and notes live under the app data directory:
 
 - Windows: `%APPDATA%\com.zmair.kivio`
 - macOS: `~/Library/Application Support/com.zmair.kivio`
 
-No telemetry. Requests go only to the providers you configure.
+Model requests go to the selected provider. Web search and manual WebDAV backups also send data to their respective services when used. [Backup and restore](docs/backup.md)
 
 </details>
 
 <details>
 <summary><strong>Which external CLIs are supported?</strong></summary>
 
-If they are installed: Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Pi, Hermes, Grok, DeepSeek Harness. Availability is probed on the machine; model catalogs load lazily for the selected CLI.
+If they are installed: Claude Code, Codex, Antigravity, OpenCode, Gemini, Kimi, Pi, Hermes, Grok, DeepSeek Harness. Availability is probed on the machine; model catalogs load lazily for the selected CLI.
 
 </details>
 
 <details>
 <summary><strong>macOS says the app is damaged / cannot be opened?</strong></summary>
 
-The build is unsigned. Right-click → Open, or run `xattr -cr "/Applications/Kivio Desktop.app"`. Screenshot and replace translation also need Screen Recording.
+The app is ad-hoc signed and unnotarized. Right-click → Open, or run `xattr -cr "/Applications/Kivio Desktop.app"`. Screenshot and replace translation also need Screen Recording.
 
 </details>
 
 <details>
-<summary><strong>Why can’t I continue an imported CLI chat on another model?</strong></summary>
+<summary><strong>Why can’t I continue an imported CLI chat with another CLI?</strong></summary>
 
 Import is a display snapshot. The history still belongs to the original CLI. Continuation uses that CLI’s native session and stays on the original working directory. See [ADR-0001](docs/adr/0001-imported-cli-conversations-stay-on-their-cli.md) and [ADR-0002](docs/adr/0002-imported-history-is-a-snapshot.md).
 
@@ -206,12 +209,16 @@ You need Node.js 20.19+ (a version supported by ESLint), npm, Rust, and Tauri 2 
 
 ```bash
 npm install
-npm run dev          # Rust + UI (builds Swift sidecar on macOS)
+npm run dev          # Kivio Dev (builds the Swift sidecar on macOS)
+npm run build:dev    # Package Kivio Dev
+npm run build        # Package the release app
 npm run dev:ui       # Vite only
 npm run lint
 npm run typecheck
 npm test
 ```
+
+Kivio Dev uses its own app identifier (`com.zmair.kivio.dev`), settings, conversations and provider credentials. Configure a model in Dev before running a live chat probe. Run `npm run probe:e2e -- --list` to list external CLI scenarios. [Probe guide](docs/chat-probe.md)
 
 Lint configuration is in [`eslint.config.mjs`](eslint.config.mjs). `@shadcn/lint` is registered without enabling new rules; add chosen `shadcn/*` rules in its `rules` object. See the [available rules](https://github.com/shadcn-ui/lint#rules) and [configuration examples](https://github.com/shadcn-ui/lint/blob/main/docs/design-systems.md).
 
@@ -225,6 +232,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 powershell -File scripts/win-cargo-test.ps1
 ```
 
+Standalone Rust applications can use the [Kivio Agent SDK](crates/kivio-agent-sdk/README.md).
+
 Chat-protocol types are generated from Rust. After a protocol change:
 
 ```bash
@@ -237,20 +246,7 @@ npm run protocol:check
 <details>
 <summary><strong>Architecture</strong></summary>
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              Frontend (React 18 + Vite + Tailwind)           │
-│   One bundle, four windows: main / chat / lens / translate   │
-└────────────────────────┬────────────────────────────────────┘
-                         │ Tauri IPC · chat-protocol
-┌────────────────────────▼────────────────────────────────────┐
-│                 Backend (Tauri 2 + Rust)                     │
-│   AgentHost loop (prepare → planning → rounds → synthesis)  │
-│     ├─ GUI chat                                              │
-│     ├─ External CLI agents                                   │
-│     └─ Sub-agents                                            │
-└─────────────────────────────────────────────────────────────┘
-```
+The desktop UI uses React 18, Vite and Tailwind and calls the Rust backend through Tauri IPC. Built-in chat, automation and OMP subagents share the Kivio Agent SDK tool loop. External CLIs run through their own protocol adapters and stream results into the same chat UI. See the [architecture overview](docs/ARCHITECTURE.md).
 
 - Live chat uses the versioned `chat-protocol` (`npm run protocol:check` verifies generated types)
 - Provider adapters: OpenAI Chat, Anthropic Messages, Gemini, OpenAI Responses (including xAI Grok)

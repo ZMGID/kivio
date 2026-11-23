@@ -78,7 +78,7 @@ playwright-cli -s=chat-scroll close
 | 短时间回切 | `SessionDataLayer` 以 session 为键共享投影 store，引用归零后默认 30 秒再关闭订阅；回切可能复用暖态。[数据层](https://github.com/zai-org/ZCode/blob/328c1a0c0ffaa5a4f65e8fa199af5e4c20706e5f/packages/ui/src/v4/sessionDataLayer.ts#L24-L39)、[acquire/release](https://github.com/zai-org/ZCode/blob/328c1a0c0ffaa5a4f65e8fa199af5e4c20706e5f/packages/ui/src/v4/sessionDataLayer.ts#L67-L95) | 当前 `selectConversation` 每次仍调用 `readConversation`；`ChatRouteKeepAlive` 保的是聊天/设置页面实例，不是每条会话的数据缓存。[导航](../../src/chat/chatNavigationController.ts#L213-L253)、[KeepAlive](../../src/chat/ChatRouteKeepAlive.tsx#L7-L39) |
 | 展示时机 | 订阅 ACK 后仍须等目标 session 的 snapshot；`timelineSnapshot` 校验 lease/session 身份，防止旧会话内容污染新会话滚动恢复。错误态有重连面板。[SessionPane](https://github.com/zai-org/ZCode/blob/328c1a0c0ffaa5a4f65e8fa199af5e4c20706e5f/packages/ui/src/v4/SessionPane.tsx#L3675-L3702)、[展示](https://github.com/zai-org/ZCode/blob/328c1a0c0ffaa5a4f65e8fa199af5e4c20706e5f/packages/ui/src/v4/SessionPane.tsx#L4720-L4753) | 请求代号隔离迟到结果；读完后 `startTransition` 提交，遮罩直到 `MessageList` 的媒体、字体、异步块和布局连续稳定，或到达截止时间才移除。大于 12 条消息的侧栏提示会立即显示 Logo，其余 150ms 后才显示。[导航](../../src/chat/chatNavigationController.ts#L234-L259)、[过渡状态](../../src/chat/conversationTransitionStore.ts#L41-L60)、[布局完成判定](../../src/chat/MessageList.tsx#L357-L460) |
 
-**推断，待测：** 对长历史，Kivio 的整条 JSON 读取、IPC 传输与前端对象构建可能是切换延迟的一部分；`listPopouts` 已缓存结果并合并在途请求，缓存有效时不产生额外 IPC；遮罩等待图片/字体/布局稳定可能增加可见等待。[导航顺序](../../src/chat/chatNavigationController.ts#L234-L253)、[弹窗归属缓存](../../src/chat/chatPopoutOwnershipOwner.ts#L39-L95)。不能从代码推断各环节占比，也不能断言 ZCode 一定更快。建议先分别计时 `listPopouts`、`chat_get_conversation`、`applyConversation` 到首屏 commit、遮罩结束，并按消息数、工具卡数量、附件数分组。若读取/传输占主因，可在现有对话存储负责人中设计尾页读取与更早历史分页；若回切占主因，再评估有容量和失效规则的短期快照缓存。不得绕过 Kivio 对原生会话导入快照的 [ADR-0002](../adr/0002-imported-history-is-a-snapshot.md) 语义。
+**推断，待测：** 对长历史，Kivio 的整条 JSON 读取、IPC 传输与前端对象构建可能是切换延迟的一部分；`listPopouts` 已缓存结果并合并在途请求，缓存有效时不产生额外 IPC；遮罩等待图片/字体/布局稳定可能增加可见等待。[导航顺序](../../src/chat/chatNavigationController.ts#L234-L253)、[弹窗归属缓存](https://github.com/ZMGID/kivio/blob/9bb4f5acfa87e3efe3c5b3f3de8d53ed2debc35b/src/chat/chatPopoutOwnershipOwner.ts#L39-L95)。不能从代码推断各环节占比，也不能断言 ZCode 一定更快。建议先分别计时 `listPopouts`、`chat_get_conversation`、`applyConversation` 到首屏 commit、遮罩结束，并按消息数、工具卡数量、附件数分组。若读取/传输占主因，可在现有对话存储负责人中设计尾页读取与更早历史分页；若回切占主因，再评估有容量和失效规则的短期快照缓存。不得绕过 Kivio 对原生会话导入快照的 [ADR-0002](../adr/0002-imported-history-is-a-snapshot.md) 语义。
 
 ### 3.2 显示状态与读取成本
 
@@ -212,7 +212,7 @@ ZCode 的数值（48px 底部阈值、1200ms 输入意图寿命、250ms layout g
 
 ### 5.2 异步附件归属风险
 
-Kivio 的 InputBar 在已有对话之间可保持挂载，`draftKeyValue` 变化后恢复新草稿。文件选择 `openAttachmentPicker` 在 await 对话框和 `pendingFromPaths` 之后直接 `addAttachments`；普通 Ctrl+V 也在等待临时文件保存后直接添加，只有菜单目标路径检查 `isCurrent()`。[切换草稿](../../src/chat/InputBar.tsx#L587-L623)、[文件选择](../../src/chat/InputBar.tsx#L1142-L1164)、[粘贴](../../src/chat/InputBar.tsx#L1572-L1624)、[挂载位置](../../src/chat/ChatConversationPane.tsx#L274)
+Kivio 的 InputBar 在已有对话之间可保持挂载，`draftKeyValue` 变化后恢复新草稿。文件选择 `openAttachmentPicker` 在 await 对话框和 `pendingFromPaths` 之后直接 `addAttachments`；普通 Ctrl+V 也在等待临时文件保存后直接添加，只有菜单目标路径检查 `isCurrent()`。[切换草稿](../../src/chat/InputBar.tsx#L587-L623)、[文件选择](../../src/chat/InputBar.tsx#L1142-L1164)、[粘贴](../../src/chat/InputBar.tsx#L1572-L1624)、[挂载位置](https://github.com/ZMGID/kivio/blob/9bb4f5acfa87e3efe3c5b3f3de8d53ed2debc35b/src/chat/ChatConversationPane.tsx#L274)
 
 由此静态可达的场景是：在 A 粘贴图片 → 临时文件保存尚未完成 → 切到 B → 完成回调把附件加到 B。尚未运行回归用例确认，但比“附件可能慢”更具体。ZCode 的价值是异步入口捕获 scope，完成时对该 scope 提交。落地应先用可控延迟复现，再决定原草稿保留结果及新建占位键迁移规则，同时让错误提示也归属于原操作；只给最后一个 setState 加 isCurrent 会丢失原草稿中的操作结果。
 

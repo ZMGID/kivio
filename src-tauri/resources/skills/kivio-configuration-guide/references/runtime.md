@@ -20,7 +20,7 @@
 3. 明确该 CLI 使用本机账户还是 Kivio 供应商覆盖；验证 endpoint、协议和模型 ID 的来源。不要输出 API keys/token/env 全量。
 4. 可用性/模型列表有缓存，设置保存会清理对应缓存；刷新检测或重开会话后复查。不能用不断重装代替区分“没安装”“缓存旧”“登录失效”“模型列表失败”。
 
-当前注册的 CLI id 为 claude/codex/cursor/opencode/gemini/kimi/pi/hermes/grok/dsh，以安装版本实际检测为准。附带给外部 CLI 的 active skill 可能暂存在 `.kivio/skills-staged`，只是本轮资源副本，不是个人安装目录；不要在那里安装或修改原始技能。
+当前注册的 CLI id 为 claude/codex/antigravity/opencode/gemini/kimi/pi/hermes/grok/dsh，以安装版本实际检测为准。附带给外部 CLI 的 active skill 可能暂存在 `.kivio/skills-staged`，只是本轮资源副本，不是个人安装目录；不要在那里安装或修改原始技能。
 
 ## 会话与权限
 

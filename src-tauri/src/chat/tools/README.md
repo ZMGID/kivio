@@ -1,6 +1,6 @@
 # 工具契约
 
-本模块提供 SDK-03 的内部候选接口，尚未作为独立 crate 发布。它不读取应用设置，不发现 MCP 服务，也不自动启用文件或命令工具。
+桌面端从 [kivio-agent-sdk 的 tools 模块](../../../../crates/kivio-agent-sdk/src/tools/mod.rs) 重导出工具契约。SDK 接受宿主显式注册的工具，桌面端负责读取应用设置、发现 MCP 服务、授权和展示结果。独立 Rust 程序的接入方式见 [SDK 使用说明](../../../../crates/kivio-agent-sdk/README.md)。
 
 ## 接入静态工具
 
@@ -10,7 +10,7 @@
 
 生产示例是 `native_tools::WriteFile`。`mcp/native_registry.rs` 的 `write` 条目提供声明、执行函数和策略。它保留阻塞线程池、文件锁、原子替换和宿主产物处理。新增普通工具只需实现及注册，不修改 Agent 循环。
 
-本轮的 `AgentRunConfig.tools` 和调用方提供的 `ToolExecutor` 共同组成显式注册边界。循环只匹配这份列表。即使桌面注册表存在某个同名工具，未选入本轮也不能执行。桌面发现、用户配置与授权仍由应用处理。
+`AgentRunConfig.tools` 和调用方提供的 `ToolExecutor` 共同组成显式注册边界。循环只匹配这份列表。即使桌面注册表存在某个同名工具，未选入本轮也不能执行。桌面发现、用户配置与授权仍由应用处理。
 
 ## 动态工具与输入校验
 
@@ -39,6 +39,6 @@
 
 ## 验证
 
-`tools/tests.rs` 验证静态参数、类型化错误和输出编码失败。`schema.rs` 验证嵌套引用、动态约束、兼容性转换及外部引用拒绝。`agent/tool_contract_tests.rs` 通过真实循环检查显式注册、静态与动态工具往返及失败状态。原生写入测试检查实际文件和结构化回执。
+[SDK 工具测试](../../../../crates/kivio-agent-sdk/src/tools/tests.rs) 验证静态参数、类型化错误和输出编码失败。SDK 的 `tools/schema.rs` 验证嵌套引用、动态约束、兼容性转换及外部引用拒绝。`agent/tool_contract_tests.rs` 通过真实循环检查显式注册、静态与动态工具往返及失败状态。原生写入测试检查实际文件和结构化回执。
 
 运行完整验证使用仓库的 `scripts/win-cargo-test.ps1 --lib`。相关过滤路径包括 `chat::tools`、`chat::agent`、`chat::tool_output`、`mcp` 和 `native_tools`。

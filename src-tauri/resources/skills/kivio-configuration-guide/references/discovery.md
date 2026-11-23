@@ -4,7 +4,7 @@
 
 1. 项目：从工作目录向上，每层先 `.kivio/skills` 再 `.agents/skills`，遇 `.git` 或家目录停止，最多 24 层。
 2. 已启用预设插件的技能根。
-3. `~/.kivio/skills`。
+3. 当前版本的个人目录（正式版 `~/.kivio/skills`，Dev 版 `~/.kivio-dev/skills`）。
 4. 旧 `<app_data>/skills`。
 5. `~/.agents/skills`。
 6. 旧 `~/.cua-driver/skills`（兼容已安装内容）。
@@ -41,4 +41,4 @@ arguments: [focus]
 
 运行时 `skill` 工具形状为 `{"name":"目录中实际显示的名称"}`。它返回正文、实际 Skill directory 和资源路径；后续 `read`/`bash` 必须以该目录解析相对路径。`skill` 只加载，不负责安装或运行所有脚本。
 
-源码：`src-tauri/src/skills/{discover,parse,types,runtime,catalog,mod}.rs`；`src-tauri/src/settings.rs::skill_global_unavailable_error`。
+源码：`src-tauri/src/skills/discover.rs` 和 `crates/kivio-agent-sdk/src/skills/`；`src-tauri/src/settings.rs::skill_global_unavailable_error`。

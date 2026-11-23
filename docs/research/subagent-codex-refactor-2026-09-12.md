@@ -182,18 +182,18 @@ App Server 官方文档提供 Thread、Turn、Item 及其请求/通知协议，�
 | 历史与资源 | 每次重建 system+user；进程内结果表按数量回收；没有完整子历史恢复契约 |
 | 文件隔离 | 上下文隔离，工具仍使用父对话工作目录；没有自动 worktree |
 
-证据：[子任务定义、配置与阻塞返回](../../src-tauri/src/chat/sub_agent.rs)（839、704、1230、1276 行）、[并行批次等待](../../src-tauri/src/chat/agent/rounds.rs)（421 行）、[展示卡片](../../src/chat/ToolCallBlock.tsx)（564 行）。这里审查的是内置运行时；外部 CLI 子 Agent 由对应 CLI 管理，不能用它的后台任务能力替代内置实现。
+证据：[子任务定义、配置与阻塞返回](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/sub_agent.rs)（839、704、1230、1276 行）、[并行批次等待](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/agent/rounds.rs)（421 行）、[展示卡片](../../src/chat/ToolCallBlock.tsx)（564 行）。这里审查的是内置运行时；外部 CLI 子 Agent 由对应 CLI 管理，不能用它的后台任务能力替代内置实现。
 
 此前审查的两条风险仍需在阶段 0 通过生产控制路径的测试覆盖：
 
-1. **任务级重试会丢失已执行历史。** `run_sub_agent` 在空回答错误后从初始 system+user 重跑；如果前面已经写入文件或执行命令，可能重复副作用。模型步骤内部已有保留历史的一次空回答重试，但耗尽后仍可进入外层重跑。[外层重试](../../src-tauri/src/chat/sub_agent.rs)（683—793 行）、[模型步骤重试](../../src-tauri/src/chat/agent/planning.rs)（379—395 行）、[终答错误传播](../../src-tauri/src/chat/agent/finalize.rs)（295—307 行）。
-2. **并发排队消耗子任务执行期限。** `execute_tool_call` 开始超时计时后才进入子任务 semaphore 等待。默认约 660 秒包含排队；例如并发 1、同批三个各需 5 分钟的任务，第三个只剩约 1 分钟执行。超时应明确区分排队和执行阶段。[外层计时](../../src-tauri/src/chat/agent/execute.rs)（315—323、946—947 行）、[排队](../../src-tauri/src/chat/sub_agent.rs)（1230 行）。这是静态调用路径结论，本次未等待 11 分钟做真实超时复现。
+1. **任务级重试会丢失已执行历史。** `run_sub_agent` 在空回答错误后从初始 system+user 重跑；如果前面已经写入文件或执行命令，可能重复副作用。模型步骤内部已有保留历史的一次空回答重试，但耗尽后仍可进入外层重跑。[外层重试](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/sub_agent.rs)（683—793 行）、[模型步骤重试](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/agent/planning.rs)（379—395 行）、[终答错误传播](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/agent/finalize.rs)（295—307 行）。
+2. **并发排队消耗子任务执行期限。** `execute_tool_call` 开始超时计时后才进入子任务 semaphore 等待。默认约 660 秒包含排队；例如并发 1、同批三个各需 5 分钟的任务，第三个只剩约 1 分钟执行。超时应明确区分排队和执行阶段。[外层计时](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/agent/execute.rs)（315—323、946—947 行）、[排队](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/sub_agent.rs)（1230 行）。这是静态调用路径结论，本次未等待 11 分钟做真实超时复现。
 
 ### 现有代码中值得保留的部分
 
-- 继续复用 `run_agent_loop`，不要另建一套模型请求、工具执行、压缩和用量统计循环。`AgentRunResult` 已提供 `api_messages`、`compacted_history`、`tool_records` 和 `usage`；子任务最终整理阶段目前只保留结果预览与用量，未来可由运行宿主持有完整历史。[Kivio 结果结构](../../src-tauri/src/chat/agent/types.rs)、[现有整理逻辑](../../src-tauri/src/chat/sub_agent.rs)
-- 复用轮次边界的消息注入机制，但为子 Agent 实现自己的接收入口。`ChatAgentHost` 已覆盖 `take_steering_messages` / `take_follow_up_messages`；`SubAgentHost` 沿用返回空数组的默认实现。[主宿主](../../src-tauri/src/chat/commands/agent_host.rs)、[默认接口](../../src-tauri/src/chat/agent/host.rs)
-- 保留角色定义、工具筛选、技能加载、模型选择与进度卡。它们解决的是“任务如何执行”，无需为了异步调度全部重写。[现有子任务实现](../../src-tauri/src/chat/sub_agent.rs)、[工具筛选](../../src-tauri/src/chat/agent/filter.rs)
+- 继续复用 `run_agent_loop`，不要另建一套模型请求、工具执行、压缩和用量统计循环。`AgentRunResult` 已提供 `api_messages`、`compacted_history`、`tool_records` 和 `usage`；子任务最终整理阶段目前只保留结果预览与用量，未来可由运行宿主持有完整历史。[Kivio 结果结构](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/agent/types.rs)、[现有整理逻辑](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/sub_agent.rs)
+- 复用轮次边界的消息注入机制，但为子 Agent 实现自己的接收入口。`ChatAgentHost` 已覆盖 `take_steering_messages` / `take_follow_up_messages`；`SubAgentHost` 沿用返回空数组的默认实现。[主宿主](../../src-tauri/src/chat/commands/agent_host.rs)、[默认接口](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/agent/host.rs)
+- 保留角色定义、工具筛选、技能加载、模型选择与进度卡。它们解决的是“任务如何执行”，无需为了异步调度全部重写。[现有子任务实现](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/sub_agent.rs)、[工具筛选](https://github.com/ZMGID/kivio/blob/118d4874b82371a9a57b9879450dc892ca3fb73d/src-tauri/src/chat/agent/filter.rs)
 
 ### 不能直接沿用的假设
 

@@ -16,7 +16,7 @@
 
 续聊时模型读的是 CLI 那边那份完整历史（由 `--resume` / ACP 自己加载），Kivio 这份快照**只用于显示**。因此解析时每个 `tool_result` 正文只留前 2KB 并标注已截断，不会影响任何模型行为。
 
-这条不是可有可无的优化：实测本机一条 claude 会话是 **10MB / 3522 行**，其中 719 个 `tool_result` 装着文件全文和命令输出，占了绝大部分体积。原样内嵌会让 Kivio 的 conversation JSON 一起膨胀、加载变慢——与 `docs/image-generation.md` 里"大图内嵌撑爆对话文件"是同一个毛病。
+这条不是可有可无的优化：实测本机一条 claude 会话是 **10MB / 3522 行**，其中 719 个 `tool_result` 装着文件全文和命令输出，占了绝大部分体积。原样内嵌会让 Kivio 的 conversation JSON 一起膨胀、加载变慢。当前文件导入器在生成显示快照时执行[工具结果截断](../../src-tauri/src/external_agents/import_history.rs)。
 
 解析范围同理收窄到四类块：`text` / `tool_use` / `tool_result` / `thinking`，外加图片转附件。子 agent 分支（claude 的 `isSidechain`）、hook 注入、`file-history-snapshot` 等 CLI 内部账务一律丢弃——Kivio 的子 agent 卡片是运行时事件驱动的，没有"从历史还原嵌套卡片"的结构，硬塞要新增渲染路径。
 

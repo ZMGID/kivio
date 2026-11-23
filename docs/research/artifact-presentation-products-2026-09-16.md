@@ -35,7 +35,7 @@
 
 1. **已存在“登记不等于展示”的基础。** 新的带 ID 文件不会自动进入回答末尾画廊。模型需用 `present_artifacts` 选择展示；旧的无 ID 文件仍有自动展示兼容逻辑。因此不能把当前问题描述成“所有生成文件都会自动展示”。见 [MessageBubble.tsx](../../src/chat/MessageBubble.tsx)、[artifactPresentation.ts](../../src/chat/artifactPresentation.ts)。
 2. **展示调用没有用途和正文位置。** 现有参数只有 `artifact_ids`、`paths` 和 `caption`；一次调用对应时间线中的一张展示卡，没有“过程检查 / 中途预览 / 最终交付”的语义，也没有最终正文段落锚点。见 [工具定义](../../src-tauri/src/mcp/types.rs)、[工具执行](../../src-tauri/src/mcp/native_registry.rs)。
-3. **提示词强调展示，但缺少筛选标准。** 系统提示要求在展示点调用 `present_artifacts`；工具结果提示虽说文件不自动显示，其示例却填入了该次结果的全部 ID。“这可能诱导模型一次展示全部”是实现推断，尚未通过模型对照实验确认。见 [prepare.rs](../../src-tauri/src/chat/agent/prepare.rs)、[artifact_presentation_hint](../../src-tauri/src/chat/agent/execute.rs)。
+3. **提示词强调展示，但缺少筛选标准。** 系统提示要求在展示点调用 `present_artifacts`；工具结果提示虽说文件不自动显示，其示例却填入了该次结果的全部 ID。“这可能诱导模型一次展示全部”是实现推断，尚未通过模型对照实验确认。见 [prepare.rs](https://github.com/ZMGID/kivio/blob/73a70f541a7618df6f1bde63bfb5c1a80bb11326/src-tauri/src/chat/agent/prepare.rs)、[artifact_presentation_hint](https://github.com/ZMGID/kivio/blob/73a70f541a7618df6f1bde63bfb5c1a80bb11326/src-tauri/src/chat/agent/execute.rs)。
 4. **正文内嵌已有部分能力。** Markdown 图片可按文件名查找 artifact；一般文件是可打开的本地链接。但图片文件名冲突保留第一张，尚无统一按稳定 ID 引用图片、视频及文档卡的正文机制。不能直接把现有文件名匹配当成可靠的最终交付协议。见 [ChatMarkdown.tsx](../../src/chat/ChatMarkdown.tsx)、[文件卡](../../src/chat/GeneratedFileArtifacts.tsx)。
 5. **上一轮修复处理了次序，没有解决选择。** 当前未提交修改让展示卡前后的过程保持时间顺序，共用一个 Work 开关；它没有判断哪些文件值得展示。后续明确请求的中途预览仍需要这个顺序保证。
 

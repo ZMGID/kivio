@@ -59,7 +59,7 @@ if ($searches.Count -gt 0) {
 
 [`image_generation.rs`](../../src-tauri/src/chat/image_generation.rs) 构造的 `ChatToolArtifact` 有完整图片数据、展示名，初始 `path: None`，而 `follow_up_user_messages` 为空。工具正文还输出 `![generated-image-1.png](generated-image-1.png)`，这个显示名并不是工作目录内的文件。
 
-[`agent/execute.rs`](../../src-tauri/src/chat/agent/execute.rs) 随后分配 `art_…` ID。`artifact_presentation_hint` 给模型 ID、名称、MIME 和最终引用语法，没有提供 ID 读取方法或已存在的文件地址。实际聊天的工具摘要与此完全一致。
+[`agent/execute.rs`](https://github.com/ZMGID/kivio/blob/7a0c1ebebd91c3a09d6e90b53e647afa89072431/src-tauri/src/chat/agent/execute.rs) 随后分配 `art_…` ID。`artifact_presentation_hint` 给模型 ID、名称、MIME 和最终引用语法，没有提供 ID 读取方法或已存在的文件地址。实际聊天的工具摘要与此完全一致。
 
 所以模型知道“图已经生成，最终可以引用”，却不能通过该返回值直接看图。模型自己的解释仅是线索；上述工具输出和代码才是依据。
 

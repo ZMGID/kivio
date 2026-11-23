@@ -24,14 +24,14 @@ text/plain: “环境检查完成。请回答上面四个问题。”
 
 | 环节 | 当前行为及影响 | 源码 |
 | --- | --- | --- |
-| 数据类型 | `Auxiliary / Plain / ToolLoop / Synthesis` 是 Kivio 本地阶段枚举，并非供应商的 commentary/final 协议 | [types.rs](../../src-tauri/src/chat/types.rs#L351) |
-| 内置规划循环 | 正文先以 `ToolLoop` 创建，无工具调用的分支再改为 `Plain`；带工具的正文可能保留原阶段 | [planning.rs](../../src-tauri/src/chat/agent/planning.rs#L152)、[无工具分支](../../src-tauri/src/chat/agent/planning.rs#L378) |
-| 前端分组 | `tool_loop/auxiliary` 的 text 被当作过程；另有 `index < lastProcessIndex`，连 `plain/synthesis` 也可能因后面出现过程而收进组 | [分类](../../src/chat/segments.ts#L405)、[分组](../../src/chat/segments.ts#L449) |
-| 存储正文 | `content_from_segments` 只拼接 `Text + Plain/Synthesis` | [messages.rs](../../src-tauri/src/chat/commands/messages.rs#L660) |
-| 历史归一 | 正文存在、但上述聚合为空时补 synthesis；直接批量改 phase 或简单全量拼接会影响补段及去重 | [messages.rs](../../src-tauri/src/chat/commands/messages.rs#L496) |
-| 外部 CLI | 已专门避免将 text 标为 ToolLoop，以防漏聚合和补段重复；但仍受前端位置规则影响 | [run.rs](../../src-tauri/src/external_agents/run.rs#L2724) |
-| 复制、导出 | 复制直接用 `message.content`，导出同样读取它；仅修视觉分组不足以恢复这两条路径的完整性 | [复制](../../src/chat/MessageBubble.tsx#L1130)、[导出](../../src-tauri/src/chat/export.rs#L74) |
-| 模型回放 | 存储另有 `model_messages`，优先作为回放来源；为空才保留 `api_messages` 兜底 | [messages.rs](../../src-tauri/src/chat/commands/messages.rs#L145) |
+| 数据类型 | `Auxiliary / Plain / ToolLoop / Synthesis` 是 Kivio 本地阶段枚举，并非供应商的 commentary/final 协议 | [types.rs](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/chat/types.rs#L351) |
+| 内置规划循环 | 正文先以 `ToolLoop` 创建，无工具调用的分支再改为 `Plain`；带工具的正文可能保留原阶段 | [planning.rs](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/chat/agent/planning.rs#L152)、[无工具分支](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/chat/agent/planning.rs#L378) |
+| 前端分组 | `tool_loop/auxiliary` 的 text 被当作过程；另有 `index < lastProcessIndex`，连 `plain/synthesis` 也可能因后面出现过程而收进组 | [分类](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src/chat/segments.ts#L405)、[分组](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src/chat/segments.ts#L449) |
+| 存储正文 | `content_from_segments` 只拼接 `Text + Plain/Synthesis` | [messages.rs](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/chat/commands/messages.rs#L660) |
+| 历史归一 | 正文存在、但上述聚合为空时补 synthesis；直接批量改 phase 或简单全量拼接会影响补段及去重 | [messages.rs](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/chat/commands/messages.rs#L496) |
+| 外部 CLI | 已专门避免将 text 标为 ToolLoop，以防漏聚合和补段重复；但仍受前端位置规则影响 | [run.rs](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/external_agents/run.rs#L2724) |
+| 复制、导出 | 复制直接用 `message.content`，导出同样读取它；仅修视觉分组不足以恢复这两条路径的完整性 | [复制](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src/chat/MessageBubble.tsx#L1130)、[导出](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/chat/export.rs#L74) |
+| 模型回放 | 存储另有 `model_messages`，优先作为回放来源；为空才保留 `api_messages` 兜底 | [messages.rs](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/chat/commands/messages.rs#L145) |
 
 由此推断，根因是同一个 phase 同时承担执行时序、正文聚合和可见性判断，且前端又叠加了位置推断。不能将 `ToolLoop` 全部改名为 `commentary` 就视为解决。
 
@@ -95,7 +95,7 @@ provider_metadata: 保留实际原始 phase 等语义
 
 供应商能力应落在实际 adapter/协议路径，不能仅按品牌开关。即使某供应商支持 Responses，也需核实该端点真正返回 phase、流式开始和完成事件如何携带字段、兼容代理是否透传。格式支持不等于模型正确使用语义；仍需允许用户展开和查看全部更新。
 
-不能只给 `ChatMessageSegment` 加字段便声称已支持原生意图。当前本地 Responses 路径需审核 [output text/item 事件处理](../../src-tauri/src/chat/model/responses.rs#L1084)、[StreamPart](../../src-tauri/src/chat/model/types.rs#L448)及[ModelMessage](../../src-tauri/src/chat/model/types.rs#L104)。完整传递链应为：原始 output item 的 ID/phase → 流式事件（delta 关联正确 item）→ 模型消息和聊天 segment → 持久化/恢复 → 展示投影；回放另外将原始语义传回供应商。一个 response 内多个 assistant item 不能先合并为一个字符串再赋单一 intent，否则 commentary/final 边界已丢失。
+不能只给 `ChatMessageSegment` 加字段便声称已支持原生意图。当前本地 Responses 路径需审核 [output text/item 事件处理](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/chat/model/responses.rs#L1084)、[StreamPart](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/chat/model/types.rs#L448)及[ModelMessage](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src-tauri/src/chat/model/types.rs#L104)。完整传递链应为：原始 output item 的 ID/phase → 流式事件（delta 关联正确 item）→ 模型消息和聊天 segment → 持久化/恢复 → 展示投影；回放另外将原始语义传回供应商。一个 response 内多个 assistant item 不能先合并为一个字符串再赋单一 intent，否则 commentary/final 边界已丢失。
 
 对于缺少原生意图的模型，可以补充提示：工具前只写简短进度；需要用户回答的问题放在可交互出口；最后回复包含继续任务必需的信息。但提示生成的自由文本标签不能直接升级成可信 provider intent。若未来需要结构化 intent，必须作为独立协议设计验证工具调用兼容、增量解析和回放，不能只加 `<commentary>` 标签并隐藏匹配文本。
 
@@ -107,7 +107,7 @@ provider_metadata: 保留实际原始 phase 等语义
 - **历史兼容**：无 intent 的记录走 unknown；保留旧 JSON 可读性与 fallback。覆盖只有 message.content、只有 segments、二者重叠、normalize 补 synthesis 四种输入。未知 enum 值需有兼容降级策略，不能导致整条记录解析失败。
 - **复制/导出**：默认输出完整用户正文，按原顺序包含工具前问题和最终补充；明确区分“复制正文”和可选的“导出完整执行记录”。这属于产品建议，不是供应商协议要求。
 - **可访问性**：折叠按钮应支持 Enter/Space 与正确 `aria-expanded`，可通过 `aria-controls` 关联内容；这些规范说明操作方式，没有规定本次哪些正文应隐藏。[WAI-ARIA Disclosure Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/)
-- **性能**：保留折叠工具详情按需挂载；修正文选择不等于展开所有工具结果。沿用已有[滚动锚定测试](../../src/chat/MessageList.disclosure.test.tsx)和[气泡折叠测试](../../src/chat/MessageBubble.test.tsx)。
+- **性能**：保留折叠工具详情按需挂载；修正文选择不等于展开所有工具结果。沿用已有[滚动锚定测试](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src/chat/MessageList.disclosure.test.tsx)和[气泡折叠测试](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src/chat/MessageBubble.test.tsx)。
 
 ## 实施时的验证矩阵
 
@@ -128,7 +128,7 @@ provider_metadata: 保留实际原始 phase 等语义
 | 问题卡、审批卡、子代理卡、产物卡 | 独立交互继续可见，键盘可操作 |
 | 长工具链 | 工具详情继续懒挂载，折叠展开状态及滚动锚点稳定 |
 
-建议优先扩展现有 [segments.test.ts](../../src/chat/segments.test.ts)，随后覆盖气泡复制与后端导出/归一测试。针对模型回放，应比较修改前后请求结构，确保 UI 修复没有意外重写上下文。
+建议优先扩展现有 [segments.test.ts](https://github.com/ZMGID/kivio/blob/4dfd65007cc8fe333fd9036dd327ba0a416299aa/src/chat/segments.test.ts)，随后覆盖气泡复制与后端导出/归一测试。针对模型回放，应比较修改前后请求结构，确保 UI 修复没有意外重写上下文。
 
 ## 尚需确认
 

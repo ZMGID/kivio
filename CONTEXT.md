@@ -7,7 +7,7 @@ Kivio 是一个桌面 AI 助手：屏幕级工具（划词翻译、截图 OCR、
 ### 运行时与会话
 
 **外部 CLI 代理**：
-用户本机已安装、被 Kivio 驱动来充当某条对话后端的编码 CLI（claude、codex、grok、kimi、gemini、opencode、hermes、pi、cursor）。
+用户本机已安装、被 Kivio 驱动来充当某条对话后端的编码 CLI（claude、codex、grok、kimi、gemini、opencode、hermes、pi、dsh、antigravity）。
 _Avoid_: 第三方 agent、外部模型
 
 **内置运行时**：

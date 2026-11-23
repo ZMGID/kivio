@@ -1,5 +1,7 @@
 # PRD：Kivio Chat Agent Runtime 标准化
 
+> 本文是 2026 年 6 月的分阶段重构规格。当前工具循环位于 [Kivio Agent SDK](../crates/kivio-agent-sdk/README.md)，桌面端的模型适配边界见[模型层说明](../src-tauri/src/chat/model/README.md)。
+
 | 字段 | 内容 |
 |------|------|
 | 文档版本 | v1.1 |

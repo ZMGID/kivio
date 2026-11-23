@@ -66,7 +66,7 @@
 | 工具 | 允许只读工具、提问、Todo 与技能入口；未提供专用计划保存工具，通用文件写入不在只读集合中。Plan 也没有加载子代理工具。 | [tooling.rs](../../src-tauri/src/chat/commands/tooling.rs)，`agent_plan_allows_tool`；[reply.rs](../../src-tauri/src/chat/commands/reply.rs)，工具组装 |
 | 界面 | 正文下只有计划草案及执行按钮，没有关联文件的打开、编辑入口。已有文件卡和侧栏 Markdown 预览可复用，但后者只是预览，不是现成文档编辑器。 | [MessageBubble.tsx](../../src/chat/MessageBubble.tsx)，`AgentPlanAction`；[GeneratedFileArtifacts.tsx](../../src/chat/GeneratedFileArtifacts.tsx)；[FileTreePanel.tsx](../../src/chat/dock/FileTreePanel.tsx) |
 | 执行 | 后端先选取消息计划并标为 Approved、切到 Act；前端随后另外发送“按这条计划开始执行”。界面把 Approved 显示为“已按这条计划执行”，早于真正开始执行。 | [interaction.rs](../../src-tauri/src/chat/commands/interaction.rs)，`chat_execute_agent_plan`、`approve_agent_plan_for_execution`；[Chat.tsx](../../src/chat/Chat.tsx)，`handleExecuteAgentPlan` |
-| 上下文 | 保存的计划正文注入模式提示；如果引入文件，却继续使用旧字符串，用户编辑文件后模型仍可能收到旧计划。实际请求与上下文统计还有两处工具组装入口。 | [plan.rs](../../src-tauri/src/chat/plan.rs)，`format_prompt`；[prepare.rs](../../src-tauri/src/chat/agent/prepare.rs)；[context.rs](../../src-tauri/src/chat/commands/context.rs) |
+| 上下文 | 保存的计划正文注入模式提示；如果引入文件，却继续使用旧字符串，用户编辑文件后模型仍可能收到旧计划。实际请求与上下文统计还有两处工具组装入口。 | [plan.rs](../../src-tauri/src/chat/plan.rs)，`format_prompt`；[prepare.rs](https://github.com/ZMGID/kivio/blob/d7a305629814cf9f258ec9453f177590bfe7db2c/src-tauri/src/chat/agent/prepare.rs)；[context.rs](../../src-tauri/src/chat/commands/context.rs) |
 
 已有的会话 JSON 持久化能保留旧计划，但不等于生成了一份用户可直接管理的计划文档。仓库中虽有 `docs/superpowers/plans/` 的历史文件，也不能据此认定内置 Plan 已实现自动文档保存。
 

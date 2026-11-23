@@ -27,7 +27,7 @@ Kivio 已经具备结构化增量摘要、近期窗口、工具配对保护、�
 ### F1 · P1 · 统计刷新会用旧快照覆盖新的压缩或清空状态
 
 - 分类：bug；证据等级：源码确认。
-- 位置：[context.rs:103](../../src-tauri/src/chat/commands/context.rs#L103)，关联 [repository.rs:131](../../src-tauri/src/chat/repository.rs#L131)。
+- 位置：[context.rs:103](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/commands/context.rs#L103)，关联 [repository.rs:131](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/repository.rs#L131)。
 - `chat_get_context_stats` 先加载会话并异步计算。`persist_context_state_best_effort` 遇到 CAS 冲突后重新读 revision，却继续提交旧 `context_state`。仓储的 `apply_context_state_update` 整体替换状态。
 - 这个对象不只是统计缓存，还包含 `summary`、`compaction_boundaries`、`clear_boundaries`。因此以下交错会回退真实业务状态：统计读取 revision N → 清空/压缩提交 N+1 → 统计第一次写冲突 → 用 N+1 的 revision 提交 N 的旧状态 → 写入成功。
 - 用户后果：刚完成的摘要被替换、压缩边界消失；清空边界也可能消失，使用户明确切断的历史再次进入模型输入。这不是单纯的百分比闪动。
@@ -37,7 +37,7 @@ Kivio 已经具备结构化增量摘要、近期窗口、工具配对保护、�
 ### F2 · P1 · 达到输出上限的半份摘要会被接受为完整结果
 
 - 分类：bug；证据等级：真实摘要接口 + HTTP/SSE mock 已复现。
-- 位置：[planning.rs:611](../../src-tauri/src/chat/agent/planning.rs#L611)，关联 [compaction.rs:1130](../../src-tauri/src/chat/agent/compaction.rs#L1130)、[model/types.rs:413](../../src-tauri/src/chat/model/types.rs#L413)。
+- 位置：[planning.rs:611](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/agent/planning.rs#L611)，关联 [compaction.rs:1130](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/agent/compaction.rs#L1130)、[model/types.rs:413](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/model/types.rs#L413)。
 - `GenerateOutput` 带有 `finish_reason`，但摘要 helper 只返回 `to_openai_compatible_message()`；摘要核心随后只提取文本。质量检查主要看 200 字符、相对旧摘要长度和旧版 XML 标签，没有检查模型因 `length` / `max_tokens` 停止。
 - 当前提示词使用 Markdown checkpoint，输出足够长但中途截断时，不会触发 `<analysis>` 缺 `<summary>` 的旧检查。该文本被接受后，落盘路径会推进摘要边界，使未总结到的内容不再进入后续请求。
 - 回归实验：返回超过 200 字符正文，然后发送 `finish_reason: length` 和 `[DONE]`。期望 `CompactOutcome::Failed`，实际接受为 `Compacted`。
@@ -47,7 +47,7 @@ Kivio 已经具备结构化增量摘要、近期窗口、工具配对保护、�
 ### F3 · P1 · 主对话下一轮会重放本轮已经移除的工具历史
 
 - 分类：bug；证据等级：生产读写路径确认，未做桌面跨轮实机复现。
-- 位置：[reply.rs:984](../../src-tauri/src/chat/commands/reply.rs#L984)，关联 [loop_.rs:558](../../src-tauri/src/chat/agent/loop_.rs#L558)、[compaction.rs:815](../../src-tauri/src/chat/agent/compaction.rs#L815)、[context.rs:1390](../../src-tauri/src/chat/commands/context.rs#L1390)。
+- 位置：[reply.rs:984](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/commands/reply.rs#L984)，关联 [loop_.rs:558](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/agent/loop_.rs#L558)、[compaction.rs:815](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/agent/compaction.rs#L815)、[context.rs:1390](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/commands/context.rs#L1390)。
 - 循环内改变 `runtime_messages`，有意保留完整 `generated_api_messages` 作为转录。`attach_usage` 输出 `compacted_history`，但生产消费者只有 `sub_agent.rs`；主对话 `reply.rs` 保存的是完整 `result.api_messages`，另把 UI 消息粒度的摘要边界赋给内存 conversation。
 - 深入复核补充：`push_assistant_message` 在仓储 mutation 中重新读取 latest，只合并回答、标题和计划，没有把上述内存压缩状态一起提交；随后统计基于 persisted 重算。因此循环摘要本身的持久化交接也存在断点。多模型 arm 更在摘要赋值前就返回。详见[ZCode 改造准备](context-compaction-zcode-preparation-2026-09-27.md)；此补充为源码确认，未新增实机复现。
 - 两种触发：① microcompact 仅缩减工具结果，根本没有持久化摘要边界；② 压缩发生在同一条 assistant UI 消息内部，边界只能退到完整 UI 消息，不能表达这条消息内部被摘要/保留的具体工具步骤。
@@ -58,7 +58,7 @@ Kivio 已经具备结构化增量摘要、近期窗口、工具配对保护、�
 ### F4 · P2 · 明确超限后的恢复仍受普通估算阈值限制
 
 - 分类：bug；证据等级：真实 agent loop + HTTP/SSE mock 已复现。
-- 位置：[synthesis.rs:359](../../src-tauri/src/chat/agent/synthesis.rs#L359)，关联 [compaction.rs:1467](../../src-tauri/src/chat/agent/compaction.rs#L1467)。
+- 位置：[synthesis.rs:359](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/agent/synthesis.rs#L359)，关联 [compaction.rs:1467](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/agent/compaction.rs#L1467)。
 - `recover_overflow_compact_and_retry` 调用普通 `maybe_compact_send_view`。当估算低于窗口 90%（或窗口未知）时，此函数直接返回原视图；并没有“服务端已经证实超限，必须尝试缩减”的恢复模式。
 - 窗口元数据偏大、估算低估或 F3 导致锚点不匹配时，会再次发送未压缩历史，消耗唯一一次恢复机会，随后降级。
 - 回归实验包含约 30k token 的可压缩旧段，但配置窗口为 200k。模型返回明确 8192-token overflow 后，捕获的请求没有任何摘要调用。原有 `run_loop_overflow_recovery_compacts_and_retries_success` 也只断言共 3 次调用和重试文本，不能证明发生过压缩。
@@ -68,7 +68,7 @@ Kivio 已经具备结构化增量摘要、近期窗口、工具配对保护、�
 ### F5 · P2 · split-turn 第二次摘要请求失去取消信号
 
 - 分类：bug；证据等级：真实摘要接口 + 挂起 SSE mock 已复现。
-- 位置：[compaction.rs:1296](../../src-tauri/src/chat/agent/compaction.rs#L1296) 和 [compaction.rs:1317](../../src-tauri/src/chat/agent/compaction.rs#L1317)。
+- 位置：[compaction.rs:1296](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/agent/compaction.rs#L1296) 和 [compaction.rs:1317](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/agent/compaction.rs#L1317)。
 - 同时存在历史段和当前轮前缀时，第一跳通过 `cancel.take()` 消费整个取消 future。第一跳正常完成后，第二跳再 `take()` 得到 `None`，走不能取消的 `call.await`。
 - 用户在第二跳点停止，需要等待模型响应、超时或重试结束。现有处理只覆盖历史段为空、第一跳未消费 cancel 的情况。
 - 回归实验：第一跳返回合法摘要，第二跳连接挂起；检测第二个请求已发出后发送取消信号，1 秒内没有返回 `Cancelled`。
@@ -77,7 +77,7 @@ Kivio 已经具备结构化增量摘要、近期窗口、工具配对保护、�
 ### F6 · P2 · 压缩成功判定漏掉工具 schema 的预算
 
 - 分类：bug；证据等级：源码与预算算式确认。
-- 位置：[compaction.rs:1486](../../src-tauri/src/chat/agent/compaction.rs#L1486)，关联同文件 1433、715、1534 行。
+- 位置：[compaction.rs:1486](https://github.com/ZMGID/kivio/blob/ad3e1db945d255feac05c8ce6eac8a260ec64e8e/src-tauri/src/chat/agent/compaction.rs#L1486)，关联同文件 1433、715、1534 行。
 - 触发判断使用 `消息 + 工具 schema`，但 microcompact 的 `budget` 仍是整个窗口的 90%，内部只比较消息；摘要后的 `after` 也只计算消息，之后据此清零未解决次数。
 - 举例：窗口 100k，触发预算 90k，工具 schema 25k，缩减后消息 80k。代码认为 `80k <= 90k` 已解决并直接发送，实际输入约 105k；本轮还没有给输出预留空间。
 - 修复方向：触发、切分、缩减后验收使用相同的完整请求预算。传入消息预算时先减 schema / 固定开销；不可压缩的固定部分占满预算时，给出明确失败结果，避免把反复微压缩当成功。

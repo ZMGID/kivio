@@ -2,7 +2,7 @@
 
 ## 新建一个个人命令
 
-Kivio 普通自定义命令可做成技能，不需要发明 `~/.kivio/commands` 自动加载机制。创建 `~/.kivio/skills/review-changes/SKILL.md`（仅项目则 `<项目>/.kivio/skills/...`）：
+Kivio 普通自定义命令可做成技能，不需要发明 `~/.kivio/commands` 自动加载机制。在当前版本的个人技能目录创建 `review-changes/SKILL.md`（正式版为 `~/.kivio/skills`，Dev 版为 `~/.kivio-dev/skills`）（仅项目则 `<项目>/.kivio/skills/...`）：
 
 ```yaml
 ---
@@ -36,4 +36,4 @@ arguments: [focus]
 
 创建好命令后分别验证“目录发现”和“输入 `/命令 参数` 后正文按预期展开”，不要只检查文件存在。
 
-源码：`src-tauri/src/skills/{types,parse,runtime,discover}.rs`；`src-tauri/src/chat/commands/tooling.rs::try_apply_skill_slash_trigger`；`src/chat` 的命令选择器。
+源码：`crates/kivio-agent-sdk/src/skills/parse.rs`、`src-tauri/src/skills/`；`src-tauri/src/chat/commands/tooling.rs::try_apply_skill_slash_trigger`；`src/chat` 的命令选择器。

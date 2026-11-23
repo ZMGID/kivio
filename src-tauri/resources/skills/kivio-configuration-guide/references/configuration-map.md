@@ -8,6 +8,8 @@
 | macOS | `~/Library/Application Support/com.zmair.kivio` |
 | Linux 路径实现 | `$XDG_DATA_HOME/com.zmair.kivio`，未设时为 `~/.local/share/com.zmair.kivio`；不因此承诺 Linux 桌面发行支持 |
 
+上表使用正式版标识。Kivio Dev 使用同一平台目录下的 `com.zmair.kivio.dev`，个人技能目录为 `~/.kivio-dev/skills`。
+
 不要在未知目录找不到文件后立即创建“默认配置”。先确定当前账户和实际安装路径。旧标识 `com.zmair.keylingo` 是迁移来源，非当前写入目标。
 
 ## 设置文件与生效
@@ -31,7 +33,7 @@
 
 ## 模型与提示词
 
-供应商协议值为 `openai_chat` / `openai_responses` / `anthropic_messages` / `gemini` / `xai_responses`。模型名称包含 GPT、Claude、Gemini 并不足以判断网关协议，按服务商实际接口配置。Kivio 自带 Key，没有内置统一账户能代替用户的供应商认证。
+供应商协议值为 `openai_chat` / `openai_responses` / `anthropic_messages` / `gemini` / `xai_responses`。模型名称包含 GPT、Claude、Gemini 并不足以判断网关协议，按服务商实际接口配置。需要认证的供应商使用用户的 API Key 或对应的 OAuth 登录。允许匿名访问的端点可留空密钥。
 
 先分清用户改的是当前会话模型、**新会话默认模型**还是图片/总结/压缩等副任务模型。空路由有各自回退逻辑；`advisor` 未配置意味着关闭，不是自动继承。API Key、endpoint 和模型 ID 分别核验，最小测试用目标功能的一次请求。
 
@@ -39,7 +41,7 @@
 
 ## 其他存储
 
-- 个人 skills：`~/.kivio/skills`；共享 `~/.agents/skills` 和旧 `<app_data>/skills` 是扫描来源。
+- 正式版个人 skills：`~/.kivio/skills`；共享 `~/.agents/skills` 和旧 `<app_data>/skills` 是扫描来源。
 - 通用插件：`<app_data>/plugins/packages/<uuid>/{record.json,content/,data/}`。
 - 预设 CLI 插件：`<app_data>/plugins/<catalog-id>/meta.json`，与通用插件分开。
 - 个人工作流 Hooks：`<app_data>/plugins/workflow-hooks.json`；可写数据位于同级 `hook-data/`。
