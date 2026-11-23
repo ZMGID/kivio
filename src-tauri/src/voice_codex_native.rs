@@ -162,9 +162,45 @@ fn installed(binary: &Path) -> Option<(PathBuf, PathBuf)> {
     Some((binary, helper))
 }
 
+fn npm_platform() -> Option<(&'static str, &'static str)> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some(("codex-darwin-arm64", "aarch64-apple-darwin")),
+        ("macos", "x86_64") => Some(("codex-darwin-x64", "x86_64-apple-darwin")),
+        ("windows", "aarch64") => Some(("codex-win32-arm64", "aarch64-pc-windows-msvc")),
+        ("windows", "x86_64") => Some(("codex-win32-x64", "x86_64-pc-windows-msvc")),
+        ("linux", "aarch64") => Some(("codex-linux-arm64", "aarch64-unknown-linux-musl")),
+        ("linux", "x86_64") => Some(("codex-linux-x64", "x86_64-unknown-linux-musl")),
+        _ => None,
+    }
+}
+
+fn installed_for_launcher(launcher: &Path) -> Option<(PathBuf, PathBuf)> {
+    if let Some(package) = installed(launcher) {
+        return Some(package);
+    }
+    let (platform, target) = npm_platform()?;
+    let prefix = crate::external_agents::installer::proven_npm_prefix(launcher, "@openai/codex")?;
+    let modules = prefix.join(if cfg!(windows) {
+        "node_modules"
+    } else {
+        "lib/node_modules"
+    });
+    let cli = modules.join("@openai/codex");
+    // codex.js resolves the platform dependency first, then its bundled vendor directory.
+    let package = [cli.join("node_modules"), modules]
+        .into_iter()
+        .map(|dir| dir.join("@openai").join(platform))
+        .find(|dir| dir.join("package.json").is_file())
+        .unwrap_or(cli);
+    let root = package.join("vendor").join(target).canonicalize().ok()?;
+    let binary = root.join("bin").join(CODEX);
+    let pair = installed(&binary)?;
+    (pair.0 == binary).then_some(pair)
+}
+
 fn discover_in_home(binary: &Path, home: Option<&Path>) -> Result<(PathBuf, PathBuf), String> {
     if !binary.as_os_str().is_empty() {
-        if let Some(package) = installed(binary) {
+        if let Some(package) = installed_for_launcher(binary) {
             return Ok(package);
         }
     }
@@ -174,12 +210,12 @@ fn discover_in_home(binary: &Path, home: Option<&Path>) -> Result<(PathBuf, Path
             ".local/bin",
             ".codex/bin",
         ] {
-            if let Some(package) = installed(&home.join(directory).join(CODEX)) {
+            if let Some(package) = installed_for_launcher(&home.join(directory).join(CODEX)) {
                 return Ok(package);
             }
         }
     }
-    Err(UNAVAILABLE.into())
+    Err("unavailable: Could not find a compatible Codex installation with codex-voice-host (Codex 0.159.0 or later required)".into())
 }
 
 pub(super) fn discover(binary: &Path) -> Result<(PathBuf, PathBuf), String> {
@@ -668,6 +704,47 @@ mod tests {
         .unwrap();
         std::fs::remove_file(helper).unwrap();
         assert!(installed(&binary).is_none());
+    }
+
+    #[test]
+    fn npm_launcher_uses_its_own_platform_dependency_and_voice_host() {
+        let (platform, target) = npm_platform().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let modules = temp.path().join(if cfg!(windows) {
+            "node_modules"
+        } else {
+            "lib/node_modules"
+        });
+        let cli = modules.join("@openai/codex");
+        let entry = cli.join("bin/codex.js");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(&entry, "// npm entry").unwrap();
+        std::fs::write(
+            cli.join("package.json"),
+            r#"{"name":"@openai/codex","bin":{"codex":"bin/codex.js"}}"#,
+        )
+        .unwrap();
+        // Each nearer dependency wins, even when another complete copy is installed.
+        for pkg in [
+            cli.clone(),
+            modules.join("@openai").join(platform),
+            cli.join("node_modules/@openai").join(platform),
+        ] {
+            let (binary, helper) = package(&pkg.join("vendor").join(target), "0.162.0");
+            if pkg != cli {
+                std::fs::write(pkg.join("package.json"), r#"{"name":"@openai/codex"}"#).unwrap();
+            }
+            assert_eq!(
+                discover_in_home(&entry, None).unwrap(),
+                (
+                    binary.canonicalize().unwrap(),
+                    helper.canonicalize().unwrap()
+                )
+            );
+        }
+        let (_, helper) = discover_in_home(&entry, None).unwrap();
+        std::fs::remove_file(helper).unwrap();
+        assert!(discover_in_home(&entry, None).is_err());
     }
 
     #[test]
