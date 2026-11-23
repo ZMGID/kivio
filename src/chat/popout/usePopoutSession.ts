@@ -502,7 +502,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     conversation?.worktree?.path,
   )
 
-  const { contextCompressing, ...inputBarProps } = usePopoutComposer({
+  const { contextCompressing, projectName, ...inputBarProps } = usePopoutComposer({
     conversation,
     setConversation,
     conversationId,
@@ -555,6 +555,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     approvalPolicy,
     workdir,
     inputBarProps,
+    projectName,
     messageListProps,
     streamError: streamCoarse.streamError,
     pendingToolConfirm,

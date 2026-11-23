@@ -1,10 +1,9 @@
-import { FolderIcon as Folder } from '../components/FileIcon'
 import { ErrorNotice } from '../components/AppNotice'
 import { cloneElement, isValidElement, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { ArrowUp, Check, ChevronDown, FolderPlus, Layers, Plus, Search, Square, TextQuote, WandSparkles, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, Layers, Square, TextQuote, WandSparkles, X } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
 import { PastedTextEditorModal } from './PastedTextEditorModal'
 import { ComposerAddMenu } from './ComposerAddMenu'
@@ -18,10 +17,10 @@ import { AssistantPicker } from './AssistantPicker'
 import { MultiModelSelector } from './MultiModelSelector'
 import { AgentTodoIndicator } from './AgentTodoIndicator'
 import { Button, IconButton } from '../components/Button'
-import { useT, type I18n } from '../components/i18n'
+import { useT } from '../components/i18n'
 import { api, type ChatToolDefinition, type ChatMcpServer } from '../api/tauri'
 import { chatApi } from './api'
-import type { AdditionalDirectory, AgentPlanMode, AgentPlanState, AgentTodoState, ChatAssistant, ChatProject, ChatSet, ModelRef, PendingAttachment, WebSearchMode } from './types'
+import type { AdditionalDirectory, AgentPlanMode, AgentPlanState, AgentTodoState, ChatAssistant, ChatSet, ModelRef, PendingAttachment, WebSearchMode } from './types'
 import {
   buildSlashCommands,
   commandMatches,
@@ -100,40 +99,6 @@ function shouldComposerAutoFocus(activeElement: Element | null): boolean {
 
 function isExternalMcpTool(tool: ChatToolDefinition): boolean {
   return tool.source !== 'skill' && tool.source !== 'native'
-}
-
-// MCP 官方标志（Model Context Protocol，路径取自官方 logo，viewBox 180）。
-// 描边用 currentColor 跟随主题，粗细换算到与 lucide 18px 图标视重一致。
-function projectPathLabel(project: ChatProject): string {
-  const rootPath = project.root_path ?? project.rootPath ?? ''
-  if (!rootPath) return ''
-  const normalized = rootPath.replace(/\\/g, '/')
-  return normalized.split('/').filter(Boolean).pop() ?? rootPath
-}
-
-function pathTail(path: string): string {
-  const normalized = path.replace(/\\/g, '/')
-  return normalized.split('/').filter(Boolean).pop() ?? path
-}
-
-function joinPath(parent: string, name: string): string {
-  const sep = parent.includes('\\') && !parent.includes('/') ? '\\' : '/'
-  return `${parent.replace(/[\\/]+$/, '')}${sep}${name}`
-}
-
-function projectUpdatedAt(project: ChatProject): number {
-  return project.updated_at ?? project.updatedAt ?? project.created_at ?? project.createdAt ?? 0
-}
-
-function nextBlankProjectName(projects: ChatProject[], t: I18n): string {
-  const names = new Set(projects.map((project) => project.name))
-  const base = t.chatDefaultProjectName
-  if (!names.has(base)) return base
-  for (let index = 2; index < 100; index += 1) {
-    const name = `${base} ${index}`
-    if (!names.has(name)) return name
-  }
-  return `${base} ${Date.now()}`
 }
 
 type SlashCommandId =
@@ -307,7 +272,7 @@ export interface InputBarProps {
    * 生成中（`disabled`）时的发送入口。默认直接注入当前运行，
    * 不支持注入时由发送负责人保留消息并说明回退行为。
    * 传了它还会放开附件相关的门（选择 / 粘贴 / 拖入）——那些是纯本地状态，运行中做没有风险；
-   * 斜杠命令 / 项目 / 模式 / 知识库仍按 `disabled` 锁住（它们要打后端）。
+   * 斜杠命令 / 模式 / 知识库仍按 `disabled` 锁住（它们要打后端）。
    */
   onSendWhileRunning?: (content: string, attachments: PendingAttachment[]) => void
   onCancel?: () => void
@@ -330,12 +295,7 @@ export interface InputBarProps {
   onAgentPlanModeChange?: (mode: AgentPlanMode) => void | Promise<void>
   enabledSkills?: SlashSkill[]
   onOpenSkillSettings?: () => void
-  selectedProject?: ChatProject | null
-  // 当前会话自身所属的项目（id + 名）。用于在没有 selectedProject（导航态）时，
-  // 让项目按钮仍反映"这条会话属于哪个项目"——例如从「最近」打开一条项目内的对话。
-  conversationProject?: { id: string; name: string } | null
-  onSelectProject?: (project: ChatProject | null) => void | Promise<void>
-  showProjectEntry?: boolean
+  projectId?: string
   /** 导航态选中的集；与项目互斥。空对话时显示 Start in / 状态条。 */
   selectedSet?: ChatSet | null
   onSelectSet?: (set: ChatSet | null) => void | Promise<void>
@@ -422,10 +382,7 @@ export const InputBar = memo(function InputBar({
   onAgentPlanModeChange,
   enabledSkills = [],
   onOpenSkillSettings,
-  selectedProject = null,
-  conversationProject = null,
-  onSelectProject,
-  showProjectEntry = false,
+  projectId,
   selectedSet = null,
   onSelectSet,
   currentAssistant = null,
@@ -488,15 +445,7 @@ export const InputBar = memo(function InputBar({
   const [dragActive, setDragActive] = useState(false)
   const [toolPanelOpen, setToolPanelOpen] = useState(false)
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const toolPanelRef = useRef<HTMLDivElement>(null)
-  // 两处项目菜单（有项目的状态栏 / 无项目的工具栏）互斥渲染，共用一个 ref。
-  const projectMenuRef = useRef<HTMLDivElement>(null)
-  const [projectOptions, setProjectOptions] = useState<ChatProject[]>([])
-  const [projectOptionsLoading, setProjectOptionsLoading] = useState(false)
-  const [projectOptionsError, setProjectOptionsError] = useState('')
-  const [projectSearchQuery, setProjectSearchQuery] = useState('')
-  const [projectCreating, setProjectCreating] = useState(false)
   const [suggestionsOpen, setSuggestionsOpen] = useState(false)
   const [suggestionIndex, setSuggestionIndex] = useState(0)
   const [activeToken, setActiveToken] = useState<ComposerToken | null>(null)
@@ -586,14 +535,9 @@ export const InputBar = memo(function InputBar({
   }, [optimizeMotion])
   const agentPlanMode = agentPlanState?.mode ?? 'act'
   const agentPlanActive = agentPlanMode === 'plan'
-  const projectEntryEnabled = Boolean(showProjectEntry && onSelectProject)
-  // 项目按钮的显示态：优先导航选中的项目；否则回退到当前会话自身的项目（有名才算），
-  // 这样从「最近」打开一条属于项目的对话时，按钮仍能显示该项目。
-  const effectiveProject: { id: string; name: string } | null =
-    selectedProject ?? (conversationProject?.name ? conversationProject : null)
   // 集：导航态选中的集（项目优先；两者在侧栏互斥）。
   const effectiveSet: { id: string; name: string } | null =
-    effectiveProject ? null : (selectedSet ? { id: selectedSet.id, name: selectedSet.name } : null)
+    projectId ? null : (selectedSet ? { id: selectedSet.id, name: selectedSet.name } : null)
   // 专家入口:欢迎页与对话中都显示,未选时为「选择专家」图标,已选时高亮。
   const showAssistantEntry = Boolean(onOpenAssistantCenter)
   const modeEntryEnabled = Boolean(onModeChange) && modeOptions.length > 0
@@ -602,10 +546,6 @@ export const InputBar = memo(function InputBar({
   const statusBarVisible = Boolean(effectiveSet)
   const activePresetOption = presetOptions.find((option) => option.value === presetValue) ?? presetOptions[0]
   const activePresetPillClass = MODE_PILL_CLASS[activePresetOption?.tone ?? 'neutral']
-
-  const closeProjectMenu = useCallback(() => {
-    setProjectMenuOpen(false)
-  }, [])
 
   const closePresetMenu = useCallback(() => {
     setPresetMenuOpen(false)
@@ -649,103 +589,6 @@ export const InputBar = memo(function InputBar({
     return attachmentsFromPaths(paths)
   }, [attachmentsFromPaths, t])
 
-  const loadProjectOptions = useCallback(async () => {
-    if (!projectEntryEnabled) return
-    setProjectOptionsLoading(true)
-    setProjectOptionsError('')
-    try {
-      setProjectOptions(await chatApi.getProjects())
-    } catch (err) {
-      console.error('Failed to load chat projects:', err)
-      setProjectOptionsError(typeof err === 'string' ? err : err instanceof Error ? err.message : t.chatProjectLoadFailed)
-    } finally {
-      setProjectOptionsLoading(false)
-    }
-  }, [projectEntryEnabled, t])
-
-  const toggleProjectMenu = useCallback(() => {
-    if (!projectEntryEnabled || disabled) return
-    setSuggestionsOpen(false)
-    setToolPanelOpen(false)
-    setProjectMenuOpen((open) => {
-      const nextOpen = !open
-      if (nextOpen) {
-        setProjectSearchQuery('')
-        void loadProjectOptions()
-      }
-      return nextOpen
-    })
-  }, [disabled, loadProjectOptions, projectEntryEnabled])
-
-  const selectProject = useCallback(async (project: ChatProject | null) => {
-    if (!onSelectProject) return
-    closeProjectMenu()
-    await onSelectProject(project)
-    requestAnimationFrame(() => editorRef.current?.focus({ preventScroll: true }))
-  }, [closeProjectMenu, onSelectProject])
-
-  const createBlankProject = useCallback(async () => {
-    if (!onSelectProject || disabled || projectCreating) return
-    setProjectOptionsError('')
-    setProjectCreating(true)
-    try {
-      // 空白项目必须落到真实文件夹：先选父目录，再在其中 mkdir 并登记项目。
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        title: t.chatPickBlankProjectLocation,
-      })
-      const parentPath = Array.isArray(picked) ? picked[0] : picked
-      if (!parentPath) return
-
-      const name = nextBlankProjectName(projectOptions, t)
-      const rootPath = joinPath(parentPath, name)
-      const project = await chatApi.createProject(name, null, null, rootPath, { ensureRootDir: true })
-      setProjectOptions((prev) => [
-        project,
-        ...prev.filter((item) => item.id !== project.id),
-      ])
-      closeProjectMenu()
-      await onSelectProject(project)
-    } catch (err) {
-      console.error('Failed to create blank chat project from input bar:', err)
-      setProjectOptionsError(typeof err === 'string' ? err : err instanceof Error ? err.message : t.chatProjectCreateFailed)
-    } finally {
-      setProjectCreating(false)
-      requestAnimationFrame(() => editorRef.current?.focus({ preventScroll: true }))
-    }
-  }, [closeProjectMenu, disabled, onSelectProject, projectCreating, projectOptions, t])
-
-  const createProjectFromFolder = useCallback(async () => {
-    if (!onSelectProject || disabled || projectCreating) return
-    setProjectOptionsError('')
-    setProjectCreating(true)
-    try {
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        title: t.chatPickProjectFolder,
-      })
-      const rootPath = Array.isArray(picked) ? picked[0] : picked
-      if (!rootPath) return
-      const project = await chatApi.createProject(pathTail(rootPath), null, null, rootPath)
-      setProjectOptions((prev) => [
-        project,
-        ...prev.filter((item) => item.id !== project.id),
-      ])
-      closeProjectMenu()
-      await onSelectProject(project)
-    } catch (err) {
-      console.error('Failed to create chat project from input bar:', err)
-      setProjectOptionsError(typeof err === 'string' ? err : err instanceof Error ? err.message : t.chatProjectCreateFailed)
-    } finally {
-      setProjectCreating(false)
-      requestAnimationFrame(() => editorRef.current?.focus({ preventScroll: true }))
-    }
-  }, [closeProjectMenu, disabled, onSelectProject, projectCreating, t])
-
-
-
   // 消息区「添加到聊天」：把选中文字作为引用卡片挂到输入框上方（发送时才拼进正文）。
   const insertQuoteFromSelection = useCallback((text: string) => {
     const trimmed = text.trim()
@@ -783,11 +626,10 @@ export const InputBar = memo(function InputBar({
     if (token && !(token.trigger === '$' && usesChatRuntime) && !editorRef.current?.atCommand) {
       setSuggestionsOpen(true)
       setToolPanelOpen(false)
-      closeProjectMenu()
     } else {
       setSuggestionsOpen(false)
     }
-  }, [closeProjectMenu, usesChatRuntime])
+  }, [usesChatRuntime])
 
   const allSlashCommands = useMemo(
     () => {
@@ -856,7 +698,7 @@ export const InputBar = memo(function InputBar({
     }
   }, [suggestionsOpen, trigger, conversationId, externalAgentName, usesExternalRuntime])
   const fileQuery = suggestionsOpen && activeToken?.trigger === '@' ? activeToken.query : null
-  const fileResult = useComposerFiles(fileQuery, conversationId, effectiveProject?.id)
+  const fileResult = useComposerFiles(fileQuery, conversationId, projectId)
   const suggestions = useMemo(() => {
     if (!suggestionsOpen) return []
     if (trigger === '@') {
@@ -879,18 +721,6 @@ export const InputBar = memo(function InputBar({
       argumentHint: command.argumentHint,
     }))
   }, [suggestionsOpen, trigger, fileResult, activeToken?.query, allSlashCommands])
-  const visibleProjectOptions = useMemo(() => {
-    const query = projectSearchQuery.trim().toLowerCase()
-    return [...projectOptions]
-      .sort((a, b) => projectUpdatedAt(b) - projectUpdatedAt(a))
-      .filter((project) => {
-        if (!query) return true
-        const rootPath = project.root_path ?? project.rootPath ?? ''
-        return project.name.toLowerCase().includes(query) || rootPath.toLowerCase().includes(query)
-      })
-      .slice(0, 8)
-  }, [projectOptions, projectSearchQuery])
-
   const completeSuggestion = useCallback((insert: string) => {
     const token = activeToken
     const editor = editorRef.current
@@ -964,21 +794,19 @@ export const InputBar = memo(function InputBar({
     if (disabled || !onAgentPlanModeChange) return
     setSuggestionsOpen(false)
     setToolPanelOpen(false)
-    closeProjectMenu()
     if (agentPlanMode !== mode) {
       await onAgentPlanModeChange(mode)
     }
     requestAnimationFrame(() => {
       editorRef.current?.focus({ preventScroll: true })
     })
-  }, [agentPlanMode, closeProjectMenu, disabled, onAgentPlanModeChange])
+  }, [agentPlanMode, disabled, onAgentPlanModeChange])
 
   // 模式胶囊选档：档位表由 Chat 决定（内置三档 / 本地 CLI 档位），这里只回传选中的 value。
   const pickMode = useCallback(async (value: string) => {
     if (disabled || !onModeChange) return
     setSuggestionsOpen(false)
     setToolPanelOpen(false)
-    closeProjectMenu()
     closePresetMenu()
     if (value !== modeValue) {
       await onModeChange(value)
@@ -986,13 +814,12 @@ export const InputBar = memo(function InputBar({
     requestAnimationFrame(() => {
       editorRef.current?.focus({ preventScroll: true })
     })
-  }, [closePresetMenu, closeProjectMenu, disabled, modeValue, onModeChange])
+  }, [closePresetMenu, disabled, modeValue, onModeChange])
 
   const pickPreset = useCallback(async (value: string) => {
     if (disabled || presetLocked || !onPresetChange) return
     setSuggestionsOpen(false)
     setToolPanelOpen(false)
-    closeProjectMenu()
     closePresetMenu()
     if (value !== presetValue) {
       await onPresetChange(value)
@@ -1000,15 +827,14 @@ export const InputBar = memo(function InputBar({
     requestAnimationFrame(() => {
       editorRef.current?.focus({ preventScroll: true })
     })
-  }, [closePresetMenu, closeProjectMenu, disabled, onPresetChange, presetLocked, presetValue])
+  }, [closePresetMenu, disabled, onPresetChange, presetLocked, presetValue])
 
   const togglePresetMenu = useCallback(() => {
     if (disabled || !presetEntryEnabled) return
     setSuggestionsOpen(false)
     setToolPanelOpen(false)
-    closeProjectMenu()
     setPresetMenuOpen((open) => !open)
-  }, [closeProjectMenu, disabled, presetEntryEnabled])
+  }, [disabled, presetEntryEnabled])
 
   // Shift+Tab 在胶囊当前那套档位里循环，跟看得见的控件保持一致。
   const cycleMode = useCallback(async () => {
@@ -1022,7 +848,6 @@ export const InputBar = memo(function InputBar({
     if (composerLocked) return
     const scope = beginComposerAttachmentOperation(draftScopeRef.current.key)
     setToolPanelOpen(false)
-    closeProjectMenu()
     setSuggestionsOpen(false)
     setScopedAttachmentError('', scope)
     try {
@@ -1043,7 +868,7 @@ export const InputBar = memo(function InputBar({
     } finally {
       scope.release()
     }
-  }, [addAttachments, closeProjectMenu, composerLocked, pendingFromPaths, setScopedAttachmentError, t])
+  }, [addAttachments, composerLocked, pendingFromPaths, setScopedAttachmentError, t])
 
   const executeSlashAction = async (command: SlashCommandDefinition, start: number, end: number) => {
     if (disabled) return
@@ -1088,7 +913,6 @@ export const InputBar = memo(function InputBar({
           onOpenTools()
         } else {
           setToolPanelOpen(true)
-          closeProjectMenu()
         }
         return
       case 'attach':
@@ -1114,7 +938,6 @@ export const InputBar = memo(function InputBar({
     setOptimizeMotion('idle')
     pendingOptimizeTextRef.current = null
     setToolPanelOpen(false)
-    closeProjectMenu()
     setSuggestionsOpen(false)
   }
 
@@ -1362,10 +1185,9 @@ export const InputBar = memo(function InputBar({
     }
 
     // 输入栏的弹层开着时，Esc 只关弹层，不继续落到下面的「停止生成」。
-    if (e.key === 'Escape' && (toolPanelOpen || projectMenuOpen || presetMenuOpen)) {
+    if (e.key === 'Escape' && (toolPanelOpen || presetMenuOpen)) {
       e.preventDefault()
       setToolPanelOpen(false)
-      closeProjectMenu()
       closePresetMenu()
       return
     }
@@ -1647,7 +1469,6 @@ export const InputBar = memo(function InputBar({
   }, [autoFocus, disabled, draftOnly])
 
   usePopoverMenu(toolPanelOpen, () => setToolPanelOpen(false), toolPanelRef)
-  usePopoverMenu(projectMenuOpen, closeProjectMenu, projectMenuRef)
   // 预设菜单由编辑器持有焦点时打开（按钮不抢焦点），只接 Esc 关闭，不把焦点移进菜单。
   usePopoverMenu(presetMenuOpen, closePresetMenu)
 
@@ -1697,9 +1518,8 @@ export const InputBar = memo(function InputBar({
   useEffect(() => {
     if (!disabled) return
     setToolPanelOpen(false)
-    closeProjectMenu()
     setSuggestionsOpen(false)
-  }, [closeProjectMenu, disabled])
+  }, [disabled])
 
   useEffect(() => {
     setSuggestionIndex(0)
@@ -1773,110 +1593,15 @@ export const InputBar = memo(function InputBar({
     ? 'top-full mt-1'
     : 'bottom-full mb-1'
   const slashPanelOrigin = layout === 'inline' ? 'top left' : 'bottom left'
-  const projectPanelPlacementClass = layout === 'inline'
+  const menuPlacementClass = layout === 'inline'
     ? 'top-full mt-1.5'
     : 'bottom-full mb-1.5'
-  const projectPanelOrigin = layout === 'inline' ? 'top left' : 'bottom left'
   // 模式菜单移到发送键旁、右对齐：原点跟随展开方向用右侧
   const modePanelOrigin = layout === 'inline' ? 'top right' : 'bottom right'
   const externalMcpTools = enabledTools.filter(isExternalMcpTool)
   const showMcpSection = externalMcpTools.length > 0 || Boolean(toolsDisabledReason)
   const mcpStatusLine = toolsDisabledReason
     || (externalMcpTools.length > 0 ? `MCP ${externalMcpTools.length}` : '')
-
-  // 项目菜单内容：贴按钮紧凑宽度，状态条 / 工具栏入口共用同一 body。
-  const projectMenuBody = (
-    <>
-      <div className="flex h-7 items-center gap-1.5 rounded-md px-2 text-neutral-500">
-        <Search size={14} strokeWidth={1.8} className="shrink-0" />
-        <input
-          value={projectSearchQuery}
-          onChange={(event) => setProjectSearchQuery(event.target.value)}
-          placeholder={t.chatSearchProjects}
-          className="min-w-0 flex-1 border-0 bg-transparent text-[12px] font-semibold text-neutral-800 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
-        />
-      </div>
-
-      <div className="chat-popover-scroll mt-0.5 max-h-48 overflow-y-auto">
-        {projectOptionsLoading ? (
-          <div className="px-2 py-2.5 text-[12px] text-neutral-400 dark:text-neutral-500">
-            {t.chatLoadingProjects}
-          </div>
-        ) : projectOptionsError ? (
-          <div className="px-2 py-2 text-[12px] text-danger">
-            {projectOptionsError}
-          </div>
-        ) : visibleProjectOptions.length > 0 ? (
-          <div className="py-1">
-            {visibleProjectOptions.map((project) => {
-              const active = selectedProject?.id === project.id
-              const pathLabel = projectPathLabel(project)
-              return (
-                <button
-                  key={project.id}
-                  type="button"
-                  onClick={() => void selectProject(project)}
-                  className={`flex min-h-[34px] w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left transition-colors ${
-                    active
-                      ? 'bg-neutral-100 text-neutral-950'
-                      : 'text-neutral-800 hover:bg-neutral-100'
-                  }`}
-                >
-                  <Folder size={14} className="shrink-0 text-neutral-500" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12px] font-semibold">{project.name}</span>
-                    {pathLabel && (
-                      <span className="block truncate text-[10px] font-medium text-neutral-400 dark:text-neutral-500">
-                        {pathLabel}
-                      </span>
-                    )}
-                  </span>
-                  {active && <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500" />}
-                </button>
-              )
-            })}
-          </div>
-        ) : (
-          <div className="px-2 py-2.5 text-[12px] leading-5 text-neutral-400 dark:text-neutral-500">
-            {projectSearchQuery.trim() ? t.chatNoMatchingProjects : t.chatNoRecentProjects}
-          </div>
-        )}
-      </div>
-
-      <div className="mt-0.5 border-t border-neutral-200/80 pt-0.5">
-        {selectedProject && (
-          <button
-            type="button"
-            onClick={() => void selectProject(null)}
-            className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800"
-          >
-            <Folder size={14} className="shrink-0" />
-            <span className="min-w-0 flex-1 truncate">{t.chatLeaveProject}</span>
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => void createBlankProject()}
-          disabled={projectCreating}
-          className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 disabled:cursor-default disabled:opacity-50"
-        >
-          <Plus size={14} strokeWidth={1.8} className="shrink-0 text-neutral-600" />
-          <span className="min-w-0 flex-1 truncate">
-            {projectCreating ? t.chatAddingProject : t.chatNewBlankProject}
-          </span>
-        </button>
-        <button
-          type="button"
-          onClick={() => void createProjectFromFolder()}
-          disabled={projectCreating}
-          className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 disabled:cursor-default disabled:opacity-50"
-        >
-          <Folder size={14} className="shrink-0 text-neutral-600" />
-          <span className="min-w-0 flex-1 truncate">{t.chatUseExistingFolder}</span>
-        </button>
-      </div>
-    </>
-  )
 
   return (
     <div className={wrapperClass}>
@@ -1886,8 +1611,8 @@ export const InputBar = memo(function InputBar({
             <div className="fixed inset-0 z-30" onClick={() => setToolPanelOpen(false)} aria-hidden />
             <div
               ref={toolPanelRef}
-              className={`chat-motion-popover absolute inset-x-0 z-40 overflow-hidden kv-menu ${projectPanelPlacementClass}`}
-              style={{ ['--chat-popover-origin' as string]: projectPanelOrigin }}
+              className={`chat-motion-popover absolute inset-x-0 z-40 overflow-hidden kv-menu ${menuPlacementClass}`}
+              style={{ ['--chat-popover-origin' as string]: slashPanelOrigin }}
               data-tauri-drag-region="false"
             >
               <div className="space-y-1.5 px-3 py-2">
@@ -1994,7 +1719,7 @@ export const InputBar = memo(function InputBar({
             </div>
           </div>
         )}
-        {/* 状态条：项目/集及按需显示的任务和改动。 */}
+        {/* 状态条：集、目标及任务。 */}
         {(statusBarVisible || todoBarVisible || goalSlot) && (
           <div className="chat-composer-status" data-tauri-drag-region="false">
             {statusBarVisible && (
@@ -2124,7 +1849,6 @@ export const InputBar = memo(function InputBar({
               onBeforeOpen={() => {
                 setSuggestionsOpen(false)
                 setToolPanelOpen(false)
-                closeProjectMenu()
                 closePresetMenu()
               }}
               sourcesPanel={
@@ -2153,46 +1877,6 @@ export const InputBar = memo(function InputBar({
                 disabled={disabled}
                 layout={layout}
               />
-            )}
-            {/* 项目入口：未选项目时进入项目；已选时切换或退出（项目名与 Git 在标题栏工作区面板）。 */}
-            {projectEntryEnabled && (
-              <div className="relative shrink-0">
-                <IconButton
-                  size="sm"
-                  shape="circle"
-                  label={effectiveProject ? t.chatProjectChip.replace('{name}', effectiveProject.name) : t.chatEnterProject}
-                  onClick={toggleProjectMenu}
-                  disabled={disabled}
-                  aria-expanded={projectMenuOpen}
-                  aria-haspopup="menu"
-                  className={`shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 disabled:opacity-50 dark:focus-visible:ring-neutral-600 ${
-                    projectMenuOpen
-                      ? 'bg-neutral-200 text-neutral-700'
-                      : ''
-                  }`}
-                >
-                  {effectiveProject
-                    ? <Folder size={18} />
-                    : <FolderPlus size={18} strokeWidth={1.75} />}
-                </IconButton>
-                {projectMenuOpen && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-30"
-                      onClick={closeProjectMenu}
-                      aria-hidden
-                    />
-                    <div
-                      ref={projectMenuRef}
-                      className={`chat-motion-popover absolute left-0 z-50 w-[min(260px,calc(100vw-24px))] overflow-visible kv-menu ${projectPanelPlacementClass}`}
-                      style={{ ['--chat-popover-origin' as string]: projectPanelOrigin }}
-                      data-tauri-drag-region="false"
-                    >
-                      {projectMenuBody}
-                    </div>
-                  </>
-                )}
-              </div>
             )}
             {!usesExternalRuntime && onChangeReplyModels && (
               <div className="min-w-0 shrink" data-tauri-drag-region="false">
@@ -2262,7 +1946,7 @@ export const InputBar = memo(function InputBar({
                   <>
                     <div className="fixed inset-0 z-30" onClick={closePresetMenu} aria-hidden />
                     <div
-                      className={`chat-motion-popover absolute right-0 z-40 w-[min(236px,calc(100vw-32px))] overflow-visible kv-menu ${projectPanelPlacementClass}`}
+                      className={`chat-motion-popover absolute right-0 z-40 w-[min(236px,calc(100vw-32px))] overflow-visible kv-menu ${menuPlacementClass}`}
                       style={{ ['--chat-popover-origin' as string]: modePanelOrigin }}
                       data-tauri-drag-region="false"
                       role="menu"

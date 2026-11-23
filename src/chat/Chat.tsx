@@ -919,8 +919,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const storedActiveSkillId = currentConversation
     ? currentConversation.active_skill_id ?? currentConversation.activeSkillId ?? null
     : null
-  // 当前会话自身所属项目（id + 名 folder）。传给输入栏，使从「最近」打开的项目内对话
-  // 也能在项目按钮上显示其项目，即便导航态 selectedProject 已被清空。
   const conversationProject = useMemo<{ id: string; name: string } | null>(() => {
     const id = currentConversation?.project_id ?? currentConversation?.projectId ?? null
     if (!id) return null
@@ -2732,10 +2730,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     usesChatRuntime,
     enabledSkills: usesChatRuntime ? [] : slashSkills,
     onOpenSkillSettings: openSkillCenter,
-    selectedProject,
-    conversationProject,
-    onSelectProject: handleSidebarSelectProject,
-    showProjectEntry: true,
+    projectId: selectedProject?.id ?? conversationProject?.id,
     selectedSet,
     onSelectSet: handleSidebarSelectSet,
     currentAssistant: composerCurrentAssistant,
@@ -2818,7 +2813,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     handleSelectAssistant,
     handleSendMessage,
     handleSetWebSearchMode,
-    handleSidebarSelectProject,
     handleSidebarSelectSet,
     handleToggleForceKnowledgeSearch,
     handleToggleMcpServer,

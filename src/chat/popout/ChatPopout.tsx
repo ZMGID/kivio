@@ -156,7 +156,7 @@ function ChatPopoutBody({
       onSandboxChange={session.handleSandboxChange}
       busy={Boolean(session.inputBarProps.disabled)}
       workdir={session.workdir}
-      projectName={session.inputBarProps.conversationProject?.name || null}
+      projectName={session.projectName}
       historyBranches={session.conversation && !session.usesExternalRuntime ? {
         revision: session.conversation.revision,
         disabled: Boolean(session.inputBarProps.disabled),

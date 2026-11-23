@@ -1376,7 +1376,6 @@ function ReadingWorkspace({
                   onReloadSkills={undefined}
                   usesChatRuntime
                   usesExternalRuntime={false}
-                  showProjectEntry={false}
                   contextSlot={
                     <div className="reading-context-status">
                       <span className="context-label"><FileIcon name="document.pdf" size={12} />{indexing ? `正在读取${edition}…` : `${edition} ${pages.length} 页`}</span>

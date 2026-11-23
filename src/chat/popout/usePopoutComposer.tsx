@@ -114,7 +114,7 @@ export function usePopoutComposer({
   cancelVisible,
   cancelling,
   disabled,
-}: UsePopoutComposerArgs): InputBarProps & { contextCompressing: boolean } {
+}: UsePopoutComposerArgs): InputBarProps & { contextCompressing: boolean; projectName: string | null } {
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
 
@@ -399,14 +399,6 @@ export function usePopoutComposer({
     void api.openSettingsWindow()
   }, [])
 
-  const handleSelectProject = useCallback(async (project: ChatProject | null) => {
-    const next = await chatApi.updateConversation(conversationId, {
-      projectId: project?.id ?? null,
-    })
-    applyConversationMeta(setConversation, next)
-    setBoundProject(project)
-  }, [conversationId, setConversation])
-
   const handleSelectSet = useCallback(async (set: ChatSet | null) => {
     const next = await chatApi.updateConversation(conversationId, {
       setId: set?.id ?? null,
@@ -561,11 +553,6 @@ export function usePopoutComposer({
   const currentAssistant = assistantSnapshot
     ? { id: assistantSnapshot.id, name: assistantSnapshot.name }
     : null
-  const conversationProject = useMemo<{ id: string; name: string } | null>(() => {
-    if (!projectId) return null
-    return { id: projectId, name: conversation?.folder ?? boundProject?.name ?? '' }
-  }, [boundProject?.name, conversation?.folder, projectId])
-
   const contextSlot = useMemo(
     () => (
       <ContextIndicator
@@ -610,6 +597,7 @@ export function usePopoutComposer({
 
   return {
     contextCompressing,
+    projectName: projectId ? conversation?.folder ?? boundProject?.name ?? null : null,
     onSend: send,
     disabled: disabled || contextCompressing,
     onCancel,
@@ -628,10 +616,7 @@ export function usePopoutComposer({
     usesChatRuntime,
     enabledSkills: usesChatRuntime ? [] : slashSkills,
     onOpenSkillSettings: openMainSettings,
-    selectedProject: boundProject,
-    conversationProject,
-    onSelectProject: handleSelectProject,
-    showProjectEntry: true,
+    projectId: projectId ?? undefined,
     selectedSet: boundSet,
     onSelectSet: handleSelectSet,
     currentAssistant,
