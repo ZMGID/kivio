@@ -581,6 +581,8 @@ impl RuntimeAgentDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalCliSlashCommand {
+    #[serde(default)]
+    pub is_skill: bool,
     pub name: String,
     pub slash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -74,10 +74,18 @@ pub fn parse_slash_commands_from_init(value: &Value) -> Vec<ExternalCliSlashComm
     };
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let skills: std::collections::HashSet<&str> = value
+        .get("skills")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
     for item in items {
         let parsed = parse_slash_command_item(item);
-        if let Some(cmd) = parsed {
+        if let Some(mut cmd) = parsed {
             if seen.insert(cmd.name.clone()) {
+                cmd.is_skill = skills.contains(cmd.name.as_str());
                 out.push(cmd);
             }
         }
@@ -89,6 +97,7 @@ pub fn parse_slash_commands_from_init(value: &Value) -> Vec<ExternalCliSlashComm
 fn parse_slash_command_item(item: &Value) -> Option<ExternalCliSlashCommand> {
     if let Some(name) = item.as_str().filter(|s| !s.trim().is_empty()) {
         return Some(ExternalCliSlashCommand {
+            is_skill: false,
             slash: format!("/{name}"),
             name: name.to_string(),
             description: None,
@@ -101,6 +110,7 @@ fn parse_slash_command_item(item: &Value) -> Option<ExternalCliSlashCommand> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())?;
     Some(ExternalCliSlashCommand {
+        is_skill: false,
         slash: format!("/{name}"),
         name: name.to_string(),
         description: obj
@@ -402,14 +412,17 @@ mod tests {
         let init = json!({
             "type": "system",
             "subtype": "init",
+            "skills": ["frontend-design:frontend-design"],
             "slash_commands": ["compact", "clear", "frontend-design:frontend-design"]
         });
         let commands = parse_slash_commands_from_init(&init);
         assert_eq!(commands.len(), 3);
-        assert!(commands.iter().any(|c| c.slash == "/compact"));
         assert!(commands
             .iter()
-            .any(|c| c.slash == "/frontend-design:frontend-design"));
+            .any(|c| c.slash == "/compact" && !c.is_skill));
+        assert!(commands
+            .iter()
+            .any(|c| c.slash == "/frontend-design:frontend-design" && c.is_skill));
     }
 
     #[test]

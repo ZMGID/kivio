@@ -5,6 +5,7 @@ export type ExternalCliSlashCommandDto = {
   slash: string
   description?: string | null
   argumentHint?: string | null
+  isSkill?: boolean
 }
 
 export type ExternalCliSlashCommandsResult = {
@@ -40,12 +41,6 @@ function agentDisplayName(agentId: string): string {
   }
 }
 
-export function externalCliAgentLabel(agentId: string | null | undefined): string {
-  const id = agentId?.trim().toLowerCase()
-  if (!id) return 'CLI'
-  return agentDisplayName(id)
-}
-
 export function mapExternalCliSlashCommands(
   agentId: string | null | undefined,
   commands: ExternalCliSlashCommandDto[],
@@ -65,7 +60,7 @@ export function mapExternalCliSlashCommands(
       description: command.description?.trim() || `${category} CLI command`,
       category,
       keywords: [commandName, commandName.split(':').pop() ?? commandName],
-      kind: 'cli',
+      kind: command.isSkill || commandName.startsWith('skill:') ? 'skill' : 'cli',
       agentId: id,
       argumentHint: command.argumentHint?.trim() || undefined,
     }

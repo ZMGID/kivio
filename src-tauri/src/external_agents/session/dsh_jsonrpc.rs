@@ -2500,6 +2500,7 @@ fn parse_dsh_slash_commands(result: &Value) -> Vec<ExternalCliSlashCommand> {
                     .map(str::to_string)
             });
         out.push(ExternalCliSlashCommand {
+            is_skill: false,
             slash: format!("/{name}"),
             name: name.to_string(),
             description: item

@@ -35,6 +35,7 @@ pub fn builtin_slash_commands() -> Vec<ExternalCliSlashCommand> {
     DSH_SLASH_COMMANDS
         .iter()
         .map(|(name, description, hint)| ExternalCliSlashCommand {
+            is_skill: false,
             slash: format!("/{name}"),
             name: (*name).to_string(),
             description: Some((*description).to_string()),

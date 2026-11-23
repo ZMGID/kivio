@@ -25,13 +25,15 @@ import type { AdditionalDirectory, AgentPlanMode, AgentPlanState, AgentTodoState
 import {
   buildSlashCommands,
   commandMatches,
-  findActiveSlashToken,
+  findActiveComposerToken,
+  formatComposerFileMention,
   findComposerCommands,
-  type ActiveSlashToken,
+  type ComposerToken,
   type SlashCommandDefinition,
   type SlashSkill,
 } from './slashCommands'
-import { mapExternalCliSlashCommands, externalCliAgentLabel } from './externalCliSlashCommands'
+import { useComposerFiles } from './useComposerFiles'
+import { mapExternalCliSlashCommands } from './externalCliSlashCommands'
 import type { ModeOption, ModeTone } from './permissionModes'
 import { isTauriRuntime } from './utils'
 import { isVideoFile } from './attachmentType'
@@ -495,9 +497,9 @@ export const InputBar = memo(function InputBar({
   const [projectOptionsError, setProjectOptionsError] = useState('')
   const [projectSearchQuery, setProjectSearchQuery] = useState('')
   const [projectCreating, setProjectCreating] = useState(false)
-  const [slashPanelOpen, setSlashPanelOpen] = useState(false)
-  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
-  const [activeSlashToken, setActiveSlashToken] = useState<ActiveSlashToken | null>(null)
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false)
+  const [suggestionIndex, setSuggestionIndex] = useState(0)
+  const [activeToken, setActiveToken] = useState<ComposerToken | null>(null)
   const [commandError, setCommandError] = useState('')
   const [commandStatus, setCommandStatus] = useState('')
   const [externalCliSlashCommands, setExternalCliSlashCommands] = useState<SlashCommandDefinition[]>([])
@@ -537,8 +539,8 @@ export const InputBar = memo(function InputBar({
     historyRef.current = null
     historyReadRef.current = null
     historyCaretRef.current = null
-    setActiveSlashToken(null)
-    setSlashPanelOpen(false)
+    setActiveToken(null)
+    setSuggestionsOpen(false)
     setCommandError('')
     setCommandStatus('')
     draftScopeRef.current.key = draftKeyValue
@@ -663,7 +665,7 @@ export const InputBar = memo(function InputBar({
 
   const toggleProjectMenu = useCallback(() => {
     if (!projectEntryEnabled || disabled) return
-    setSlashPanelOpen(false)
+    setSuggestionsOpen(false)
     setToolPanelOpen(false)
     setProjectMenuOpen((open) => {
       const nextOpen = !open
@@ -775,17 +777,17 @@ export const InputBar = memo(function InputBar({
     [draftKeyValue, insertTextAtEnd],
   )
 
-  const syncSlashToken = useCallback((value: string, cursor: number) => {
-    const token = findActiveSlashToken(value, cursor)
-    setActiveSlashToken(token)
-    if (token && !editorRef.current?.atCommand) {
-      setSlashPanelOpen(true)
+  const syncActiveToken = useCallback((value: string, cursor: number) => {
+    const token = findActiveComposerToken(value, cursor)
+    setActiveToken(token)
+    if (token && !(token.trigger === '$' && usesChatRuntime) && !editorRef.current?.atCommand) {
+      setSuggestionsOpen(true)
       setToolPanelOpen(false)
       closeProjectMenu()
     } else {
-      setSlashPanelOpen(false)
+      setSuggestionsOpen(false)
     }
-  }, [closeProjectMenu])
+  }, [closeProjectMenu, usesChatRuntime])
 
   const allSlashCommands = useMemo(
     () => {
@@ -838,8 +840,9 @@ export const InputBar = memo(function InputBar({
     }
   }, [conversationId, externalAgentName, usesExternalRuntime, t])
 
+  const trigger = activeToken?.trigger
   useEffect(() => {
-    if (!slashPanelOpen || !usesExternalRuntime || !externalAgentName) return
+    if (!suggestionsOpen || trigger === '@' || !usesExternalRuntime || !externalAgentName) return
     let cancelled = false
     void chatApi.listExternalCliSlashCommands(externalAgentName, conversationId)
       .then((result) => {
@@ -851,13 +854,31 @@ export const InputBar = memo(function InputBar({
     return () => {
       cancelled = true
     }
-  }, [slashPanelOpen, conversationId, externalAgentName, usesExternalRuntime])
-  const filteredSlashCommands = useMemo(
-    () => allSlashCommands.filter((command) => (
-      commandMatches(command, activeSlashToken?.query ?? '')
-    )),
-    [allSlashCommands, activeSlashToken?.query],
-  )
+  }, [suggestionsOpen, trigger, conversationId, externalAgentName, usesExternalRuntime])
+  const fileQuery = suggestionsOpen && activeToken?.trigger === '@' ? activeToken.query : null
+  const fileResult = useComposerFiles(fileQuery, conversationId, effectiveProject?.id)
+  const suggestions = useMemo(() => {
+    if (!suggestionsOpen) return []
+    if (trigger === '@') {
+      return (fileResult?.paths ?? []).map(path => ({
+        id: path, label: path, insert: formatComposerFileMention(path), description: '', argumentHint: '',
+      }))
+    }
+    const query = activeToken?.query ?? ''
+    const reservedActions = trigger === '$'
+      ? new Set(allSlashCommands.filter(command => command.kind === 'action').map(command => command.slash))
+      : null
+    return allSlashCommands.filter(command => {
+      if (reservedActions && (command.kind !== 'skill' || reservedActions.has(command.slash))) return false
+      return commandMatches(command, query)
+    }).map(command => ({
+      id: command.id,
+      label: trigger === '$' ? `$${command.slash.slice(1)}` : command.slash,
+      insert: command.slash,
+      description: command.description,
+      argumentHint: command.argumentHint,
+    }))
+  }, [suggestionsOpen, trigger, fileResult, activeToken?.query, allSlashCommands])
   const visibleProjectOptions = useMemo(() => {
     const query = projectSearchQuery.trim().toLowerCase()
     return [...projectOptions]
@@ -870,18 +891,18 @@ export const InputBar = memo(function InputBar({
       .slice(0, 8)
   }, [projectOptions, projectSearchQuery])
 
-  const completeActiveSlashToken = useCallback((command: SlashCommandDefinition) => {
-    const token = activeSlashToken
+  const completeSuggestion = useCallback((insert: string) => {
+    const token = activeToken
     const editor = editorRef.current
     if (!token || !editor) return
-    editor.replaceText(token.start, token.end, `${command.slash} `)
+    editor.replaceText(token.start, token.end, `${insert} `)
     editor.focus({ preventScroll: true })
-    setActiveSlashToken(null)
-    setSlashPanelOpen(false)
-  }, [activeSlashToken])
+    setActiveToken(null)
+    setSuggestionsOpen(false)
+  }, [activeToken])
 
-  const selectedSlashCommand = filteredSlashCommands[slashSelectedIndex]
-    ?? filteredSlashCommands[0]
+  const selectedSuggestion = suggestions[suggestionIndex]
+    ?? suggestions[0]
 
   const setScopedAttachmentError = useCallback((message: string, scope?: AttachmentOperationScope) => {
     if (!scope || (mountedRef.current && scope.key === draftScopeRef.current.key)) {
@@ -941,7 +962,7 @@ export const InputBar = memo(function InputBar({
 
   const setAgentPlanMode = useCallback(async (mode: AgentPlanMode) => {
     if (disabled || !onAgentPlanModeChange) return
-    setSlashPanelOpen(false)
+    setSuggestionsOpen(false)
     setToolPanelOpen(false)
     closeProjectMenu()
     if (agentPlanMode !== mode) {
@@ -955,7 +976,7 @@ export const InputBar = memo(function InputBar({
   // 模式胶囊选档：档位表由 Chat 决定（内置三档 / 本地 CLI 档位），这里只回传选中的 value。
   const pickMode = useCallback(async (value: string) => {
     if (disabled || !onModeChange) return
-    setSlashPanelOpen(false)
+    setSuggestionsOpen(false)
     setToolPanelOpen(false)
     closeProjectMenu()
     closePresetMenu()
@@ -969,7 +990,7 @@ export const InputBar = memo(function InputBar({
 
   const pickPreset = useCallback(async (value: string) => {
     if (disabled || presetLocked || !onPresetChange) return
-    setSlashPanelOpen(false)
+    setSuggestionsOpen(false)
     setToolPanelOpen(false)
     closeProjectMenu()
     closePresetMenu()
@@ -983,7 +1004,7 @@ export const InputBar = memo(function InputBar({
 
   const togglePresetMenu = useCallback(() => {
     if (disabled || !presetEntryEnabled) return
-    setSlashPanelOpen(false)
+    setSuggestionsOpen(false)
     setToolPanelOpen(false)
     closeProjectMenu()
     setPresetMenuOpen((open) => !open)
@@ -1002,7 +1023,7 @@ export const InputBar = memo(function InputBar({
     const scope = beginComposerAttachmentOperation(draftScopeRef.current.key)
     setToolPanelOpen(false)
     closeProjectMenu()
-    setSlashPanelOpen(false)
+    setSuggestionsOpen(false)
     setScopedAttachmentError('', scope)
     try {
       const selected = await open({
@@ -1030,12 +1051,12 @@ export const InputBar = memo(function InputBar({
     // A mode action may create a conversation and migrate/remount its composer
     // before React commits. Persist the consumed command before starting it.
     updateComposerDraft(draftScopeRef.current.key, draft => ({ ...draft, input: `${input.slice(0, start)}${input.slice(end)}` }))
-    setSlashPanelOpen(false)
+    setSuggestionsOpen(false)
 
     switch (command.id) {
       case 'help':
         editorRef.current?.replaceText(start, start, '/')
-        syncSlashToken(editorRef.current?.value ?? '/', start + 1)
+        syncActiveToken(editorRef.current?.value ?? '/', start + 1)
         return
       case 'plan':
         await setAgentPlanMode(agentPlanActive ? 'act' : 'plan')
@@ -1094,7 +1115,7 @@ export const InputBar = memo(function InputBar({
     pendingOptimizeTextRef.current = null
     setToolPanelOpen(false)
     closeProjectMenu()
-    setSlashPanelOpen(false)
+    setSuggestionsOpen(false)
   }
 
   const canUndoOptimize = Boolean(optimizeSnapshot && input === optimizeSnapshot.result)
@@ -1245,40 +1266,40 @@ export const InputBar = memo(function InputBar({
       return
     }
 
-    if (slashPanelOpen) {
+    if (suggestionsOpen) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
-        if (filteredSlashCommands.length > 0) {
-          setSlashSelectedIndex((index) => (index + 1) % filteredSlashCommands.length)
+        if (suggestions.length > 0) {
+          setSuggestionIndex((index) => (index + 1) % suggestions.length)
         }
         return
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault()
-        if (filteredSlashCommands.length > 0) {
-          setSlashSelectedIndex((index) => (
-            index - 1 + filteredSlashCommands.length
-          ) % filteredSlashCommands.length)
+        if (suggestions.length > 0) {
+          setSuggestionIndex((index) => (
+            index - 1 + suggestions.length
+          ) % suggestions.length)
         }
         return
       }
-      if (e.key === 'Tab') {
+      if (e.key === 'Tab' && (selectedSuggestion || trigger === '/')) {
         e.preventDefault()
-        if (selectedSlashCommand) {
-          completeActiveSlashToken(selectedSlashCommand)
+        if (selectedSuggestion) {
+          completeSuggestion(selectedSuggestion.insert)
         }
         return
       }
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && !e.shiftKey && (selectedSuggestion || trigger === '/' || (trigger === '@' && !fileResult))) {
         e.preventDefault()
-        if (selectedSlashCommand) {
-          completeActiveSlashToken(selectedSlashCommand)
+        if (selectedSuggestion) {
+          completeSuggestion(selectedSuggestion.insert)
         }
         return
       }
       if (e.key === 'Escape') {
         e.preventDefault()
-        setSlashPanelOpen(false)
+        setSuggestionsOpen(false)
         return
       }
     }
@@ -1314,7 +1335,7 @@ export const InputBar = memo(function InputBar({
               const next = entries[entries.length - 1]
               historyCaretRef.current = next.length
               setInput(next)
-              setSlashPanelOpen(false)
+              setSuggestionsOpen(false)
             }).finally(() => { if (historyReadRef.current === request) historyReadRef.current = null })
             return
           }
@@ -1333,7 +1354,7 @@ export const InputBar = memo(function InputBar({
             el.setSelectionRange(caret, caret)
             historyCaretRef.current = null
           }
-          setSlashPanelOpen(false)
+          setSuggestionsOpen(false)
           if (history.index === history.entries.length) historyRef.current = null
           return
         }
@@ -1373,12 +1394,12 @@ export const InputBar = memo(function InputBar({
     setInput(nextValue)
     setCommandError('')
     setCommandStatus('')
-    syncSlashToken(nextValue, cursor)
+    syncActiveToken(nextValue, cursor)
   }
 
   const handleSelect = () => {
     const el = editorRef.current
-    if (el) syncSlashToken(el.value, el.selectionStart)
+    if (el) syncActiveToken(el.value, el.selectionStart)
   }
 
   const handlePaste = async (
@@ -1631,20 +1652,20 @@ export const InputBar = memo(function InputBar({
   usePopoverMenu(presetMenuOpen, closePresetMenu)
 
   useEffect(() => {
-    if (!slashPanelOpen) return
+    if (!suggestionsOpen) return
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target
       if (!(target instanceof Element)) return
       if (target.closest('[data-chat-slash-panel="true"]')) return
       if (target.closest('[data-chat-composer="true"]')) return
-      setSlashPanelOpen(false)
+      setSuggestionsOpen(false)
     }
     window.addEventListener('pointerdown', handlePointerDown)
     return () => window.removeEventListener('pointerdown', handlePointerDown)
-  }, [slashPanelOpen])
+  }, [suggestionsOpen])
 
   useLayoutEffect(() => {
-    if (!slashPanelOpen) return
+    if (!suggestionsOpen) return
 
     const updateSlashPanelLeft = () => {
       const inner = innerRef.current
@@ -1671,23 +1692,23 @@ export const InputBar = memo(function InputBar({
       window.removeEventListener('resize', updateSlashPanelLeft)
       resizeObserver?.disconnect()
     }
-  }, [slashPanelOpen])
+  }, [suggestionsOpen])
 
   useEffect(() => {
     if (!disabled) return
     setToolPanelOpen(false)
     closeProjectMenu()
-    setSlashPanelOpen(false)
+    setSuggestionsOpen(false)
   }, [closeProjectMenu, disabled])
 
   useEffect(() => {
-    setSlashSelectedIndex(0)
-  }, [activeSlashToken?.query])
+    setSuggestionIndex(0)
+  }, [trigger, activeToken?.query])
 
   useEffect(() => {
-    if (slashSelectedIndex < filteredSlashCommands.length) return
-    setSlashSelectedIndex(Math.max(filteredSlashCommands.length - 1, 0))
-  }, [filteredSlashCommands.length, slashSelectedIndex])
+    if (suggestionIndex < suggestions.length) return
+    setSuggestionIndex(Math.max(suggestions.length - 1, 0))
+  }, [suggestions.length, suggestionIndex])
 
   useEffect(() => {
     if (!isTauriRuntime()) return
@@ -1733,7 +1754,7 @@ export const InputBar = memo(function InputBar({
   }, [addAttachments, composerLocked, pendingFromPaths])
 
   const canSend = (Boolean(input.trim()) || attachments.length > 0)
-    && !slashPanelOpen
+    && !suggestionsOpen
     && (!disabled || runningInputMode)
     && !sendDisabledReason
     && !sendPending
@@ -1741,7 +1762,6 @@ export const InputBar = memo(function InputBar({
   // 发送键 —— 就是原本那个键、原本的样子，按下去直接发送补充消息。这一刻停止走 Esc（见
   // handleKeyDown）或清空输入框让停止键回来；否则用户在生成中打完字会发现没有键可按。
   const stopOwnsSendSlot = Boolean(cancelVisible && onCancel) && !(runningInputMode && canSend)
-  const cliAgentLabel = externalCliAgentLabel(externalAgentName)
 
   const wrapperClass =
     layout === 'inline'
@@ -1915,7 +1935,7 @@ export const InputBar = memo(function InputBar({
             </div>
           </>
         )}
-        {slashPanelOpen && (
+        {suggestionsOpen && (
           <div
             className={`chat-motion-popover absolute z-40 overflow-hidden kv-menu font-sans ${slashPanelPlacementClass}`}
             style={{
@@ -1928,18 +1948,18 @@ export const InputBar = memo(function InputBar({
             data-tauri-drag-region="false"
           >
             <div role="listbox" className="chat-popover-scroll max-h-[min(184px,34vh)] overflow-y-auto">
-              {filteredSlashCommands.length > 0 ? (
-                filteredSlashCommands.map((command, index) => {
-                  const selected = index === slashSelectedIndex
+              {suggestions.length > 0 ? (
+                suggestions.map((item, index) => {
+                  const selected = index === suggestionIndex
                   return (
                     <button
-                      key={command.id}
+                      key={item.id}
                       type="button"
                       role="option"
                       aria-selected={selected}
-                      onMouseEnter={() => setSlashSelectedIndex(index)}
+                      onMouseEnter={() => setSuggestionIndex(index)}
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => completeActiveSlashToken(command)}
+                      onClick={() => completeSuggestion(item.insert)}
                       className={`flex h-[26px] w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left transition-colors ${
                         selected
                           ? 'bg-neutral-100 text-neutral-900'
@@ -1947,14 +1967,14 @@ export const InputBar = memo(function InputBar({
                       }`}
                     >
                       <span className="min-w-0 flex-1 truncate text-[12px] leading-[18px]">
-                        <span className="font-medium">{command.slash}</span>
-                        {command.argumentHint && (
+                        <span className="font-medium">{item.label}</span>
+                        {item.argumentHint && (
                           <span className="ml-1 text-[11px] font-normal text-neutral-400 dark:text-neutral-500">
-                            {command.argumentHint}
+                            {item.argumentHint}
                           </span>
                         )}
                         <span className="ml-1.5 text-[11px] font-normal text-neutral-400 dark:text-neutral-500">
-                          {command.description}
+                          {item.description}
                         </span>
                       </span>
                     </button>
@@ -1962,7 +1982,9 @@ export const InputBar = memo(function InputBar({
                 })
               ) : (
                 <div className="flex h-[26px] items-center px-2 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
-                  {usesExternalRuntime
+                  {trigger === '@' ? (fileResult ? fileResult.error || t.dockSearchEmpty : t.dockLoading)
+                    : trigger === '$' && !externalCliSlashLoading ? t.chatNoMatchingSkill
+                    : usesExternalRuntime
                     ? (externalCliSlashLoading
                       ? t.chatLoadingCliCommands
                       : externalCliSlashHint ?? t.chatNoMatchingCliCommand)
@@ -2081,9 +2103,7 @@ export const InputBar = memo(function InputBar({
                 onAnimationEnd={(event) => {
                   if (event.animationName === 'chat-composer-optimize-in') setOptimizeMotion('idle')
                 }}
-                placeholder={usesExternalRuntime
-                  ? t.chatCliCommandPlaceholder.replace('{agent}', cliAgentLabel)
-                  : t.chatComposerPlaceholder}
+                placeholder={usesChatRuntime ? t.chatComposerChatPlaceholder : t.chatComposerPlaceholder}
                 className={`${optimizing ? 'is-optimizing' : ''} ${optimizeMotion === 'out' ? 'is-optimize-out' : ''} ${optimizeMotion === 'in' ? 'is-optimize-reveal' : ''}`}
               />
               {composerContextMenu.menu}
@@ -2102,7 +2122,7 @@ export const InputBar = memo(function InputBar({
               disabled={disabled}
               layout={layout}
               onBeforeOpen={() => {
-                setSlashPanelOpen(false)
+                setSuggestionsOpen(false)
                 setToolPanelOpen(false)
                 closeProjectMenu()
                 closePresetMenu()

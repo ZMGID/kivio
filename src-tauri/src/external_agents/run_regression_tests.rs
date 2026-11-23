@@ -499,6 +499,7 @@ fn rejected_external_compact_preserves_compression_timestamp() {
                     .set_cached_external_slash_commands(
                         crate::external_agents::slash::cache_key("grok", &cwd.to_string_lossy()),
                         vec![crate::external_agents::types::ExternalCliSlashCommand {
+                            is_skill: false,
                             name: "compact".into(),
                             slash: "/compact".into(),
                             description: None,

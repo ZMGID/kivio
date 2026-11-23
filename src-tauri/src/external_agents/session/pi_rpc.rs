@@ -324,6 +324,7 @@ pub async fn detect_pi_commands(
             for (name, description) in PI_BUILTIN_COMMANDS {
                 seen.insert((*name).to_string());
                 out.push(ExternalCliSlashCommand {
+                    is_skill: false,
                     slash: format!("/{name}"),
                     name: (*name).to_string(),
                     description: Some((*description).to_string()),
@@ -341,6 +342,7 @@ pub async fn detect_pi_commands(
                 };
                 if seen.insert(name.to_string()) {
                     out.push(ExternalCliSlashCommand {
+                        is_skill: raw.get("source").and_then(Value::as_str) == Some("skill"),
                         slash: format!("/{name}"),
                         name: name.to_string(),
                         description: raw

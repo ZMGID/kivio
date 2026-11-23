@@ -742,6 +742,7 @@ mod tests {
         use crate::external_agents::types::ExternalCliSlashCommand;
         let st = test_state();
         let cmd = |name: &str| ExternalCliSlashCommand {
+            is_skill: false,
             slash: format!("/{name}"),
             name: name.to_string(),
             description: None,

@@ -203,6 +203,7 @@ pub fn builtin_commands() -> Vec<ExternalCliSlashCommand> {
     ]
     .into_iter()
     .map(|(name, description)| ExternalCliSlashCommand {
+        is_skill: false,
         name: name.into(),
         slash: format!("/{name}"),
         description: Some(description.into()),

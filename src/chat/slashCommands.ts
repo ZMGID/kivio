@@ -24,15 +24,25 @@ export interface SlashCommandDefinition {
   agentId?: string
 }
 
-export type ActiveSlashToken = { start: number; end: number; query: string }
+export type ComposerToken = { start: number; end: number; query: string; trigger: '/' | '$' | '@' }
 
 // Whitespace and CJK text may introduce a command. URL/path separators may not.
-function isSlashBoundary(value: string, start: number): boolean {
+function isComposerBoundary(value: string, start: number): boolean {
   return start === 0 || /[\s\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}，。！？；：（）【】]/u.test(value[start - 1])
 }
 
-function slashTokens(value: string): ActiveSlashToken[] {
-  const tokens: ActiveSlashToken[] = []
+/** Keep a file path literal when a space or inline command could split the mention. */
+export function formatComposerFileMention(path: string): string {
+  const needsQuotes = /[\s`]/u.test(path) || Array.from(path.matchAll(/\//g)).some(match => isComposerBoundary(path, match.index))
+  if (!needsQuotes) return `@${path}`
+  const longestRun = (path.match(/`+/g) ?? []).reduce((length, run) => Math.max(length, run.length), 0)
+  const fence = '`'.repeat(longestRun + 1)
+  const pad = /^[`\s]|[`\s]$/u.test(path) ? ' ' : ''
+  return `@${fence}${pad}${path}${pad}${fence}`
+}
+
+function composerTokens(value: string): ComposerToken[] {
+  const tokens: ComposerToken[] = []
   let codeFence = ''
   for (let i = 0; i < value.length; i++) {
     if (value[i] === '`') {
@@ -44,25 +54,32 @@ function slashTokens(value: string): ActiveSlashToken[] {
       i = end - 1
       continue
     }
-    if (codeFence || value[i] !== '/' || !isSlashBoundary(value, i)) continue
-    if (value.slice(0, i).split('\n').pop()?.trimStart().startsWith('>')) continue
+    const trigger = value[i]
+    if (codeFence || (trigger !== '/' && trigger !== '$' && trigger !== '@') || !isComposerBoundary(value, i)) continue
+    if (value.slice(value.lastIndexOf('\n', i) + 1, i).trimStart().startsWith('>')) continue
+    if (trigger === '$' && /[0-9]/.test(value[i + 1] ?? '')) continue
     let end = i + 1
-    while (end < value.length && /[a-zA-Z0-9_:-]/.test(value[end])) end++
+    if (trigger === '@') {
+      while (end < value.length && /[^\s`，。！？；：（）【】]/u.test(value[end])) end++
+    } else {
+      while (end < value.length && /[a-zA-Z0-9_:-]/.test(value[end])) end++
+    }
     if (value[end] === '/' || value[end] === '.' || value[end] === '\\') continue
-    tokens.push({ start: i, end, query: value.slice(i + 1, end) })
+    tokens.push({ trigger, start: i, end, query: value.slice(i + 1, end) })
     i = end - 1
   }
   return tokens
 }
 
-export function findActiveSlashToken(value: string, cursor: number): ActiveSlashToken | null {
+export function findActiveComposerToken(value: string, cursor: number): ComposerToken | null {
   if (cursor < 0 || cursor > value.length) return null
-  const token = slashTokens(value).find(token => token.start < cursor && cursor <= token.end)
+  const token = composerTokens(value).find(token => token.start < cursor && cursor <= token.end)
   return token ? { ...token, query: value.slice(token.start + 1, cursor) } : null
 }
 
 export function findComposerCommands<T extends { slash: string }>(value: string, commands: readonly T[]) {
-  return slashTokens(value).flatMap(token => {
+  return composerTokens(value).flatMap(token => {
+    if (token.trigger !== '/') return []
     const command = commands.find(item => item.slash.toLowerCase() === `/${token.query.toLowerCase()}`)
     return command ? [{ start: token.start, end: token.end, command }] : []
   })

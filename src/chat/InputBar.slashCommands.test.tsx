@@ -3,6 +3,8 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'
 import { getComposerDraft } from './composerDraft'
+import { dockApi } from './dock/api'
+import type { ExternalCliSlashCommandDto } from './externalCliSlashCommands'
 import { useState } from 'react'
 import type { AgentPlanMode } from './types'
 
@@ -10,7 +12,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }) }))
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ onFocusChanged: () => Promise.resolve(() => {}) }) }))
 vi.mock('../api/tauri', () => ({ api: {}, isTauriRuntime: () => false }))
-const cli = vi.hoisted(() => ({ commands: [{ name: 'compact', slash: '/compact' }] }))
+const cli = vi.hoisted((): { commands: ExternalCliSlashCommandDto[] } => ({ commands: [] }))
 beforeEach(() => { cli.commands = [{ name: 'compact', slash: '/compact' }] })
 vi.mock('./api', () => ({ chatApi: {
   getProjects: () => Promise.resolve([]),
@@ -47,17 +49,54 @@ describe('InputBar with real command editor', () => {
     expect(send).not.toHaveBeenCalled()
   })
 
-  it('opens slash search after Chinese, inserts the chosen skill and sends the whole task', async () => {
+  it.each(['/', '$'])('selects a skill after Chinese via %s and sends the whole task', async (prefix) => {
     const send = vi.fn().mockResolvedValue(true)
     render(<InputBar onSend={send} conversationId="inline-skill" enabledSkills={[{ id: 'review', name: 'Review', description: 'Review code' }]} />)
-    paste('请使用/rev')
-    const choice = await screen.findByText('/review')
+    paste(`请使用${prefix}rev`)
+    const choice = await screen.findByText(`${prefix}review`)
     expect(choice.closest('button')?.querySelector('svg, img')).toBeNull()
     fireEvent.click(choice)
     expect(screen.getByRole('textbox').querySelector('[data-command="skill:review"]')).not.toBeNull()
     paste('检查代码')
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
     await waitFor(() => expect(send).toHaveBeenCalledWith('请使用/review 检查代码', [], expect.anything()))
+  })
+
+  it('offers native skills under $ and keeps native actions in the slash menu', async () => {
+    cli.commands = [{ name: 'review', slash: '/review', isSkill: true }, { name: 'clear', slash: '/clear' }]
+    const send = vi.fn().mockResolvedValue(true)
+    render(<InputBar onSend={send} conversationId="native-skill" usesExternalRuntime externalAgentName="codex" />)
+    paste('$')
+    await screen.findByRole('option', { name: /\$review/ })
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Tab' })
+    paste('src/main.rs')
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    await waitFor(() => expect(send).toHaveBeenCalledWith('/review src/main.rs', [], expect.anything()))
+  })
+
+  it('completes a workspace file without accepting a late result for the previous query', async () => {
+    const cwd = vi.spyOn(dockApi, 'resolveCwd').mockResolvedValue('/project')
+    let finishSearch!: (result: Awaited<ReturnType<typeof dockApi.fsSearch>>) => void
+    const search = vi.spyOn(dockApi, 'fsSearch')
+      .mockImplementationOnce(() => new Promise(resolve => { finishSearch = resolve }))
+      .mockResolvedValue({ entries: [{ kind: 'file', path: 'src/测试 file/文档/goal', hidden: false }], truncated: false })
+    try {
+      const send = vi.fn().mockResolvedValue(true)
+      render(<InputBar onSend={send} conversationId="mention-project" />)
+      paste('检查 @src')
+      await waitFor(() => expect(search).toHaveBeenCalledTimes(1))
+      paste('/测试')
+      await screen.findByRole('option', { name: 'src/测试 file/文档/goal' })
+      await act(async () => finishSearch({ entries: [{ kind: 'file', path: 'src/unrelated.ts', hidden: false }], truncated: false }))
+      fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Tab' })
+      paste('中的类型')
+      fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+      await waitFor(() => expect(send).toHaveBeenCalledWith('检查 @`src/测试 file/文档/goal` 中的类型', [], expect.anything()))
+    } finally {
+      cwd.mockRestore()
+      search.mockRestore()
+    }
   })
 
   it('stages actions as chips, then executes the action while retaining surrounding text', async () => {

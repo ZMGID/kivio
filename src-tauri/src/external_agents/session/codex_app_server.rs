@@ -2906,6 +2906,7 @@ fn codex_rewind_point(
                 return text.clone();
             };
             let command = ExternalCliSlashCommand {
+                is_skill: true,
                 name: name.into(),
                 slash: format!("/{name}"),
                 description: None,
@@ -3403,6 +3404,7 @@ pub async fn detect_codex_commands(
     let mut out: Vec<ExternalCliSlashCommand> = CODEX_BUILTIN_COMMANDS
         .iter()
         .map(|(name, desc)| ExternalCliSlashCommand {
+            is_skill: false,
             slash: format!("/{name}"),
             name: (*name).to_string(),
             description: Some((*desc).to_string()),
@@ -3452,6 +3454,7 @@ pub async fn detect_codex_commands(
                     for (name, _, skill) in available_codex_skills(&result) {
                         if seen.insert(name.to_string()) {
                             out.push(ExternalCliSlashCommand {
+                                is_skill: true,
                                 slash: format!("/{name}"),
                                 name: name.to_string(),
                                 description: skill

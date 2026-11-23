@@ -19,6 +19,7 @@ import {
   rememberDockWidth,
   rememberTreeExpanded,
 } from '../persistence'
+import { formatComposerFileMention } from '../slashCommands'
 import { insertTextIntoComposer } from '../composerInsert'
 import { useDockSubagent } from './useDockSubagent'
 
@@ -161,7 +162,7 @@ export function useRightDock({
 
   /** 文件树「插入 @ 引用」：经 composerInsert 文本信道注入输入框正文。 */
   const insertMention = useCallback((path: string) => {
-    insertTextIntoComposer(`@${path} `)
+    insertTextIntoComposer(`${formatComposerFileMention(path)} `)
   }, [])
 
   return {

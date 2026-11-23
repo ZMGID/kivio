@@ -906,6 +906,7 @@ fn parse_available_commands(
             .filter(|s| !s.is_empty())
             .map(str::to_string);
         out.push(ExternalCliSlashCommand {
+            is_skill: false,
             slash: format!("/{name}"),
             name: name.to_string(),
             description,
