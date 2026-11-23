@@ -221,7 +221,7 @@ function ChatPopoutBody({
           {pane}
         </div>
         {subagent.selection && <aside className="flex min-h-0 w-[min(48%,24rem)] shrink-0 flex-col border-l border-[var(--color-border)]">
-          <SubagentSidebar key={subagent.selection.agentId} target={subagent.selection} onBack={subagent.close} />
+          <SubagentSidebar key={subagent.selection.agentId} target={subagent.selection} conversationTitle={session.conversation?.title} onBack={subagent.close} />
         </aside>}
       </div>
     </div>

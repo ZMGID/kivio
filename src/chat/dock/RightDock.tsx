@@ -61,6 +61,7 @@ type RightDockProps = {
   treeExpanded: string[]
   revealRequest: DockRevealRequest
   previewRequest: DockPreviewRequest
+  conversationTitle?: string
   subagent?: DockSubagent | null
   onBackFromSubagent?: () => void
   onToggleTab: (tab: DockTab) => void
@@ -82,6 +83,7 @@ export const RightDock = memo(function RightDock({
   workdir,
   lang,
   conversationId,
+  conversationTitle,
   treeExpanded,
   revealRequest,
   previewRequest,
@@ -303,7 +305,7 @@ export const RightDock = memo(function RightDock({
       </div>
       <div data-task-scroll className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar" hidden={shown !== 'tasks'}>
         {selectedSubagent ? <SubagentSidebar key={JSON.stringify([selectedSubagent.conversationId, selectedSubagent.agentId])}
-          target={selectedSubagent} onBack={onBackFromSubagent} /> : <BackgroundTasksPanel
+          target={selectedSubagent} conversationTitle={conversationTitle} onBack={onBackFromSubagent} /> : <BackgroundTasksPanel
           active={open && shown === 'tasks'}
           lang={lang}
           conversationId={conversationId}

@@ -3227,6 +3227,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               treeExpanded={dock.treeExpanded}
               revealRequest={dock.reveal}
               previewRequest={dock.preview}
+              conversationTitle={currentConversation?.title}
               subagent={dock.subagent.selection}
               onBackFromSubagent={dock.subagent.close}
               onToggleTab={dock.setTab}

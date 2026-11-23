@@ -69,7 +69,8 @@ describe('subagent tasks', () => {
   })
 
   it('folds consecutive tool calls into Work while keeping replies visible', async () => {
-    render(<SubagentSidebar target={{ conversationId: 'root', agentId: 'worker' }} />)
+    const back = vi.fn()
+    render(<SubagentSidebar conversationTitle="Investigate totals" onBack={back} target={{ conversationId: 'root', agentId: 'worker' }} />)
     await flush()
     expect(screen.getByText('Retained history')).toBeVisible()
     expect(screen.getByText('read')).not.toBeVisible()
@@ -79,6 +80,8 @@ describe('subagent tasks', () => {
     expect(screen.getByText('read')).toBeVisible()
     fireEvent.click(work)
     expect(screen.getByText('read')).not.toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Investigate totals' }))
+    expect(back).toHaveBeenCalledOnce()
   })
 
   it('groups consecutive tools and keeps the user choice while new tool records arrive', async () => {

@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, ArrowLeft, ChevronRight, Users, Wrench, X } from 'lucide-react'
+import { Activity, ArrowLeft, Bot, ChevronRight, Users, Wrench, X } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
 import { useLang } from '../components/i18n'
 import { Input } from '../settings/public/controls'
@@ -10,6 +10,7 @@ import { AgentStatus } from './AgentProgress'
 import { useSubagentRoster } from './useSubagentRoster'
 import { ChatMarkdown } from './ChatMarkdown'
 import { requestDockSubagent, type DockSubagent } from './dock/dockPreview'
+import { TimelineDivider } from './TimelineDivider'
 import './AgentHub.css'
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
@@ -96,11 +97,15 @@ export function SubagentDialog({ title, onClose, children }: {
   </dialog>, document.body)
 }
 
-export function SubagentSidebar({ target, onBack }: { target: DockSubagent; onBack?: () => void }) {
+export function SubagentSidebar({ target, onBack, conversationTitle }: { target: DockSubagent; onBack?: () => void; conversationTitle?: string }) {
   const zh = useLang() === 'zh'
   const { conversationId, agentId, entryId } = target
   const { roster, error, refresh } = useSubagentRoster(conversationId)
   const selected = roster?.agents.find(agent => agent.id === agentId)
+  const parent = roster?.agents.find(agent => agent.id === selected?.parentId)
+  const mainParent = selected?.parentId.toLowerCase() === 'main'
+  const parentTitle = mainParent ? conversationTitle || (zh ? '主对话' : 'Main conversation')
+    : parent?.displayName || selected?.parentId
   const titleId = useId()
   const title = useRef<HTMLHeadingElement>(null)
   useLayoutEffect(() => {
@@ -118,7 +123,12 @@ export function SubagentSidebar({ target, onBack }: { target: DockSubagent; onBa
       {selected && <AgentStatus state={displayStatus(selected)} zh={zh} />}
     </header>
     {selected
-      ? <AgentTranscript key={selected.generation} conversationId={conversationId} agent={selected} entryId={entryId} />
+      ? <AgentTranscript key={selected.generation} conversationId={conversationId} agent={selected} entryId={entryId}
+        origin={parentTitle && <TimelineDivider label={zh ? '子代理来源' : 'Subagent origin'} action={parent ? {
+          label: parentTitle, open: () => requestDockSubagent({ conversationId, agentId: parent.id }),
+        } : mainParent && onBack ? { label: parentTitle, open: onBack } : undefined}>
+          <Bot size={13} aria-hidden="true" />{zh ? '父对话' : 'Subagent of'} · {parentTitle}
+        </TimelineDivider>} />
       : <div className="kv-agent-panel-scroll custom-scrollbar text-sm">
         {error ? <div role="alert"><p className="mb-2 break-words">{error}</p><Button size="sm" onClick={refresh}>{zh ? '重试' : 'Retry'}</Button></div>
           : <p role="status" className="text-[var(--text-muted)]">{roster
@@ -193,7 +203,8 @@ function isConversationMessage(entry: SubagentTranscriptEntry) {
   return Boolean(content) && (entry.role !== 'user' || !/^(<kivio_runtime_context>|<system-reminder>)/.test(content))
 }
 
-function AgentTranscript({ conversationId, agent, entryId }: {
+function AgentTranscript({ conversationId, agent, entryId, origin }: {
+  origin: ReactNode
   conversationId: string; agent: SubagentView; entryId?: string
 }) {
   const zh = useLang() === 'zh'
@@ -259,6 +270,7 @@ function AgentTranscript({ conversationId, agent, entryId }: {
     const node = event.currentTarget
     follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48
   }}>
+    {origin}
     {assignment?.trim() && <div className="kv-agent-chat-user"><ChatMarkdown content={assignment} /></div>}
     {groups.map(group => {
       const rows = group.map(entry => {
