@@ -759,6 +759,14 @@ impl LiveSessionRegistry {
         if agents.is_empty() {
             return Ok(None);
         }
+        self.prepare_maintenance(agents, keys).await.map(Some)
+    }
+
+    pub(crate) async fn prepare_maintenance(
+        &self,
+        agents: &[String],
+        keys: Vec<String>,
+    ) -> Result<ResourceLease, String> {
         let (lease, controls, idle) = {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let affected: Vec<_> = sessions
@@ -803,7 +811,7 @@ impl LiveSessionRegistry {
         })
         .await
         .map_err(|_| "CLI 进程尚未退出，请稍后重试".to_string())?;
-        Ok(Some(lease))
+        Ok(lease)
     }
 
     pub(crate) fn reserve(&self, conversation_id: &str) -> Result<Arc<SessionLease>, String> {

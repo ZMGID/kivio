@@ -2552,13 +2552,15 @@ html[data-focus-source="keyboard"] .kv-cli-nav-select:focus-visible {
 }
 .kv-cli-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   margin-bottom: 14px;
 }
 .kv-cli-head .kv-cli-iconbox { border-radius: 10px; }
 .kv-cli-head-main {
-  flex: 1;
+  flex: 1 1 max-content;
+  flex-wrap: wrap;
   min-width: 0;
   display: flex;
   align-items: baseline;
@@ -2720,12 +2722,13 @@ a.kv-btn { text-decoration: none; }
 .kv-cli-section { margin-top: 22px; }
 .kv-cli-section-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-height: 28px;
 }
 .kv-cli-section-title {
-  flex: 1;
+  flex: 1 1 max-content;
   min-width: 0;
   margin: 0;
   font-size: 13px;
@@ -2733,7 +2736,8 @@ a.kv-btn { text-decoration: none; }
   color: var(--text);
 }
 .kv-cli-section-actions {
-  flex-shrink: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2776,6 +2780,24 @@ a.kv-btn { text-decoration: none; }
 .kv-websearch-nav {
   position: static;
   width: 232px;
+}
+.kv-websearch-defaults {
+  container: websearch-defaults / inline-size;
+}
+.kv-websearch-defaults .kv-row-control {
+  width: 240px;
+}
+@container websearch-defaults (max-width: 420px) {
+  .kv-websearch-defaults .kv-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
+  .kv-websearch-defaults .kv-row-text { grid-column: 2; }
+  .kv-websearch-defaults .kv-row-control {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
 }
 @container settings-shell (max-width: 720px) {
   .kv-websearch-nav { width: 100%; }

@@ -693,7 +693,7 @@ function DefaultsPage({
       </header>
 
       <Section title={t.webSearchDefaultsTitle} desc={t.webSearchRolesHint}>
-        <div className="kv-cli-card">
+        <div className="kv-cli-card kv-websearch-defaults">
           <Row
             lead={search ? <ProviderFrame provider={search} size={28} /> : undefined}
             label={t.webSearchSearchProvider}
@@ -702,7 +702,7 @@ function DefaultsPage({
               : <SetupHint t={t} onConfigure={() => onOpenProvider(config.provider)} />}
           >
             <Select
-              className="kv-ctl"
+              className="w-full"
               value={config.provider}
               onChange={(value) => onChange(searchProviderPatch(config, value as ProviderId))}
               options={PROVIDERS.map((provider) => ({ value: provider.id, label: provider.name }))}
@@ -720,7 +720,7 @@ function DefaultsPage({
                 : <SetupHint t={t} onConfigure={() => onOpenProvider(resolvedFetch)} />}
           >
             <Select
-              className="kv-ctl"
+              className="w-full"
               value={followsSearch ? FETCH_FOLLOW : config.fetchProvider!}
               onChange={(value) => onChange(fetchProviderPatch(config, value))}
               options={fetchOptions}

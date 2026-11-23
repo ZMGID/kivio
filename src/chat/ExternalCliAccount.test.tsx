@@ -126,3 +126,38 @@ it('shows the saved global account and shares its in-flight refresh across entry
   expect(get.mock.calls.map(([, , mode]) => mode)).toEqual(['cached', 'automatic'])
   expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 80%')
 })
+
+it('checks the local quota owner on focus and drops a late reply from the previous login', async () => {
+  const id = 'focus-owner-cli'
+  const account = (usedPercent: number): Account => ({
+    agentId: id, account: null, credits: null, unavailable: null, checkedAt: 123,
+    nextRefreshAt: Date.now() + 300_000,
+    windows: [{ name: 'Weekly', usedPercent, resetsAt: null, windowDurationMins: null }],
+  })
+  let initial = true
+  let previousReply!: (value: Account) => void
+  get.mockImplementation(async (_, __, mode) => {
+    if (mode === 'cached') return initial ? account(10) : null
+    if (mode === 'refresh') return new Promise<Account>(resolve => { previousReply = resolve })
+    return account(80)
+  })
+  const panel = <ExternalCliAccount agent={{ id, name: 'Local CLI', capabilities }} />
+  const view = render(panel)
+  const button = await screen.findByRole('button', { name: 'CLI 账号与额度' })
+  expect(button).toHaveAttribute('title', '剩余 90%')
+  let refreshing!: Promise<void>
+  await act(async () => { refreshing = refreshCliAccount(id) })
+  initial = false
+  await act(async () => { window.dispatchEvent(new Event('focus')) })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 20%'))
+  await act(async () => { previousReply(account(10)); await refreshing })
+  expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 20%')
+
+  view.unmount()
+  const readsBeforeFocus = get.mock.calls.length
+  await act(async () => { window.dispatchEvent(new Event('focus')) })
+  expect(get).toHaveBeenCalledTimes(readsBeforeFocus)
+  get.mockResolvedValueOnce(account(65))
+  render(panel)
+  await waitFor(() => expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 35%'))
+})

@@ -17,7 +17,9 @@ use crate::external_agents::registry::get_agent_def;
 use crate::external_agents::types::{AgentInstallSpec, LatestVersionStrategy, PostInstallStrategy};
 use crate::proc::NoConsoleWindow;
 
-use super::session::live::{resource_path, runtime_resources, ResourceLease, MAINTENANCE_OWNER};
+use super::session::live::{
+    resource_path, runtime_resources, LiveSessionRegistry, MAINTENANCE_OWNER,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::sync::{LazyLock, Mutex};
@@ -743,9 +745,45 @@ async fn latest_version(http: &reqwest::Client, spec: &AgentInstallSpec) -> Opti
     }
 }
 
-async fn antigravity_latest_version(http: &reqwest::Client) -> Option<String> {
+async fn antigravity_latest_version(
+    http: &reqwest::Client,
+    binary: Option<&Path>,
+) -> Option<String> {
+    // agy's installer reads the release manifest for the target platform. A WSL
+    // launcher can target a different userspace, so use the upstream release there.
+    if !binary.is_some_and(super::wsl::is_wsl_target) {
+        if let Some(platform) = antigravity_manifest_platform() {
+            let url = format!("https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/{platform}.json");
+            if let Some(version) = release_version(http, &url, "version").await {
+                return Some(version);
+            }
+        }
+    }
+    release_version(
+        http,
+        "https://api.github.com/repos/google-antigravity/antigravity-cli/releases/latest",
+        "tag_name",
+    )
+    .await
+}
+
+fn antigravity_manifest_platform() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("darwin_arm64"),
+        ("macos", "x86_64") => Some("darwin_amd64"),
+        ("windows", "aarch64") => Some("windows_arm64"),
+        ("windows", "x86_64") => Some("windows_amd64"),
+        ("linux", "aarch64") if cfg!(target_env = "musl") => Some("linux_arm64_musl"),
+        ("linux", "x86_64") if cfg!(target_env = "musl") => Some("linux_amd64_musl"),
+        ("linux", "aarch64") => Some("linux_arm64"),
+        ("linux", "x86_64") => Some("linux_amd64"),
+        _ => None,
+    }
+}
+
+async fn release_version(http: &reqwest::Client, url: &str, field: &str) -> Option<String> {
     let value: serde_json::Value = http
-        .get("https://api.github.com/repos/google-antigravity/antigravity-cli/releases/latest")
+        .get(url)
         .header(reqwest::header::USER_AGENT, "Kivio")
         .timeout(Duration::from_secs(8))
         .send()
@@ -756,7 +794,7 @@ async fn antigravity_latest_version(http: &reqwest::Client) -> Option<String> {
         .json()
         .await
         .ok()?;
-    extract_semver(value.get("tag_name")?.as_str()?)
+    extract_semver(value.get(field)?.as_str()?)
 }
 
 async fn hermes_latest_version(http: &reqwest::Client) -> Option<String> {
@@ -1087,7 +1125,7 @@ async fn maintenance_preview(
     let spec = &def.install;
     let latest = match spec.latest_version {
         LatestVersionStrategy::Registry => latest_version(http, spec).await,
-        LatestVersionStrategy::AntigravityRelease => antigravity_latest_version(http).await,
+        LatestVersionStrategy::AntigravityRelease => antigravity_latest_version(http, binary).await,
         LatestVersionStrategy::HermesRelease => hermes_latest_version(http).await,
     };
     let prepared = if local_version
@@ -1249,7 +1287,14 @@ pub async fn chat_external_cli_install(
             },
         );
     };
-    let result = execute_install_plan(&state.http, def, &plan, &emit).await;
+    let result = execute_install_plan(
+        &state.http,
+        state.external_live_sessions(),
+        def,
+        &plan,
+        &emit,
+    )
+    .await;
     let _ = app.emit(
         "external-cli-install",
         InstallLogEvent {
@@ -1265,6 +1310,7 @@ pub async fn chat_external_cli_install(
 
 async fn execute_install_plan(
     http: &reqwest::Client,
+    sessions: &LiveSessionRegistry,
     def: &super::types::RuntimeAgentDef,
     plan: &PreparedInstall,
     emit: &impl Fn(String),
@@ -1276,7 +1322,9 @@ async fn execute_install_plan(
         }
         InstallSource::Managed(source) => keys.extend(source.lock_key()),
     }
-    let lease = ResourceLease::acquire(keys, true)?;
+    let lease = sessions
+        .prepare_maintenance(std::slice::from_ref(&plan.agent), keys)
+        .await?;
     let stale = || "CLI 路径、配置或安装来源已改变，请刷新安装计划".to_string();
     if !plan.identity.still_current(def, &plan.binary) {
         return Err(stale());
@@ -1398,6 +1446,7 @@ esac
 
         let http = reqwest::Client::new();
         let def = get_agent_def("opencode").unwrap();
+        let sessions = LiveSessionRegistry::default();
         let preview = || {
             maintenance_preview(
                 &http,
@@ -1411,7 +1460,7 @@ esac
         assert_eq!(latest.as_deref(), Some("1.2.4"));
         let plan = plan.unwrap();
         std::fs::write(prefix.join("latest"), "1.2.5").unwrap();
-        assert!(execute_install_plan(&http, def, &plan, &|_| {})
+        assert!(execute_install_plan(&http, &sessions, def, &plan, &|_| {})
             .await
             .is_err());
         assert_eq!(
@@ -1420,7 +1469,7 @@ esac
         );
 
         let (_, refreshed) = preview().await;
-        execute_install_plan(&http, def, &refreshed.unwrap(), &|_| {})
+        execute_install_plan(&http, &sessions, def, &refreshed.unwrap(), &|_| {})
             .await
             .unwrap();
         assert_eq!(

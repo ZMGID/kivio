@@ -21,7 +21,7 @@ function connect() {
       for (const entry of entries.values()) entry.updateConfiguration(settings)
     })
     window.addEventListener('focus', () => {
-      for (const entry of entries.values()) if (entry.visible()) void entry.load('automatic')
+      for (const entry of entries.values()) entry.onFocus()
     })
     connection = onExternalCliAccountUpdated(id => {
       for (const entry of entries.values()) if (entry.agentId === id) entry.accountUpdated()
@@ -40,7 +40,8 @@ function createEntry(agentId: string, conversationId?: string | null) {
   let view: View = EMPTY
   let cacheInvalidated = false
   let nextCheckAt = 0
-  let configurationRevision = 0
+  let scopeRevision = 0
+  let focusRead: Promise<void> | undefined
   let sequence = 0
   let applied = 0
   let pending: Promise<void> | undefined
@@ -55,29 +56,33 @@ function createEntry(agentId: string, conversationId?: string | null) {
     if (mode !== 'cached' && pending) return pending
     if (mode === 'automatic' && Date.now() < nextCheckAt) return Promise.resolve()
     const request = ++sequence
-    const revision = configurationRevision
+    const revision = scopeRevision
     const task = Promise.resolve().then(async () => {
       try {
         const account = await externalCliSettingsApi.getExternalCliAccount(agentId, conversationId, mode)
-        if (revision !== configurationRevision) return
+        if (revision !== scopeRevision) return
         if (mode === 'cached' && !account) {
           if (request >= applied && view.account) {
+            // The backend can no longer associate the displayed reading with this login.
+            scopeRevision += 1
+            pending = undefined
+            initialCacheRead = undefined
             nextCheckAt = 0
-            update({ account: null, error: null })
+            update(EMPTY)
             if (listeners.size) void load('automatic')
           }
           return
         }
         const previousCheck = view.account?.nextRefreshAt
         const currentCheck = account?.nextRefreshAt
-        if (previousCheck != null && currentCheck != null && previousCheck !== currentCheck) {
+        if (mode !== 'cached' && previousCheck != null && currentCheck != null && previousCheck !== currentCheck) {
           if (currentCheck < previousCheck) return
         } else if (request < applied) return
         applied = Math.max(request, applied)
         nextCheckAt = account?.nextRefreshAt ?? Date.now() + 300_000
         update({ account, error: account?.refreshError ?? null })
       } catch (error) {
-        if (revision !== configurationRevision || request < applied || mode === 'cached') return
+        if (revision !== scopeRevision || request < applied || mode === 'cached') return
         applied = request
         nextCheckAt = Date.now() + 30_000
         update({ error: error instanceof Error ? error.message : String(error) })
@@ -104,14 +109,24 @@ function createEntry(agentId: string, conversationId?: string | null) {
       else cacheInvalidated = true
     },
     getSnapshot: () => view,
-    visible: () => listeners.size !== 0,
+    onFocus() {
+      if (!listeners.size) {
+        cacheInvalidated = true
+        return
+      }
+      if (focusRead) return
+      // A login can change in a terminal even while its quota reading is still fresh.
+      focusRead = (view.account ? load('cached') : Promise.resolve())
+        .then(() => { if (listeners.size) void load('automatic') })
+        .finally(() => { focusRead = undefined })
+    },
     evictable: () => listeners.size === 0 && !pending,
     updateConfiguration(settings: Settings | null) {
       const next = scope(settings)
       if (next[1] === configuration[1] && JSON.stringify(next[0]) === JSON.stringify(configuration[0])) return
       configuration = next
       cacheInvalidated = false
-      configurationRevision += 1
+      scopeRevision += 1
       nextCheckAt = 0
       pending = undefined
       initialCacheRead = undefined
