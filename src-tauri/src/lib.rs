@@ -668,6 +668,7 @@ pub fn run() {
             chat::commands::catalog::chat_get_conversation_pins,
             chat::commands::catalog::chat_set_conversation_pins,
             chat::commands::catalog::chat_create_project,
+            chat::commands::catalog::chat_clone_project,
             chat::commands::catalog::chat_update_project,
             chat::commands::catalog::chat_delete_project,
             chat::commands::catalog::chat_project_open_folder,

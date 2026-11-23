@@ -1261,6 +1261,21 @@ pub(crate) fn chat_create_project(
     }))
 }
 
+/// 从 Git 仓库新建项目：克隆到 `parent_dir/name` 并登记，失败时不留下文件夹。
+#[tauri::command]
+pub(crate) async fn chat_clone_project(
+    app: AppHandle,
+    url: String,
+    parent_dir: String,
+    name: String,
+) -> Result<serde_json::Value, String> {
+    let project = crate::chat::project_clone::clone_project(&app, &url, &parent_dir, &name).await?;
+    Ok(serde_json::json!({
+        "success": true,
+        "project": project,
+    }))
+}
+
 #[tauri::command]
 pub(crate) async fn chat_update_project(
     app: AppHandle,

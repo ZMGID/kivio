@@ -548,6 +548,10 @@ const mockChatApi = {
     return project
   },
 
+  async cloneProject(_url: string, parentDir: string, name: string): Promise<ChatProject> {
+    return mockChatApi.createProject(name, null, null, `${parentDir.replace(/[\\/]+$/, '')}/${name}`)
+  },
+
   async updateProject(
     projectId: string,
     updates: { name?: string; description?: string | null; color?: string | null; rootPath?: string | null },
@@ -1602,6 +1606,16 @@ export const chatApi = {
     if (!result.success) {
       throw new Error('Failed to create project')
     }
+    return result.project
+  },
+
+  /** 克隆 Git 仓库到 `parentDir/name` 并登记为项目；`url` 也接受 GitHub 的 owner/repo。 */
+  async cloneProject(url: string, parentDir: string, name: string): Promise<ChatProject> {
+    if (!isTauriRuntime()) return mockChatApi.cloneProject(url, parentDir, name)
+    const result = await invoke<{ success: boolean; project: ChatProject }>(
+      'chat_clone_project',
+      { url, parentDir, name },
+    )
     return result.project
   },
 

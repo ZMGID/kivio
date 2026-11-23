@@ -34,6 +34,7 @@ pub mod plan_document;
 pub mod popout;
 #[cfg(debug_assertions)]
 pub mod probe;
+pub(crate) mod project_clone;
 pub mod protocol;
 pub(crate) mod provider_runtime;
 pub mod repository;

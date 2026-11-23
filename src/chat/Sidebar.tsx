@@ -13,6 +13,7 @@ import { useScheduledTasks } from './scheduledTasks/useScheduledTasks'
 import { ChatSectionMenu } from './ChatSectionMenu'
 import { ProjectContextMenu } from './ProjectContextMenu'
 import { ProjectDialog } from './ProjectDialog'
+import { ProjectCreateDialog, type ProjectCreateRequest } from './ProjectCreateDialog'
 import { CliImportDialog } from './CliImportDialog'
 import { SetContextMenu } from './SetContextMenu'
 import { SetDialog } from './SetDialog'
@@ -1178,13 +1179,21 @@ export const Sidebar = memo(function Sidebar({
     })
   }
 
-  const handleSaveProject = async (name: string, rootPath?: string | null) => {
+  const handleCreateProject = (request: ProjectCreateRequest) => saveProject(() => request.kind === 'clone'
+    ? chatApi.cloneProject(request.url, request.parentDir, request.name)
+    : request.ensureRootDir
+      ? chatApi.createProject(request.name, null, null, request.rootPath, { ensureRootDir: true })
+      : chatApi.createProject(request.name, null, null, request.rootPath))
+
+  const handleUpdateProject = (project: ChatProject, name: string, rootPath?: string | null) =>
+    saveProject(() => chatApi.updateProject(project.id, { name, rootPath }))
+
+  /** 新建与编辑共用的收尾：选中项目、刷新侧栏、关闭弹窗；失败留在弹窗里显示。 */
+  const saveProject = async (run: () => Promise<ChatProject>) => {
     setProjectSaving(true)
     setProjectError('')
     try {
-      const project = dialogProject
-        ? await chatApi.updateProject(dialogProject.id, { name, rootPath })
-        : await chatApi.createProject(name, null, null, rootPath)
+      const project = await run()
       onSelectProject(project)
       await loadSidebarData({ silent: true })
       if (flatView) setFlatScope(`project:${project.id}`)
@@ -2168,12 +2177,20 @@ export const Sidebar = memo(function Sidebar({
         />
       )}
 
-      {dialogProject !== undefined && (
+      {dialogProject === null && (
+        <ProjectCreateDialog
+          saving={projectSaving}
+          error={projectError}
+          onCreate={(request) => void handleCreateProject(request)}
+          onClose={() => setDialogProject(undefined)}
+        />
+      )}
+      {dialogProject && (
         <ProjectDialog
           project={dialogProject}
           saving={projectSaving}
           error={projectError}
-          onSave={(name, rootPath) => void handleSaveProject(name, rootPath)}
+          onSave={(name, rootPath) => void handleUpdateProject(dialogProject, name, rootPath)}
           onClose={() => setDialogProject(undefined)}
         />
       )}

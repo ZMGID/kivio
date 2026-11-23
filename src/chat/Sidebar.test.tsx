@@ -54,6 +54,7 @@ afterEach(() => {
 })
 
 beforeEach(() => {
+  HTMLDialogElement.prototype.showModal ??= function () { this.setAttribute('open', '') }
   window.localStorage.removeItem('kivio-chat-sidebar-tab')
   vi.spyOn(api, 'checkUpdate').mockResolvedValue({ available: false })
   vi.spyOn(api, 'onUpdateAvailable').mockResolvedValue(() => {})
@@ -792,13 +793,16 @@ describe('Sidebar view choice', () => {
     render(<Sidebar {...props} />)
     await toggleView(user, '切换为扁平视图')
     await user.click(screen.getByRole('button', { name: '新建项目' }))
-    await user.type(screen.getByPlaceholderText('例如：产品发布计划'), created.name)
-    await user.click(screen.getByRole('button', { name: '选择文件夹' }))
+    await user.click(screen.getByRole('option', { name: /打开本地文件夹/ }))
     expect(await screen.findByText('/tmp/new-project')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '创建' }))
+    const nameInput = screen.getByLabelText('项目名称')
+    expect(nameInput).toHaveValue('new-project')
+    await user.clear(nameInput)
+    await user.type(nameInput, created.name)
+    await user.click(screen.getByRole('button', { name: '创建项目' }))
     expect(await screen.findByText('保存失败')).toBeInTheDocument()
     expect(props.onSelectProject).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: '创建' }))
+    await user.click(screen.getByRole('button', { name: '创建项目' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(create).toHaveBeenCalledTimes(2)
     expect(create).toHaveBeenLastCalledWith(created.name, null, null, '/tmp/new-project')
