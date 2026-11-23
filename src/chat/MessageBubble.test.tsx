@@ -1,6 +1,8 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
+import { api } from '../api/tauri'
+import { dismissNotice, getNotices } from '../components/appNoticeStore'
 import { MessageBubble } from './MessageBubble'
 import type { ChatMessage } from './types'
 
@@ -659,6 +661,24 @@ describe('MessageBubble agent plan action', () => {
     expect(screen.getByRole('button', { name: '打开编辑' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '执行这条计划' }))
     expect(execute).toHaveBeenCalledWith('document-plan')
+  })
+
+  it('opens the plan document through the shared command and reports a failure as a notice', async () => {
+    const open = vi.spyOn(api, 'openGeneratedArtifact').mockRejectedValue(new Error('missing'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      render(<MessageBubble message={{
+        id: 'document-plan-missing', role: 'assistant', content: '方案已保存。', timestamp: 1,
+        agent_plan: { mode: 'plan', status: 'draft', document: { id: 'p2', title: '旧方案', path: 'E:/project/docs/plans/旧方案.md' } },
+      }} onExecuteAgentPlan={() => {}} />)
+      fireEvent.click(screen.getByRole('button', { name: '打开编辑' }))
+      expect(open).toHaveBeenCalledWith('E:/project/docs/plans/旧方案.md')
+      await waitFor(() => expect(getNotices().map(notice => notice.message)).toContain('文件无法打开，请检查文件是否仍存在。'))
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    } finally {
+      getNotices().forEach(notice => dismissNotice(notice.id))
+      vi.restoreAllMocks()
+    }
   })
 
   it('does not turn an ordinary list into a plan', () => {

@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core'
 import { requestDockPreview } from './dock/dockPreview'
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import {
@@ -426,7 +425,6 @@ function AgentPlanAction({
   onExecute?: (messageId: string) => Promise<void> | void
 }) {
   const t = useT()
-  const [openError, setOpenError] = useState<string | null>(null)
   const document = planState?.document
   if (!document && !hasAgentPlanText(planState?.plan)) return null
   return (
@@ -439,15 +437,16 @@ function AgentPlanAction({
           </button>
         ) : <span className="min-w-0 flex-1 truncate">{t.chatMsgPlanDraft}</span>}
         {document && <Button variant="ghost" size="sm" onClick={() => {
-          setOpenError(null)
-          void invoke('chat_open_generated_artifact', { path: document.path }).catch((error) => setOpenError(String(error)))
+          void api.openGeneratedArtifact(document.path).catch((error: unknown) => {
+            console.error('[chat] could not open plan document', error)
+            notifyError(t.chatMsgFileOpenFailed)
+          })
         }}>{t.chatMsgPlanOpenEditor}</Button>}
         {onExecute && <Button variant="primary" size="sm" onClick={() => void onExecute(messageId)} disabled={disabled} aria-label={t.chatMsgPlanExecute}>
           <Play size={12} strokeWidth={2.2} fill="currentColor" />
           {document ? t.chatMsgPlanExecuteCurrent : t.chatMsgPlanExecute}
         </Button>}
       </div>
-      {openError && <div role="alert">{openError}</div>}
     </div>
   )
 }

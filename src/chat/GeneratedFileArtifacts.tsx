@@ -1,6 +1,6 @@
-import { invoke } from '@tauri-apps/api/core'
 import { useT } from '../components/i18n'
 import { useState } from 'react'
+import { api } from '../api/tauri'
 import { artifactDataUrl, isFileArtifact } from './artifacts'
 import { FileChip } from './fileChip'
 import { fileLocationAction } from './fileLocation'
@@ -13,7 +13,7 @@ function artifactPath(artifact: ChatToolArtifact): string {
 async function openGeneratedArtifact(artifact: ChatToolArtifact) {
   const path = artifactPath(artifact)
   if (path) {
-    await invoke('chat_open_generated_artifact', { path })
+    await api.openGeneratedArtifact(path)
     return
   }
 
@@ -21,7 +21,7 @@ async function openGeneratedArtifact(artifact: ChatToolArtifact) {
   if (!dataUrl) throw new Error('Artifact has no available file content')
   // 没有 path 的旧 artifact：落成临时文件再交给系统默认程序。
   // 不能用 `window.open(dataUrl)` —— 那条在 Tauri 里由 webview 自己处理，不会打开默认程序。
-  await invoke('open_data_url_file', { name: artifact.name ?? 'file.bin', dataUrl })
+  await api.openDataUrlFile(artifact.name ?? 'file.bin', dataUrl)
 }
 
 export function ArtifactFileChip({

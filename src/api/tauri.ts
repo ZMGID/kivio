@@ -2011,6 +2011,10 @@ export const api = {
   openLocalFile: (href: string, conversationId?: string | null) =>
     invoke<void>('open_local_file', { href, conversationId: conversationId ?? null }),
   openHtmlPreview: (html: string) => invoke<void>('open_html_preview', { html }),
+  /** 用系统默认程序打开工具生成的文件。 */
+  openGeneratedArtifact: (path: string) => invoke<void>('chat_open_generated_artifact', { path }),
+  /** 没有本地路径的旧产物：后端写成临时文件再交给默认程序。 */
+  openDataUrlFile: (name: string, dataUrl: string) => invoke<void>('open_data_url_file', { name, dataUrl }),
   openHtmlRender: (conversationId: string, attachmentId: string, themeCss: string) =>
     invoke<void>('open_html_render', { conversationId, attachmentId, themeCss }),
 
