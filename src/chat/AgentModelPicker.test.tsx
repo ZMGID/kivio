@@ -204,7 +204,7 @@ describe('AgentModelPicker · external CLI models and effort', () => {
       source: 'probed',
     })
     renderPicker({ agentRuntime: { ...runtime, externalAgentId: 'antigravity', externalModel: 'gemini-3.8-flash-high', externalReasoning: 'low' }, onExternalModelChange })
-    await waitFor(() => expect(onExternalModelChange).toHaveBeenCalledWith('gemini-3.8-flash-high', null))
+    await waitFor(() => expect(onExternalModelChange).toHaveBeenCalledWith('gemini-3.8-flash-high', null, undefined, 'catalog'))
     expect(trigger()).toHaveTextContent('Gemini 3.8 Flash (High)')
     openPicker()
     expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument()
@@ -220,7 +220,7 @@ describe('AgentModelPicker · external CLI models and effort', () => {
       currentModel: 'gemini-3.8-flash-low', currentReasoning: 'high', source: 'probed',
     })
     renderPicker({ agentRuntime: { ...runtime, externalAgentId: 'antigravity' }, onExternalModelChange })
-    await waitFor(() => expect(onExternalModelChange).toHaveBeenCalledWith('gemini-3.8-flash-low', null))
+    await waitFor(() => expect(onExternalModelChange).toHaveBeenCalledWith('gemini-3.8-flash-low', null, undefined, 'catalog'))
     expect(trigger().querySelector('.chat-thinking-level-label')).toBeNull()
   })
 
@@ -258,7 +258,7 @@ describe('AgentModelPicker · external CLI models and effort', () => {
       source: 'probed', currentModel: 'grok-4.5', currentReasoning: 'high',
     })
     renderPicker({ agentRuntime: runtime, onExternalModelChange })
-    await waitFor(() => expect(onExternalModelChange).toHaveBeenCalledWith('grok-4.5', 'high'))
+    await waitFor(() => expect(onExternalModelChange).toHaveBeenCalledWith('grok-4.5', 'high', undefined, 'catalog'))
     openPicker()
     expect(screen.getByRole('button', { name: 'Grok 4.5' })).toHaveAttribute('aria-current', 'true')
   })

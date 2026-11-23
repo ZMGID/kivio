@@ -7,6 +7,7 @@ import { CHAT_PROTOCOL_VERSION, type ChatHistoryCursor } from '../generated/chat
 import { chatApi } from './api'
 import { recordChatConversationRevision } from '../api/chatProtocol'
 import Chat from './Chat'
+import { LAST_AGENT_RUNTIME_KEY } from './lastAgentRuntime'
 import { draftKey, updateComposerDraft } from './composerDraft'
 import { getSnapshot, reset } from './streamingStore'
 import type { Conversation } from './types'
@@ -54,6 +55,39 @@ function mockConversationPair() {
   vi.spyOn(chatApi, 'getContextStats').mockResolvedValue({ contextState: {} })
   return { conversations, windowReads }
 }
+
+it.each(['sonnet', 'default'])('keeps the picked model for new chats after visiting a Claude chat using %s', async (claudeModel) => {
+  const { conversations } = mockConversationPair()
+  conversations[0].agent_runtime = { kind: 'external', externalAgentId: 'codex', externalModel: 'gpt-old' }
+  conversations[1].agent_runtime = { kind: 'external', externalAgentId: 'claude', externalModel: claudeModel }
+  vi.spyOn(chatApi, 'detectExternalAgentModels').mockImplementation(async id => {
+    const model = id === 'codex' ? 'gpt-6.1' : 'sonnet'
+    return { models: [{ id: model, label: model }], currentModel: model, reasoningOptions: [], reasoningByModel: {}, source: 'probed' }
+  })
+  vi.spyOn(chatApi, 'setAgentRuntime').mockImplementation(async (id, runtime) => {
+    const target = conversations.find(c => c.id === id)!
+    target.agent_runtime = runtime
+    return { ...target, revision: ++target.revision }
+  })
+  window.history.replaceState(null, '', '#chat/switch-a')
+  const view = render(<Chat onSettingsChange={() => {}} />)
+  try {
+    await act(async () => { await vi.dynamicImportSettled() })
+    await screen.findByText('switch-a question')
+    fireEvent.click(await screen.findByRole('button', { name: /codex.*gpt-old/i }))
+    fireEvent.click(await screen.findByRole('button', { name: 'gpt-6.1' }))
+    await screen.findByRole('button', { name: /codex.*gpt-6.1/i })
+    fireEvent.click(screen.getByRole('button', { name: 'switch-b' }))
+    await screen.findByText('switch-b question')
+    await screen.findByRole('button', { name: /claude.*sonnet/i })
+    fireEvent.keyDown(window, { key: 'n', metaKey: true })
+    await waitFor(() => expect(window.location.hash).toBe('#chat'))
+    expect(screen.getByRole('button', { name: /codex.*gpt-6.1/i })).toBeVisible()
+  } finally {
+    view.unmount()
+    localStorage.removeItem(LAST_AGENT_RUNTIME_KEY)
+  }
+})
 
 it('opens the retained draft immediately and enables sends after replaying a missed title', async () => {
   const { conversations, windowReads } = mockConversationPair()

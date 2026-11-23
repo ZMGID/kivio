@@ -54,11 +54,9 @@ describe('useComposerDraft', () => {
       result.current.setAdditionalDirectories([{ path: 'C:/work' }])
       result.current.setWebSearchMode('builtin')
       result.current.setReplyModels([{ provider_id: 'provider-b', model: 'model-b' }])
-      result.current.resetConversationContext({
-        providerId: 'provider-c',
-        model: 'model-c',
-        agentRuntime: EXTERNAL,
-      })
+      result.current.setProviderModel('provider-c', 'model-c')
+      result.current.setAgentRuntime(EXTERNAL)
+      result.current.resetConversationContext()
     })
 
     expect(result.current.value).toEqual({

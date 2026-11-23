@@ -1,3 +1,4 @@
+import type { ExternalModelChange } from '../externalModelEffort'
 import { ChatTitlebar } from '../ChatTitlebar'
 import { PermissionPicker } from '../PermissionPicker'
 import { ExternalCliAccount } from '../ExternalCliAccount'
@@ -17,7 +18,7 @@ type PopoutTitlebarProps = {
   approvalPolicy: string
   onRuntimeChange: (runtime: AgentRuntimeConfig) => void | Promise<void>
   onModelChange: (providerId: string, model: string) => void | Promise<void>
-  onExternalModelChange: (model: string, reasoning?: string | null, serviceTier?: string | null) => void | Promise<void>
+  onExternalModelChange: ExternalModelChange
   onThinkingLevelChange: (level: ThinkingLevel | null) => void | Promise<void>
   onApprovalPolicyChange: (policy: string) => void | Promise<void>
   onSandboxChange: (value: string) => void | Promise<void>

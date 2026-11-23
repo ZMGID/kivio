@@ -1,3 +1,4 @@
+import type { ExternalModelChange } from './externalModelEffort'
 import { providerModelLabel } from '../data/modelCatalog'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
@@ -83,7 +84,7 @@ export interface AgentModelPickerProps {
   thinkingLevel: ThinkingLevel | null
   onRuntimeChange: (runtime: AgentRuntimeConfig) => void
   onModelChange: (providerId: string, model: string) => void
-  onExternalModelChange: (model: string, reasoning?: string | null, serviceTier?: string | null) => void
+  onExternalModelChange: ExternalModelChange
   /** null = 清掉显式档位，按模型默认档处理。 */
   onThinkingLevelChange: (level: ThinkingLevel | null) => void
 }

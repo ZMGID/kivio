@@ -26,11 +26,6 @@ type ComposerDraftInitial = Pick<
   'providerId' | 'model' | 'thinkingLevel' | 'agentRuntime'
 >
 
-type ConversationDraftIdentity = Pick<
-  ComposerDraft,
-  'providerId' | 'model' | 'agentRuntime'
->
-
 export function useComposerDraft(initial: ComposerDraftInitial) {
   const [value, setValue] = useState<ComposerDraft>(() => ({
     ...initial,
@@ -50,10 +45,9 @@ export function useComposerDraft(initial: ComposerDraftInitial) {
     setValue((current) => ({ ...current, providerId, model }))
   }, [])
 
-  const resetConversationContext = useCallback((identity: ConversationDraftIdentity) => {
+  const resetConversationContext = useCallback(() => {
     setValue((current) => ({
       ...current,
-      ...identity,
       knowledgeBaseIds: [],
       forceKnowledgeSearch: false,
       additionalDirectories: [],

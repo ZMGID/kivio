@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { chatApi, type DetectedExternalAgent } from './api'
 import { useT } from '../components/i18n'
-import { modelIncludesEffort } from './externalModelEffort'
+import { modelIncludesEffort, type ExternalModelChange } from './externalModelEffort'
 import type { AgentRuntimeConfig } from './types'
 import type { ExternalAgentModels } from '../api/externalCliSettings'
 import { concreteCliModelId } from '../api/cliModelId'
@@ -120,7 +120,7 @@ export function useExternalModelCatalog({
 }: {
   agentRuntime: AgentRuntimeConfig
   conversationId?: string | null
-  onModelChange: (model: string, reasoning?: string | null, serviceTier?: string | null) => void
+  onModelChange: ExternalModelChange
 }): ExternalModelCatalog {
   const t = useT()
   const agentId = agentRuntime.kind === 'external' ? agentRuntime.externalAgentId ?? null : null
@@ -171,7 +171,7 @@ export function useExternalModelCatalog({
           const nextModel = explicitModel ? rt.externalModel! : result.models.some((m) => m.id === effectiveModel)
             ? effectiveModel! : rt.externalModel ?? 'default'
           if (nextModel !== (rt.externalModel ?? 'default') || rt.externalReasoning != null) {
-            onModelChangeRef.current(nextModel, null)
+            onModelChangeRef.current(nextModel, null, undefined, 'catalog')
           }
           return
         }
@@ -190,8 +190,7 @@ export function useExternalModelCatalog({
           : null
         const nextReasoning = !explicitReasoning && saneReasoning ? saneReasoning : rt.externalReasoning ?? null
         if (nextModel !== (rt.externalModel ?? 'default') || nextReasoning !== (rt.externalReasoning ?? null)) {
-          if (rt.externalServiceTier) onModelChangeRef.current(nextModel, nextReasoning, rt.externalServiceTier)
-          else onModelChangeRef.current(nextModel, nextReasoning)
+          onModelChangeRef.current(nextModel, nextReasoning, rt.externalServiceTier ?? undefined, 'catalog')
         }
       }
       return chatApi

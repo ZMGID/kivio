@@ -1,9 +1,9 @@
-import { useCallback, type MutableRefObject } from 'react'
+import { useCallback, useRef, type MutableRefObject } from 'react'
 import { persistLastChatModelToSettings, saveLastThinkingLevel, saveLastWebSearchMode } from '../composerPreferences'
-import { saveLastModel } from '../../data/chatModelPreference'
+import { saveLastModel, type ChatModelBinding } from '../../data/chatModelPreference'
 import { chatApi } from '../api'
 import { useAgentSelection } from './useAgentSelection'
-import { withExternalModel } from '../externalModelEffort'
+import { withExternalModel, type ExternalModelChangeSource } from '../externalModelEffort'
 import { saveLastAgentRuntime } from '../lastAgentRuntime'
 import type {
   AdditionalDirectory,
@@ -69,24 +69,45 @@ export function useConversationMetaMutations({
     }
   }, [applyConversationMeta, currentConversationRef, setStreamErrorForConversation])
 
-  const changeModel = useCallback(async (providerId: string, model: string) => {
-    const remember = () => {
-      draft.setProviderModel(providerId, model)
-      saveLastModel(providerId, model)
-      void persistLastChatModelToSettings(providerId, model)
-    }
+  const latestPick = useRef(0)
+  const changeSelection = useCallback(async (
+    runtime: AgentRuntimeConfig,
+    binding?: ChatModelBinding,
+    source: ExternalModelChangeSource = 'user',
+  ) => {
+    const pick = source === 'user' ? ++latestPick.current : null
     const id = currentConversationRef.current?.id
-    if (!id) return remember()
-    await save(id, async () => {
-      try {
-        const updated = await chatApi.updateConversation(id, { providerId, model })
+    const apply = async () => {
+      if (id) {
+        const updated = binding
+          ? await chatApi.updateConversation(id, binding)
+          : await chatApi.setAgentRuntime(id, runtime)
         applyConversationMeta(updated)
-        if (currentConversationRef.current?.id === id) remember()
-      } catch (err) {
-        setStreamErrorForConversation(id, errorMessage(err, '模型切换失败'))
       }
-    })
+      // A catalog result belongs only to the conversation (or welcome draft) it resolved.
+      if (pick === null) {
+        if (!id) draft.setAgentRuntime(runtime)
+        return
+      }
+      if (pick !== latestPick.current) return
+      draft.setAgentRuntime(runtime)
+      saveLastAgentRuntime(runtime)
+      if (binding) {
+        draft.setProviderModel(binding.providerId, binding.model)
+        saveLastModel(binding.providerId, binding.model)
+        void persistLastChatModelToSettings(binding.providerId, binding.model)
+      }
+    }
+    if (!id) return apply()
+    try {
+      await save(id, apply)
+    } catch (err) {
+      setStreamErrorForConversation(id, errorMessage(err, binding ? '模型切换失败' : 'Agent 切换失败'))
+    }
   }, [applyConversationMeta, currentConversationRef, draft, save, setStreamErrorForConversation])
+
+  const changeModel = useCallback((providerId: string, model: string) =>
+    changeSelection(activeAgentRuntime, { providerId, model }), [activeAgentRuntime, changeSelection])
 
   const changeThinkingLevel = useCallback(async (level: ThinkingLevel | null) => {
     draft.setThinkingLevel(level)
@@ -127,29 +148,12 @@ export function useConversationMetaMutations({
     await updateMeta({ forceKnowledgeSearch: next }, 'update force knowledge search')
   }, [currentConversationRef, draft, draftForceKnowledgeSearch, updateMeta])
 
-  const changeRuntime = useCallback(async (runtime: AgentRuntimeConfig) => {
-    const remember = () => {
-      draft.setAgentRuntime(runtime)
-      saveLastAgentRuntime(runtime)
-    }
-    const conversation = currentConversationRef.current
-    if (!conversation) return remember()
-    const id = conversation.id
-    await save(id, async () => {
-      try {
-        const updated = await chatApi.setAgentRuntime(id, runtime)
-        applyConversationMeta(updated)
-        if (currentConversationRef.current?.id === id) remember()
-      } catch (err) {
-        setStreamErrorForConversation(id, errorMessage(err, 'Agent 切换失败'))
-      }
-    })
-  }, [applyConversationMeta, currentConversationRef, draft, save, setStreamErrorForConversation])
+  const changeRuntime = useCallback((runtime: AgentRuntimeConfig) => changeSelection(runtime), [changeSelection])
 
-  // 下面三个都经 changeRuntime：没有会话时草稿也要更新（首次发送创建会话时应用）。
-  const changeExternalModel = useCallback(async (model: string, reasoning?: string | null, serviceTier?: string | null) => {
-    await changeRuntime(withExternalModel(activeAgentRuntime, model, reasoning, serviceTier))
-  }, [activeAgentRuntime, changeRuntime])
+  const changeExternalModel = useCallback((
+    model: string, reasoning?: string | null, serviceTier?: string | null, source?: ExternalModelChangeSource,
+  ) => changeSelection(withExternalModel(activeAgentRuntime, model, reasoning, serviceTier), undefined, source),
+  [activeAgentRuntime, changeSelection])
 
   const changeExternalSandbox = useCallback(async (sandbox: string) => {
     await changeRuntime({ ...activeAgentRuntime, kind: 'external', externalSandbox: sandbox })

@@ -80,7 +80,7 @@ import {
   chatApi,
   normalizeAgentRuntime,
 } from './api'
-import { loadLastAgentRuntime, saveLastAgentRuntime } from './lastAgentRuntime'
+import { loadLastAgentRuntime } from './lastAgentRuntime'
 import { loadLastModel, resolvePreferredChatModel } from '../data/chatModelPreference'
 import {
   loadLastThinkingLevel,
@@ -984,11 +984,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const sendDisabledReason = effectiveSkillRecommendedTools.length > 0 ? toolStatusHint : ''
 
-  const newConversationDefaultsRef = useRef({ activeProviderId, activeModel, activeAgentRuntime })
-  useLayoutEffect(() => {
-    newConversationDefaultsRef.current = { activeProviderId, activeModel, activeAgentRuntime }
-  }, [activeProviderId, activeModel, activeAgentRuntime])
-
   // Navigation owns the route/load/popout commit lease. The page supplies only
   // its display effects and the Tauri read adapter; no hook is wired back via ref.
   const navigation = useMemo(() => createChatNavigationController({
@@ -1014,16 +1009,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     isConversationInFlight: (conversationId) => executionOwner.snapshot(conversationId).inFlight,
     prepareNewConversation: () => {
       rememberDisplayedConversation()
-      const { activeProviderId, activeModel, activeAgentRuntime } = newConversationDefaultsRef.current
       setSelectedProject(null)
       setSelectedSet(null)
       setAssistantStreamStatsByMessageId({})
-      resetComposerDraftContext({
-        providerId: activeProviderId,
-        model: activeModel,
-        agentRuntime: activeAgentRuntime,
-      })
-      saveLastAgentRuntime(activeAgentRuntime)
+      resetComposerDraftContext()
       clearDisplayedConversation()
       resetContext()
     },
@@ -1996,8 +1985,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     // The navigation owner loads and restores the same stream; keep the extension route.
     await navigation.loadEmbeddedConversation(id)
   }, [navigation])
+  const extensionModelRef = useRef({ activeProviderId, activeModel })
+  useLayoutEffect(() => {
+    extensionModelRef.current = { activeProviderId, activeModel }
+  }, [activeProviderId, activeModel])
   const createExtensionConversation = useCallback(async (name: string) => {
-    const { activeProviderId, activeModel } = newConversationDefaultsRef.current
+    const { activeProviderId, activeModel } = extensionModelRef.current
     const conversation = await chatApi.createConversation(activeProviderId || undefined, activeModel || undefined)
     await chatApi.setAgentRuntime(conversation.id, BUILTIN_AGENT_RUNTIME)
     const updated = await chatApi.updateConversation(conversation.id, { title: name })

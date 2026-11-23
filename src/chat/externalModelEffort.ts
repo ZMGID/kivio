@@ -1,5 +1,14 @@
 import type { AgentRuntimeConfig } from './types'
 
+export type ExternalModelChangeSource = 'user' | 'catalog'
+
+export type ExternalModelChange = (
+  model: string,
+  reasoning?: string | null,
+  serviceTier?: string | null,
+  source?: ExternalModelChangeSource,
+) => void
+
 /** Antigravity 返回的档位变体已经在模型 ID 中指定强度。 */
 export function modelIncludesEffort(agentId: string | null | undefined, modelId: string | null | undefined, label?: string): boolean {
   return agentId === 'antigravity' && !!modelId && modelId !== 'default' && (

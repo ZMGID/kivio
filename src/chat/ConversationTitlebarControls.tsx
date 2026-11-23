@@ -1,3 +1,4 @@
+import type { ExternalModelChange } from './externalModelEffort'
 import { memo } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { IconButton } from '../components/Button'
@@ -27,7 +28,7 @@ export interface ConversationTitlebarControlsProps {
   dockOpen: boolean
   uiLang: Lang
   onRuntimeChange: (runtime: AgentRuntimeConfig) => void | Promise<void>
-  onExternalModelChange: (model: string, reasoning?: string | null, serviceTier?: string | null) => void | Promise<void>
+  onExternalModelChange: ExternalModelChange
   onModelChange: (providerId: string, model: string) => void | Promise<void>
   onThinkingLevelChange: (level: ThinkingLevel | null) => void | Promise<void>
   onApprovalPolicyChange: (policy: string) => void

@@ -145,6 +145,20 @@ describe('useConversationMetaMutations: runtime', () => {
     expect(mockPause).not.toHaveBeenCalled()
   })
 
+  it('remembers a confirmed pick after navigation unless a newer model was picked', async () => {
+    for (const pickAgain of [false, true]) {
+      const { result, currentConversationRef } = setup()
+      let finish!: (conversation: Conversation) => void
+      mockSetRuntime.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      let selection!: Promise<void>
+      act(() => { selection = result.current.changeRuntime(EXTERNAL) })
+      currentConversationRef.current = null
+      if (pickAgain) await act(async () => { await result.current.changeModel('p', 'gpt') })
+      await act(async () => { finish(conversation()); await selection })
+      expect(vi.mocked(saveLastAgentRuntime).mock.lastCall?.[0]).toEqual(pickAgain ? BUILTIN : EXTERNAL)
+    }
+  })
+
   it('derives external model / sandbox / preset changes from the active runtime', async () => {
     const { result } = setup(null, EXTERNAL)
     await act(async () => {
