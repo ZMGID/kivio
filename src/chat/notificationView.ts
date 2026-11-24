@@ -1,3 +1,7 @@
+export function isChatWindowViewing() {
+  return document.visibilityState === 'visible' && document.hasFocus()
+}
+
 /** Report state from DOM events so reply completion never has to query WebKit. */
 export function observeNotificationView(report: (route: string, viewing: boolean) => Promise<void>) {
   const send = (viewing: boolean) => {
@@ -5,7 +9,7 @@ export function observeNotificationView(report: (route: string, viewing: boolean
       // Notification suppression must never interrupt normal window interaction.
     })
   }
-  const sync = () => send(document.visibilityState === 'visible' && document.hasFocus())
+  const sync = () => send(isChatWindowViewing())
   const clear = () => send(false)
   window.addEventListener('focus', sync)
   window.addEventListener('blur', clear)

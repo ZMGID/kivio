@@ -221,7 +221,7 @@ export function createChatExecutionOwner(
       }
       cancellations.delete(id)
       retireExternal(id)
-      const token = settlement.beginInvoke(id)
+      const token = settlement.beginInvoke(id, intent.kind === 'send' && Boolean(intent.group))
       const lease = { conversationId: id, token }
       const optimisticClaim = intent.optimistic
         ? optimistic.begin(
@@ -330,8 +330,9 @@ export function createChatExecutionOwner(
       const id = terminal.conversationId
       const invocation = active.get(id)
       if (invocation) {
-        if (target === 'group' || invocation.groupId) return { kind: 'pending' }
-        return settlement.deferTerminal(terminal) ? { kind: 'deferred' } : { kind: 'ignored' }
+        const grouped = target === 'group' || Boolean(invocation.groupId)
+        if (!settlement.deferTerminal(terminal, grouped)) return { kind: 'ignored' }
+        return { kind: grouped ? 'pending' : 'deferred' }
       }
       let run = externalRuns.get(id)
       if (!run && terminal.runId

@@ -9,6 +9,7 @@ import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, Convers
 import { HighlightText } from './searchHighlight'
 import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, TasksIcon, SearchNavIcon } from '../settings/public/icons'
 import { ConversationList } from './ConversationList'
+import type { ConversationRunMark } from './hooks/useConversationRunMarks'
 import { useScheduledTasks } from './scheduledTasks/useScheduledTasks'
 import { ChatSectionMenu } from './ChatSectionMenu'
 import { ProjectContextMenu } from './ProjectContextMenu'
@@ -186,6 +187,7 @@ export interface SidebarProps {
   lang: Lang
   currentConversationId?: string
   generatingConversationIds?: ReadonlySet<string>
+  conversationRunMarks?: ReadonlyMap<string, ConversationRunMark>
   optimisticConversations?: ConversationListItem[]
   /**
    * 当前打开的对话。后端 list 排除归档，所以归档后仍开着的对话不会出现在
@@ -645,6 +647,7 @@ export const Sidebar = memo(function Sidebar({
   lang,
   currentConversationId,
   generatingConversationIds = new Set(),
+  conversationRunMarks,
   optimisticConversations = [],
   openConversation = null,
   selectedProject = null,
@@ -1881,6 +1884,7 @@ export const Sidebar = memo(function Sidebar({
                           currentConversationId={currentConversationId}
                           generatingConversationIds={generatingConversationIds}
                           titleGeneratingConversationIds={titleGeneratingIds}
+                          conversationRunMarks={conversationRunMarks}
                           scheduledTaskNamesByConversation={scheduledTaskNamesByConversation}
                           projects={projects}
                           sets={sets}
@@ -2033,6 +2037,7 @@ export const Sidebar = memo(function Sidebar({
                               currentConversationId={currentConversationId}
                               generatingConversationIds={generatingConversationIds}
                               titleGeneratingConversationIds={titleGeneratingIds}
+                              conversationRunMarks={conversationRunMarks}
                               scheduledTaskNamesByConversation={scheduledTaskNamesByConversation}
                               projects={projects}
                               sets={sets}
@@ -2104,6 +2109,7 @@ export const Sidebar = memo(function Sidebar({
                       currentConversationId={currentConversationId}
                       generatingConversationIds={generatingConversationIds}
                       titleGeneratingConversationIds={titleGeneratingIds}
+                      conversationRunMarks={conversationRunMarks}
                       scheduledTaskNamesByConversation={scheduledTaskNamesByConversation}
                       projects={projects}
                       sets={sets}

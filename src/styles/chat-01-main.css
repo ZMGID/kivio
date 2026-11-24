@@ -1307,6 +1307,17 @@ button.chat-composer-status-item:hover {
 .kv-conv-row.is-active .kv-run-mark::before {
   opacity: 0.8;
 }
+.kv-conv-row .kv-run-mark[data-mark]::before {
+  width: 6px;
+  height: 6px;
+  opacity: 1;
+}
+.kv-run-mark[data-mark='unread']::before {
+  background: var(--color-blue-500);
+}
+.kv-run-mark[data-mark='failed']::before {
+  background: var(--danger);
+}
 .kv-conv-row .kv-run-mark[data-running]::before {
   opacity: 0;
   transform: scale(0);

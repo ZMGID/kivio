@@ -11,6 +11,7 @@ import type { MarketPlugin } from '../api/market'
 import { useChatRouting } from './hooks/useChatRouting'
 import { useSettingsExit } from './hooks/useSettingsExit'
 import { useSidebarLayout } from './hooks/useSidebarLayout'
+import { useConversationRunMarks } from './hooks/useConversationRunMarks'
 import { useAssistantActions } from './hooks/useAssistantActions'
 import { createChatNavigationController } from './chatNavigationController'
 import { createConversationWarmCache } from './conversationWarmCache'
@@ -437,6 +438,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const [popoutOwner] = useState(createChatPopoutOwnershipOwner)
   const popoutConversationIds = useSyncExternalStore(popoutOwner.subscribe, popoutOwner.membership)
   const conversationOccupied = Boolean(currentConversation?.id && popoutConversationIds.has(currentConversation.id))
+  const { marks: conversationRunMarks, recordOutcome: recordRunOutcome, clearMark: clearRunMark } =
+    useConversationRunMarks(chatView === 'conversation' && !conversationOccupied ? currentConversation?.id : undefined)
   const [popoutNotice, setPopoutNotice] = useState<string | null>(null)
   useEffect(() => { setExclusiveConversationIds(popoutConversationIds) }, [popoutConversationIds])
   const [sidebarProfileRefreshKey, setSidebarProfileRefreshKey] = useState(0)
@@ -1031,6 +1034,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     cancelDeletedRun: async (conversationId) => { await chatApi.cancelStream(conversationId) },
     finalizeDeletedChat: (conversationId, clearCurrentView) => {
       dropConversationLocally(conversationId)
+      clearRunMark(conversationId)
       if (clearCurrentView) {
         setAssistantStreamStatsByMessageId({})
         resetContext()
@@ -1094,7 +1098,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       setStreamError(error.message)
     },
   }), [
-    applyConversation, clearDisplayedConversation,
+    applyConversation, clearDisplayedConversation, clearRunMark,
     dropConversationLocally, executionOwner, occupyConversationInMain, popoutOwner,
     previewOwner, readDisplayWindow, rememberDisplayedConversation, refreshSidebar, resetComposerDraftContext, resetContext, restoreStreamingPreview,
     setStreamErrorForConversation, warmConversationCache,
@@ -1327,6 +1331,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         ? chatApi.getConversation(conversationId)
         : canPresent() ? readDisplayWindow(conversationId) : Promise.resolve(null),
       (outcome) => {
+        if (reason) recordRunOutcome(conversationId, reason)
         const conversation = outcome.kind === 'loaded' ? outcome.value : null
         const loadError = outcome.kind === 'failed' ? outcome.error : null
         if (conversation && canPresent()) {
@@ -1365,7 +1370,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     )
   }, [
     applyConversation, clearStreamSnapshot, freezeStreamSnapshot, markConversationCompacting,
-    popoutOwner, queueCommands, readDisplayWindow, refreshSidebar, setStreamErrorForConversation, settleStreamingPreview,
+    popoutOwner, queueCommands, readDisplayWindow, recordRunOutcome, refreshSidebar, setStreamErrorForConversation, settleStreamingPreview,
     streamLifecycleOwner, syncGeneratingConversationIds, wakeAfterRun,
   ])
 
@@ -1388,6 +1393,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [applyConversation, interactionInbox, settleStreamingPreview, syncGeneratingConversationIds])
 
   const settlementPorts = useMemo<Parameters<ReturnType<typeof createChatExecutionOwner>['finish']>[2]>(() => ({
+      recordOutcome: recordRunOutcome,
       completeWithConversation: finishStreamingRunWithConversation,
       completeTerminal: finishStreamingRun,
       abandonPreview: (id) => {
@@ -1398,7 +1404,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         void wakeAfterRun()
         return delivery
       },
-    }), [clearStreamSnapshot, finishStreamingRun, finishStreamingRunWithConversation, freezeStreamSnapshot, queueCommands, wakeAfterRun])
+    }), [clearStreamSnapshot, finishStreamingRun, finishStreamingRunWithConversation, freezeStreamSnapshot, queueCommands, recordRunOutcome, wakeAfterRun])
 
   useTauriEvent(api.onChatProtocolIssue, ({ issue, conversationId }) => {
     if (issue === 'version_mismatch') {
@@ -2470,7 +2476,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     // B3：侧栏删除时强制清掉该会话的 in-flight/快照/乐观项，
     // 使乐观合并不再保留它（删"generating"会话也能立即从侧栏消失）。
     dropConversationLocally(id)
-  }, [dropConversationLocally])
+    clearRunMark(id)
+  }, [clearRunMark, dropConversationLocally])
 
   // 侧栏真实列表 refetch 落地 → 剪掉不再生成中的乐观条目。乐观项的生命期是
   // 「发送 → settle（原地换成模型标题，SwapTitle 播打字机）→ 下一次 refetch 接管」：
@@ -2987,6 +2994,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           lang={uiLang}
           currentConversationId={currentConversation?.id}
           generatingConversationIds={generatingConversationIds}
+          conversationRunMarks={conversationRunMarks}
           optimisticConversations={optimisticSidebarConversations}
           openConversation={openSidebarConversation}
           selectedProject={selectedProject}

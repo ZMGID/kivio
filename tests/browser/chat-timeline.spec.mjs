@@ -285,6 +285,80 @@ test('only an active compaction sweeps, including when the last message already 
   expect(await animations(completed.last())).toEqual([])
 })
 
+test('shows project conversation marks through background completion, failure and retry', async ({ page }) => {
+  await page.addInitScript(() => {
+    const key = 'kivio-chat-dev-conversations'
+    if (localStorage.getItem(key)) return
+    localStorage.setItem('kivio-chat-dev-projects', JSON.stringify([
+      { id: 'status-project', name: '状态验收项目', created_at: 1, updated_at: 1 },
+    ]))
+    localStorage.setItem(key, JSON.stringify(['status-current', 'status-other'].map((id, index) => ({
+      id, title: index === 0 ? '生成状态验收' : '另一条对话',
+      provider_id: 'demo', model: 'dev-model', project_id: 'status-project',
+      agent_runtime: { kind: 'native' }, revision: 1, created_at: 1, updated_at: 1,
+      messages: [{ id: id + '-first', role: 'user', content: '先前的问题', timestamp: 1 }],
+    }))))
+  })
+  await page.goto('/#chat/status-current')
+  await page.getByRole('button', { name: '项目', exact: true }).click()
+  const row = page.getByRole('button', { name: '生成状态验收', exact: true })
+  const other = page.getByRole('button', { name: '另一条对话', exact: true })
+  const mark = page.locator('[data-reorder-id="status-current"] .kv-run-mark')
+  await expect(row).toBeVisible()
+
+  const controlReplies = () => page.evaluate(async () => {
+    const { chatApi } = await import('/src/chat/api.ts')
+    const send = chatApi.sendMessage
+    chatApi.sendMessage = (...args) => new Promise((resolve, reject) => {
+      window.finishStatusReply = (fail) => {
+        delete window.finishStatusReply
+        if (fail) reject(new Error('模型调用失败'))
+        else send(...args).then(resolve, reject)
+      }
+    })
+  })
+  const startReply = async () => {
+    const editor = page.locator('[contenteditable=true]').last()
+    await editor.fill('测试回复状态')
+    await editor.press('Enter')
+    await expect(mark).toHaveAttribute('data-running', '')
+    await page.waitForFunction(() => window.finishStatusReply)
+  }
+  const markColor = () => mark.evaluate(el => getComputedStyle(el, '::before').backgroundColor)
+  const themeColor = name => page.evaluate(name => {
+    const el = document.createElement('span')
+    el.style.color = `var(${name})`
+    document.body.append(el)
+    const color = getComputedStyle(el).color
+    el.remove()
+    return color
+  }, name)
+
+  await controlReplies()
+  await startReply()
+  await other.click()
+  await expect(page).toHaveURL(/status-other$/)
+  await page.evaluate(() => window.finishStatusReply(false))
+  await expect(row).toHaveAccessibleDescription('回复已生成，未读')
+  await expect.poll(markColor).toBe(await themeColor('--color-blue-500'))
+  await page.reload()
+  await expect(row).toHaveAccessibleDescription('回复已生成，未读')
+  await row.click()
+  await expect(page).toHaveURL(/status-current$/)
+  await expect(page.getByText(/这是浏览器预览模式的本地回复/)).toBeVisible()
+  await expect(mark).not.toHaveAttribute('data-mark')
+
+  await controlReplies()
+  await startReply()
+  await page.evaluate(() => window.finishStatusReply(true))
+  await expect(row).toHaveAccessibleDescription('回复生成失败')
+  await expect.poll(markColor).toBe(await themeColor('--danger'))
+  await startReply()
+  await page.evaluate(() => window.finishStatusReply(false))
+  await expect(mark).not.toHaveAttribute('data-running')
+  await expect(mark).not.toHaveAttribute('data-mark')
+})
+
 test('switches agents in a populated conversation and keeps one handoff at its original position', async ({ page }) => {
   const id = 'conv_agent_handoff'
   await page.addInitScript(id => {

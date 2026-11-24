@@ -17,6 +17,7 @@ import {
 import { formatRelativeTime } from './sessionLibrary/format'
 import { useGitBadge } from './dock/useGitBadge'
 import { ProjectIcon } from './ProjectIcon'
+import type { ConversationRunMark } from './hooks/useConversationRunMarks'
 
 function ProjectBranch({ workdir }: { workdir: string }) {
   const { state } = useGitBadge(workdir)
@@ -77,6 +78,7 @@ interface ConversationListProps {
   currentConversationId?: string
   generatingConversationIds?: ReadonlySet<string>
   titleGeneratingConversationIds?: ReadonlySet<string>
+  conversationRunMarks?: ReadonlyMap<string, ConversationRunMark>
   scheduledTaskNamesByConversation?: ReadonlyMap<string, string[]>
   projects: ChatProject[]
   sets: ChatSet[]
@@ -117,6 +119,7 @@ export const ConversationList = memo(function ConversationList({
   currentConversationId,
   generatingConversationIds = new Set(),
   titleGeneratingConversationIds = new Set(),
+  conversationRunMarks,
   scheduledTaskNamesByConversation,
   projects,
   sets,
@@ -296,6 +299,10 @@ export const ConversationList = memo(function ConversationList({
         {displayedConversations.map((conv, index) => {
           const active = currentConversationId === conv.id
           const isGenerating = generatingConversationIds.has(conv.id)
+          const runMark = isGenerating ? undefined : conversationRunMarks?.get(conv.id)
+          const runMarkLabel = runMark === 'unread' ? t.chatReplyUnread
+            : runMark === 'failed' ? t.chatReplyFailed
+              : undefined
           const isTitleGenerating = titleGeneratingConversationIds.has(conv.id)
           const isRenaming = renamingId === conv.id
           const isExiting = exitingIds.has(conv.id)
@@ -337,6 +344,7 @@ export const ConversationList = memo(function ConversationList({
               ? t.chatTitleGenerating.replace('{title}', fullTitle)
               : fullTitle,
             !cardLayout ? folderLabel : '',
+            runMarkLabel,
             scheduledTasksTitle,
             formatRelativeTime(updatedAt, t),
           ].filter(Boolean).join('\n')
@@ -427,6 +435,7 @@ export const ConversationList = memo(function ConversationList({
                 <span
                   className="kv-run-mark"
                   data-running={isGenerating ? '' : undefined}
+                  data-mark={runMark}
                   aria-hidden={!isGenerating || undefined}
                   aria-label={isGenerating ? t.chatGenerating : undefined}
                   role={isGenerating ? 'status' : undefined}
@@ -442,6 +451,7 @@ export const ConversationList = memo(function ConversationList({
               <button
                 type="button"
                 aria-label={cardLayout ? visibleTitle : undefined}
+                aria-description={runMarkLabel}
                 onClick={() => onSelectConversation(conv.id, conv)}
                 onDoubleClick={(e) => {
                   e.preventDefault()

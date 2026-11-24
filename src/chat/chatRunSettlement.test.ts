@@ -23,6 +23,34 @@ function effects() {
 }
 
 describe('chat run settlement', () => {
+  it('reports cancellation and failures even when the invoke returns a saved conversation', async () => {
+    const owner = createChatRunSettlement()
+    const outcomes: string[] = []
+    const ports = {
+      ...effects().ports,
+      recordOutcome: (_id: string, outcome: string) => { outcomes.push(outcome) },
+    }
+    const cancelled = owner.beginInvoke('a')
+    owner.deferTerminal({ conversationId: 'a', runId: 'cancelled', reason: 'cancelled' })
+    await owner.settleInvoke('a', cancelled, conversation('a'), ports)
+    const failed = owner.beginInvoke('a')
+    owner.deferTerminal({ conversationId: 'a', runId: 'failed', reason: 'error' }, true)
+    await owner.settleInvoke('a', failed, conversation('a'), ports)
+    const mixed = owner.beginInvoke('a', true)
+    owner.deferTerminal({ conversationId: 'a', runId: 'failed-arm', reason: 'error' }, true)
+    await owner.settleInvoke('a', mixed, {
+      ...conversation('a'),
+      messages: [
+        { id: 'q', role: 'user', content: 'Question', timestamp: 1 },
+        { id: 'a', role: 'assistant', content: 'Answer', timestamp: 2, stream_outcome: 'completed' },
+        { id: 'b', role: 'assistant', content: '', timestamp: 3, stream_outcome: 'error' },
+      ],
+    }, ports)
+    await owner.settleInvoke('a', failed, null, ports)
+
+    expect(outcomes).toEqual(['cancelled', 'error', 'done'])
+  })
+
   it('uses a persisted reply instead of rereading a terminal that arrived before the invoke result', async () => {
     const owner = createChatRunSettlement()
     const result = effects()
