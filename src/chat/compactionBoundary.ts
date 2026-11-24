@@ -87,10 +87,6 @@ export function resolveCompactionBoundaries(
   return views
 }
 
-export function hasCompactionTokenDetail(record: CompactionBoundaryRecord): boolean {
-  return readTokenBefore(record) > 0 || readTokenAfter(record) > 0
-}
-
 export function compactionTriggerLabel(trigger: string | undefined, t: { contextCompactionTriggerManual: string; contextCompactionTriggerAuto: string; contextCompactionTriggerAgentLoop: string; contextCompactionTriggerGeneric: string }): string {
   if (trigger === 'manual') return t.contextCompactionTriggerManual
   if (trigger === 'auto') return t.contextCompactionTriggerAuto

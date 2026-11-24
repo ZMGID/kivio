@@ -5,7 +5,6 @@ import { i18n, type Lang } from '../components/i18n'
 import {
   compactionRecordTokens,
   compactionTriggerLabel,
-  hasCompactionTokenDetail,
   type CompactionBoundaryView,
 } from './compactionBoundary'
 
@@ -24,25 +23,27 @@ export function CompactionDivider({ boundary, lang = 'zh' }: CompactionDividerPr
   const t = i18n[lang]
   const { record } = boundary
   const tokens = compactionRecordTokens(record)
-  const showTokens = hasCompactionTokenDetail(record)
+  // Boundary records use zero as the placeholder for an unreported CLI count.
+  const hasPair = tokens.before > 0 && tokens.after > 0
   const trigger = compactionTriggerLabel(record.trigger, t)
-  const tooltip = showTokens
-    ? [
-      `${t.contextCompactionDivider} (${trigger})`,
-      '',
-      `${t.contextCompactionBefore}: ${tokens.before.toLocaleString('en-US')}`,
-      `${t.contextCompactionAfter}: ${tokens.after.toLocaleString('en-US')}`,
-      `${t.contextCompactionFreed}: ${Math.max(0, tokens.before - tokens.after).toLocaleString('en-US')}`,
-      formatDurationHint(record) ? `\n${formatDurationHint(record)}` : '',
-    ].join('\n').trim()
-    : `${t.contextCompactionDivider} (${trigger})`
+  const lines = []
+  if (tokens.before > 0) lines.push(`${t.contextCompactionBefore}: ${tokens.before.toLocaleString('en-US')}`)
+  if (tokens.after > 0) lines.push(`${t.contextCompactionAfter}: ${tokens.after.toLocaleString('en-US')}`)
+  if (hasPair) {
+    lines.push(`${t.contextCompactionFreed}: ${Math.max(0, tokens.before - tokens.after).toLocaleString('en-US')}`)
+  }
+  const tooltip = [
+    `${t.contextCompactionDivider} (${trigger})`,
+    lines.join('\n'),
+    formatDurationHint(record),
+  ].filter(Boolean).join('\n\n')
 
   return (
     <TimelineDivider data-compaction-divider-id={record.id}
       title={tooltip} label={t.contextCompactionDividerAria}>
       <Minimize2 size={14} aria-hidden="true" />
       <span>{t.contextCompactionDivider}</span>
-      {showTokens && <span className="chat-compaction-divider-arrow">
+      {hasPair && <span className="chat-compaction-divider-arrow">
         {formatTokens(tokens.before)} → {formatTokens(tokens.after)}
       </span>}
     </TimelineDivider>
