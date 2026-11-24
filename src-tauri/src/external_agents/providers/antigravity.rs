@@ -105,7 +105,10 @@ pub const ANTIGRAVITY_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
         requires_pnpm: false,
         post_install: super::super::types::PostInstallStrategy::None,
     },
-    import: super::super::types::AgentImportPolicy::NONE,
+    import: super::super::types::AgentImportPolicy {
+        discovery: super::super::types::ImportDiscoveryStrategy::Antigravity,
+        ..super::super::types::AgentImportPolicy::NONE
+    },
     run: super::super::types::AgentRunPolicy {
         additional_dirs: super::super::types::AdditionalDirsStrategy::Effective,
         model_selection: super::super::types::ModelSelectionStrategy::Direct,

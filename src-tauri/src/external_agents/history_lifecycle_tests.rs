@@ -19,10 +19,21 @@ async fn import_prepared(
 ) -> Result<String, String> {
     let lock = import_lock(def.id, session_id);
     let _guard = lock.lock().await;
-    if let Some(id) = existing_import(app, def.id, session_id).await? {
+    if let Some(id) = existing_import(app, def.id, session_id, &root).await? {
         return Ok(id);
     }
-    publish_import(app, project_id, def, session_id, root, history).await
+    let selected = ImportableSession {
+        agent_id: def.id.into(),
+        import_history: def.import.history_support(),
+        session_id: session_id.into(),
+        title: None,
+        cwd: root.clone(),
+        updated_at: None,
+        message_count: Some(history.0.len()),
+        already_imported: false,
+        bound_conversation_id: None,
+    };
+    publish_import(app, project_id, def, &selected, root, history).await
 }
 
 fn message(id: &str, role: &str, text: &str) -> ChatMessage {
@@ -846,5 +857,43 @@ fn external_history_publication_and_recovery_on_real_files() {
         .unwrap();
         assert_eq!(handoff.full_prompt.matches("repair request").count(), 1);
         state.chat_runtime().end_generation(&empty_id, generation);
+
+        let foreign = directory.path().join("other-workspace");
+        std::fs::create_dir(&foreign).unwrap();
+        let pi_file = workspace.join("pi-import-test.jsonl");
+        for (agent, protocol) in [
+            ("dsh", "dsh_json_rpc"),
+            ("antigravity", "antigravity_stream_json"),
+            ("pi", "pi_rpc"),
+        ] {
+            let native_id = format!("{agent}-native");
+            let source = (agent == "pi").then(|| pi_file.clone());
+            let imported = import_prepared(
+                app,
+                "proj_history",
+                get_agent_def(agent).unwrap(),
+                &native_id,
+                root.clone(),
+                (history(), source.clone(), None),
+            )
+            .await
+            .unwrap();
+            let reopened = repository(app).get(app, &imported).await.unwrap();
+            assert_eq!(reopened.messages[0].content, "prefix A");
+            assert_eq!(
+                reopened.agent_runtime.external_agent_id.as_deref(),
+                Some(agent)
+            );
+            let handle = crate::external_agents::session::load_live_handle(app, &imported).unwrap();
+            assert!(handle.can_resume(agent, protocol));
+            assert_eq!(handle.native_id, native_id);
+            assert_eq!(handle.cwd, root);
+            assert_eq!(handle.native_path.map(PathBuf::from), source);
+            assert!(
+                existing_import(app, agent, &native_id, &foreign.to_string_lossy())
+                    .await
+                    .is_err()
+            );
+        }
     });
 }

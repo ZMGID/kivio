@@ -23,6 +23,9 @@ const AGENT_LABELS: Record<string, string> = {
   grok: 'Grok',
   kimi: 'Kimi Code',
   opencode: 'OpenCode',
+  pi: 'Pi',
+  dsh: 'DeepSeek Harness',
+  antigravity: 'Antigravity CLI',
   cursor: 'Cursor',
 }
 

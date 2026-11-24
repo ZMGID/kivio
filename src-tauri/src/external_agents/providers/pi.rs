@@ -113,7 +113,11 @@ pub const PI_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
         requires_pnpm: false,
         post_install: super::super::types::PostInstallStrategy::VerifyVersion,
     },
-    import: super::super::types::AgentImportPolicy::NONE,
+    import: super::super::types::AgentImportPolicy {
+        discovery: super::super::types::ImportDiscoveryStrategy::FileHistory,
+        history_source: super::super::types::HistorySourceStrategy::PiJsonl,
+        history_title: super::super::types::HistoryTitleStrategy::None,
+    },
     run: super::super::types::AgentRunPolicy {
         regenerate: super::super::types::RegenerateStrategy::PiRpc,
         ..super::super::types::AgentRunPolicy::STANDARD

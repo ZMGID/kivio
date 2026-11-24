@@ -1988,7 +1988,7 @@ fn resolve_pi_sessions_root(env: impl Fn(&str) -> Option<String>, home: &Path) -
 }
 
 /// Pi CLI encodes cwd as `--${resolved.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`.
-fn encode_pi_session_cwd(cwd: &Path) -> String {
+pub(in crate::external_agents) fn encode_pi_session_cwd(cwd: &Path) -> String {
     let text = cwd.to_string_lossy();
     let text = text.strip_prefix(r"\\?\").unwrap_or(text.as_ref());
     let stripped = text.trim_start_matches(['/', '\\']);
@@ -2098,7 +2098,10 @@ fn pi_prompt_matches(entry_text: &str, visible_text: &str) -> bool {
     super::native_prompt_matches(entry_text, visible_text)
 }
 
-fn active_pi_branch<'a>(entries: &'a [Value], leaf_id: &str) -> Result<Vec<&'a Value>, String> {
+pub(in crate::external_agents) fn active_pi_branch<'a>(
+    entries: &'a [Value],
+    leaf_id: &str,
+) -> Result<Vec<&'a Value>, String> {
     let by_id: HashMap<&str, &Value> = entries
         .iter()
         .filter_map(|entry| {
@@ -2113,7 +2116,7 @@ fn active_pi_branch<'a>(entries: &'a [Value], leaf_id: &str) -> Result<Vec<&'a V
     let mut seen = std::collections::HashSet::new();
     while let Some(id) = cursor {
         if !seen.insert(id) {
-            return Err("Pi 原生会话树包含循环，无法安全重新生成".to_string());
+            return Err("Pi 原生会话树包含循环".to_string());
         }
         let entry = by_id
             .get(id)
@@ -2211,7 +2214,7 @@ fn select_pi_regenerate_entry<'a>(
     Err("无法把 Kivio 消息对应到 Pi 原生会话；未执行重新生成".to_string())
 }
 
-async fn pi_regenerate_request<R, W>(
+async fn pi_session_request<R, W>(
     reader: &mut tokio::io::Lines<BufReader<R>>,
     stdin: &SharedPiWriter<W>,
     id: &str,
@@ -2231,7 +2234,7 @@ where
             .ok_or_else(|| format!("Pi 在 {id} 响应前退出"))?;
         let value: Value = serde_json::from_str(line.trim()).map_err(|error| error.to_string())?;
         if value.get("type").and_then(Value::as_str) == Some("extension_ui_request") {
-            return Err("Pi 扩展在重新生成分支时要求交互，Kivio 暂时无法代答".to_string());
+            return Err("Pi 扩展要求交互，Kivio 暂时无法代答".to_string());
         }
         if value.get("type").and_then(Value::as_str) != Some("response")
             || value.get("id").and_then(Value::as_str) != Some(id)
@@ -2242,11 +2245,50 @@ where
             return Err(value
                 .get("error")
                 .and_then(Value::as_str)
-                .unwrap_or("Pi 拒绝了重新生成分支请求")
+                .unwrap_or("Pi 拒绝了会话请求")
                 .to_string());
         }
         return Ok(value);
     }
+}
+
+async fn confirm_pi_import_resume<R, W>(
+    reader: &mut tokio::io::Lines<BufReader<R>>,
+    stdin: &SharedPiWriter<W>,
+    session_id: &str,
+    path: &Path,
+) -> Result<(), String>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let response = timeout(
+        Duration::from_secs(15),
+        pi_session_request(
+            reader,
+            stdin,
+            "kivio-import-state",
+            json!({"type":"get_state"}),
+        ),
+    )
+    .await
+    .map_err(|_| "Pi 导入会话校验超时".to_string())?
+    .map_err(|_| "Pi 无法确认已打开导入的会话".to_string())?;
+    let actual_id = response.pointer("/data/sessionId").and_then(Value::as_str);
+    let actual_path = response.pointer("/data/sessionFile").and_then(Value::as_str);
+    let has_messages = response
+        .pointer("/data/messageCount")
+        .and_then(Value::as_u64)
+        .is_some_and(|count| count > 0);
+    if actual_id == Some(session_id)
+        && has_messages
+        && actual_path.is_some_and(|actual| {
+            crate::external_agents::import::paths_match(actual, &path.to_string_lossy())
+        })
+    {
+        return Ok(());
+    }
+    Err("Pi 未打开原生会话文件中的历史，无法继续导入的会话".into())
 }
 
 async fn fork_pi_for_regenerate_io<R, W>(
@@ -2258,7 +2300,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let entries_response = pi_regenerate_request(
+    let entries_response = pi_session_request(
         reader,
         stdin,
         "kivio-regenerate-entries",
@@ -2287,7 +2329,7 @@ where
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| "Pi 用户消息缺少 entry id".to_string())?;
-        let fork_response = pi_regenerate_request(
+        let fork_response = pi_session_request(
             reader,
             stdin,
             "kivio-regenerate-fork",
@@ -2304,7 +2346,7 @@ where
         }
     }
 
-    let state_response = pi_regenerate_request(
+    let state_response = pi_session_request(
         reader,
         stdin,
         "kivio-regenerate-state",
@@ -2363,13 +2405,27 @@ impl PiRpcSession {
         args: &[String],
         cwd: &Path,
         resume_native: Option<&str>,
+        imported_source: Option<&Path>,
         mcp: Option<(&str, &str)>,
     ) -> Result<Self, String> {
         // The persisted live handle is the authoritative binding for this Kivio conversation.
         // It can exist even when the regular binding was not flushed before a crash.
-        let (effective_args, session_id, claimed_resume) =
+        let (mut effective_args, session_id, claimed_resume) =
             persistent_session_args(args, resume_native)?;
-        let resumed = claimed_resume && pi_resume_is_live(bin, &session_id, cwd);
+        let resumed = if let Some(path) = imported_source {
+            if !crate::external_agents::import::pi_source_matches(path, &session_id, cwd) {
+                return Err("导入的 Pi 会话文件已移动、损坏或不属于当前项目".into());
+            }
+            let index = effective_args
+                .iter()
+                .position(|arg| arg == "--session-id")
+                .ok_or_else(|| "Pi 会话缺少原生 ID".to_string())?;
+            effective_args[index] = "--session".to_string();
+            effective_args[index + 1] = path.to_string_lossy().into_owned();
+            true
+        } else {
+            claimed_resume && pi_resume_is_live(bin, &session_id, cwd)
+        };
 
         let mut command = crate::external_agents::spawn::cli_command(bin);
         command
@@ -2426,7 +2482,7 @@ impl PiRpcSession {
             }
         });
 
-        Ok(Self {
+        let mut session = Self {
             child,
             stdin: Arc::new(Mutex::new(stdin)),
             reader: Arc::new(Mutex::new(BufReader::new(stdout).lines())),
@@ -2436,7 +2492,19 @@ impl PiRpcSession {
             stderr_tail,
             _stderr_task: stderr_task,
             _mcp_extension: mcp_extension,
-        })
+        };
+        if let Some(path) = imported_source {
+            let result = {
+                let mut reader = session.reader.lock().await;
+                confirm_pi_import_resume(&mut reader, &session.stdin, &session.session_id, path)
+                    .await
+            };
+            if let Err(error) = result {
+                session.close().await;
+                return Err(error);
+            }
+        }
+        Ok(session)
     }
 
     pub fn session_id(&self) -> &str {
@@ -2755,6 +2823,40 @@ mod tests {
 
     use super::*;
     use tokio::io::{duplex, sink, AsyncReadExt};
+
+    #[tokio::test]
+    async fn imported_resume_requires_the_original_file_id_and_loaded_history() {
+        let path = std::env::temp_dir().join("kivio-pi-import.jsonl");
+        let alien = std::env::temp_dir().join("kivio-pi-other.jsonl");
+        for (id, source, count, expected) in [
+            ("pi-native", &path, 2, true),
+            ("fresh-id", &path, 2, false),
+            ("pi-native", &alien, 2, false),
+            ("pi-native", &path, 0, false),
+        ] {
+            let (stdin, server_stdin) = duplex(1024);
+            let (stdout, mut server_stdout) = duplex(1024);
+            let response = json!({
+                "type": "response", "id": "kivio-import-state", "success": true,
+                "data": { "sessionId": id, "sessionFile": source, "messageCount": count }
+            });
+            let peer = tokio::spawn(async move {
+                let request = BufReader::new(server_stdin).lines().next_line().await.unwrap().unwrap();
+                let request: Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["type"], "get_state");
+                server_stdout.write_all(format!("{response}\n").as_bytes()).await.unwrap();
+            });
+            let result = confirm_pi_import_resume(
+                &mut BufReader::new(stdout).lines(),
+                &Arc::new(Mutex::new(stdin)),
+                "pi-native",
+                &path,
+            )
+            .await;
+            peer.await.unwrap();
+            assert_eq!(result.is_ok(), expected);
+        }
+    }
 
     #[test]
     fn partial_tool_updates_flatten_snapshots_and_ignore_empty_content() {

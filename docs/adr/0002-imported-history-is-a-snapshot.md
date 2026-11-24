@@ -20,4 +20,4 @@
 
 解析范围同理收窄到四类块：`text` / `tool_use` / `tool_result` / `thinking`，外加图片转附件。子 agent 分支（claude 的 `isSidechain`）、hook 注入、`file-history-snapshot` 等 CLI 内部账务一律丢弃——Kivio 的子 agent 卡片是运行时事件驱动的，没有"从历史还原嵌套卡片"的结构，硬塞要新增渲染路径。
 
-**适用范围**：截断与解析范围只针对需要读文件的那几个（claude / grok / codex，见 [ADR-0003](./0003-acp-agents-import-via-protocol.md)）。ACP 代理的历史由 `session/load` 重放、走实时渲染路径落盘，体积行为与平时聊天一致，不另做截断。两者不一致是有意的：与实时路径保持一致比导入结果整齐更重要。
+截断适用于 Claude、Grok、Codex、Pi 的文件历史，以及 DeepSeek Harness SDK 返回的存储事件。ACP 通过 `session/load` 重放历史，见 [ADR-0003](./0003-acp-agents-import-via-protocol.md)。有原生文件路径的会话可检查文件更新时间。通过协议读取的会话在打开时跳过过期检查。

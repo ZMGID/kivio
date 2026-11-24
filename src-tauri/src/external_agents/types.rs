@@ -112,6 +112,7 @@ pub enum HistorySourceStrategy {
     ClaudeJsonl,
     CodexRollout,
     GrokDirectory,
+    PiJsonl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +127,8 @@ pub enum ImportDiscoveryStrategy {
     None,
     FileHistory,
     Acp { replays_history: bool },
+    Antigravity,
+    Dsh,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +159,8 @@ impl AgentImportPolicy {
                 replays_history: false,
             } => CapabilitySupport::Fallback,
             ImportDiscoveryStrategy::FileHistory
+            | ImportDiscoveryStrategy::Antigravity
+            | ImportDiscoveryStrategy::Dsh
             | ImportDiscoveryStrategy::Acp {
                 replays_history: true,
             } => CapabilitySupport::Native,

@@ -126,7 +126,10 @@ pub const DSH_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
         requires_pnpm: true,
         post_install: super::super::types::PostInstallStrategy::DshProfile,
     },
-    import: super::super::types::AgentImportPolicy::NONE,
+    import: super::super::types::AgentImportPolicy {
+        discovery: super::super::types::ImportDiscoveryStrategy::Dsh,
+        ..super::super::types::AgentImportPolicy::NONE
+    },
     run: super::super::types::AgentRunPolicy::STANDARD,
     // 斜杠菜单：先走内建兜底，连上后 `session/commands` 覆盖缓存。
     slash_strategy: SlashStrategy::Dsh,

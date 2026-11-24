@@ -1,6 +1,6 @@
 # 导入的 CLI 对话钉死在原 CLI 和原工作目录上
 
-从外部 CLI 导入的对话只能由**原来那个 CLI**、在**原来那个工作目录**下续聊，不能改用 Kivio 内置运行时或别的 CLI，也不能在别的目录下续。因为 Kivio 只把导入的历史当显示用、不重建 `model_messages`，续聊靠的是该 CLI 自己的 `--resume <原生会话 id>`——历史的真身一直在 CLI 那边，一个字节都不用翻译。
+导入的对话由**原 CLI** 在**原工作目录**续聊。Kivio 保存用于显示的历史快照。发送新消息时，原 CLI 按原生会话 ID 或文件路径恢复自己的历史。
 
 ## Considered Options
 
@@ -11,7 +11,7 @@
 ## Consequences
 
 - 导入是**项目内的动作**：只列出工作目录等于当前项目根的那些原生会话。
-- 当前可导入 Claude、Codex、Grok、Kimi 和 OpenCode 的会话。各代理的导入能力由其注册定义声明，Kimi 和 OpenCode 还需通过 ACP 枚举并重放历史，见 [ADR-0003](0003-acp-agents-import-via-protocol.md)。
+- 当前可导入 Claude Code、Codex CLI、Grok CLI、Kimi CLI、OpenCode、Pi、DeepSeek Harness 和 Antigravity CLI 的会话。Kimi、OpenCode 和 Antigravity CLI 通过 ACP 枚举会话并重放历史，见 [ADR-0003](0003-acp-agents-import-via-protocol.md)。Pi 读取 JSONL 的活动分支，续聊前核对实际打开的文件和会话 ID。DeepSeek Harness 通过官方 SDK 读取共享会话存储，使用原生 ID 续聊。
 - 原工作目录不存在时（换机器、目录已删）不能导入，需要在导入前就明说，而不是让用户导进来之后每轮踩一次上下文重置。
 
 ## 本机实测依据（2026-08-01）

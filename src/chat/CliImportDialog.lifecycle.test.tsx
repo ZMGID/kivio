@@ -93,6 +93,29 @@ afterEach(async () => {
 })
 
 describe('CLI session import lifetime', () => {
+  it('shows and submits Pi, DeepSeek Harness, and Antigravity native sessions', async () => {
+    const sources = [
+      { agentId: 'pi', name: 'Pi' },
+      { agentId: 'dsh', name: 'DeepSeek Harness' },
+      { agentId: 'antigravity', name: 'Antigravity CLI' },
+    ]
+    vi.mocked(chatApi.listImportableCliSessions).mockResolvedValue(
+      sources.map(({ agentId, name }) => ({ ...session, agentId, title: `${name} session` })),
+    )
+    const importSessions = vi.spyOn(chatApi, 'importCliSessions')
+      .mockResolvedValue({ success: true, imported: [], failures: [] })
+    render(<Harness onImported={vi.fn()} />)
+    for (const { name } of sources) {
+      expect(await screen.findByText(name, { exact: true })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(`${name} session`) }))
+    }
+    fireEvent.click(screen.getByRole('button', { name: '导入 3' }))
+    await waitFor(() => expect(importSessions).toHaveBeenCalledWith(
+      project.id,
+      sources.map(({ agentId }) => ({ agentId, sessionId: session.sessionId })),
+    ))
+  })
+
   it('warns about binding without readable history using the listed capability', async () => {
     vi.mocked(chatApi.listImportableCliSessions).mockResolvedValue([
       { ...session, agentId: 'test-cli', importHistory: 'fallback' },

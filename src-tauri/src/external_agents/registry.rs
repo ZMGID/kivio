@@ -138,6 +138,7 @@ mod tests {
                     HistorySourceStrategy::GrokDirectory,
                     HistoryTitleStrategy::Grok,
                 ),
+                "pi" => (HistorySourceStrategy::PiJsonl, HistoryTitleStrategy::None),
                 _ => (HistorySourceStrategy::None, HistoryTitleStrategy::None),
             };
             assert_eq!(
@@ -235,15 +236,7 @@ mod tests {
                 Native,
                 Native,
             ),
-            (
-                "pi",
-                Native,
-                Native,
-                Native,
-                Native,
-                Unavailable,
-                Unavailable,
-            ),
+            ("pi", Native, Native, Native, Native, Native, Unavailable),
             (
                 "hermes",
                 Unavailable,
@@ -262,22 +255,14 @@ mod tests {
                 Native,
                 Native,
             ),
-            (
-                "dsh",
-                Native,
-                Native,
-                Native,
-                Fallback,
-                Unavailable,
-                Unavailable,
-            ),
+            ("dsh", Native, Native, Native, Fallback, Native, Unavailable),
             (
                 "antigravity",
                 Unavailable,
                 Fallback,
                 Fallback,
                 Fallback,
-                Unavailable,
+                Native,
                 Native,
             ),
         ];

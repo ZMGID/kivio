@@ -4,6 +4,8 @@ import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { carrierKeyOf } from '@deepseek-ai/dsh-scope'
 import * as McpClient from '@deepseek-ai/dsh-mcp-client'
+import { realpath } from 'node:fs/promises'
+import { isAbsolute } from 'node:path'
 
 export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   subscribeAssistantStream() {
@@ -66,6 +68,11 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   async open(params) {
     const sessionId = requireSessionId(params.sessionId)
     const resume = params.resume === true
+    const expected = resume && params.expectedCwd !== undefined
+      ? await projectDirectory(params.expectedCwd) : undefined
+    if (expected && !await this.readStoredSession(sessionId, expected)) {
+      throw new Error('dsh session working directory does not match the imported project')
+    }
     const existing = this.sessions.get(sessionId)
     if (existing) {
       return { sessionId, resumed: existing.resumed === true }
@@ -77,7 +84,7 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     }
 
     const creation = resume
-      ? this.resumeSession(sessionId)
+      ? this.resumeSession(sessionId, expected)
       : this.createFreshSession(sessionId)
     this.sessionCreations.set(sessionId, creation)
     try {
@@ -108,11 +115,18 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     return record
   }
 
-  async resumeSession(sessionId) {
+  async resumeSession(sessionId, expected) {
     const handle = await this.ctx.agents.resume({
       resumeSessionId: sessionId,
       agentOptions: this.agentOptions(),
       setup: async (agentCtx, agent) => {
+        if (expected) {
+          const header = agent.session.header
+          const effective = this.ctx.get('workingDirectory')?.get(agent.session) ?? header.cwd
+          if (!await matchesProject(header, expected) || !await matchesDirectory(effective, expected)) {
+            throw new Error('dsh session working directory does not match the imported project')
+          }
+        }
         const recorded = this.ctx.get('agentPresets')?.presetForSession(agent.session)
         await this.mountPreset(agentCtx, recorded || this.agentPreset())
         if (!agent.model?.select) throw new Error('Kivio requires DeepSeek Harness 0.2.2-rc.1 or later')
@@ -311,6 +325,10 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
 
   async handleRequest(method, params) {
     switch (method) {
+      case 'kivio/session.list':
+        return this.listStoredSessions(params)
+      case 'kivio/session.history':
+        return this.readStoredHistory(params)
       case 'session/open':
         return this.open(params)
       case 'session/cancel':
@@ -328,10 +346,103 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     }
   }
 
+  async listStoredSessions({ cwd }) {
+    const expected = await projectDirectory(cwd)
+    const listed = await this.ctx.sessionPersistence.list()
+    const sessions = []
+    for (const { header } of listed) {
+      if (!await matchesProject(header, expected)) continue
+      try {
+        const stored = await this.readStoredSession(header.id, expected)
+        if (!stored) continue
+        const messages = stored.events.filter(isChatMessage)
+        if (messages.length === 0) continue
+        sessions.push({
+          sessionId: stored.header.id,
+          cwd: stored.header.cwd,
+          title: stored.events.findLast(event => event.type === 'session/title')?.data.title
+            ?? firstUserTitle(messages),
+          updatedAt: messages.at(-1).time,
+          messageCount: messages.length,
+        })
+      } catch (error) {
+        console.error('[kivio-dsh] unavailable stored session:', header.id, error.message)
+      }
+    }
+    return { sessions }
+  }
+
+  async readStoredHistory({ cwd, sessionId }) {
+    const expected = await projectDirectory(cwd)
+    const stored = await this.readStoredSession(requireSessionId(sessionId), expected)
+    if (!stored) throw new Error('dsh session belongs to a different project or is a subagent')
+    const events = []
+    for (const event of stored.events) {
+      if (isChatMessage(event)) {
+        const message = event.data.message ?? event.data
+        const content = []
+        for (const block of message.content) {
+          if (block.type === 'text' || block.type === 'reasoning') content.push(block)
+          if (block.type === 'image' && block.attachment) {
+            const image = await this.ctx.attachments.readImage(block.attachment)
+            content.push({ type: 'image', mediaType: image.ref.mediaType,
+              data: Buffer.from(image.data).toString('base64') })
+          }
+        }
+        events.push({ type: event.type, time: event.time, data: { content } })
+      } else if (event.type === 'tool/call' || event.type === 'tool/result') {
+        events.push({ type: event.type, time: event.time, data: event.data })
+      }
+    }
+    return { events }
+  }
+
+  async readStoredSession(sessionId, expected) {
+    const reader = await this.ctx.sessionPersistence.open(sessionId, 'read')
+    try {
+      const header = reader.header
+      if (!await matchesProject(header, expected)) return undefined
+      const { events } = await reader.read()
+      const moved = events.findLast(event => event.type === 'workspace-root/change')
+      if (moved && !await matchesDirectory(moved.data.cwd, expected)) return undefined
+      return { header, events }
+    } finally {
+      await reader.close()
+    }
+  }
+
   currentSessionId() {
     const ids = [...this.sessions.keys()]
     return ids.length === 0 ? '' : ids[ids.length - 1]
   }
+}
+
+async function projectDirectory(path) {
+  if (typeof path !== 'string' || !isAbsolute(path)) {
+    throw new Error('dsh import requires an absolute working directory')
+  }
+  const resolved = await realpath(path)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+async function matchesProject(header, expected) {
+  return header.origin !== 'subagent' && matchesDirectory(header.cwd, expected)
+}
+
+async function matchesDirectory(cwd, expected) {
+  return await projectDirectory(cwd).catch(() => undefined) === expected
+}
+
+function isChatMessage(event) {
+  const message = event.data?.message ?? event.data
+  return Array.isArray(message?.content) && (event.type === 'assistant/message'
+    || event.type === 'user/message' && message.source?.kind === 'user')
+}
+
+function firstUserTitle(messages) {
+  const first = messages.find(event => event.type === 'user/message')
+  const text = (first?.data.message ?? first?.data)?.content.find(block => block.type === 'text')?.text
+  return text?.trim().split(/\s+/u).slice(0, 8).join(' ').slice(0, 160)
 }
 
 function requireSessionId(value) {

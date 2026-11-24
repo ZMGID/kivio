@@ -13,14 +13,18 @@ use serde::Serialize;
 use crate::external_agents::registry::{get_agent_def, AGENT_DEFS};
 use crate::external_agents::types::{
     CapabilitySupport, HistorySourceStrategy, HistoryTitleStrategy, ImportDiscoveryStrategy,
-    RuntimeAgentDef,
+    RuntimeAgentDef, StreamFormat,
 };
+
+mod antigravity;
+mod dsh;
+mod pi;
 
 /// 一条可导入的原生会话。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportableSession {
-    /// `RuntimeAgentDef.id`：`claude` / `codex` / `grok` / `kimi` / `opencode`。
+    /// `RuntimeAgentDef.id`。
     pub agent_id: String,
     pub import_history: CapabilitySupport,
     /// 该 CLI 自己的会话 id——`session/load` / `--resume` 认的就是这个。
@@ -669,6 +673,7 @@ fn list_file_sessions_for(def: &RuntimeAgentDef, project_root: &str) -> Vec<Impo
         HistorySourceStrategy::ClaudeJsonl => list_claude_sessions(project_root),
         HistorySourceStrategy::GrokDirectory => list_grok_sessions(project_root),
         HistorySourceStrategy::CodexRollout => list_codex_sessions(project_root),
+        HistorySourceStrategy::PiJsonl => pi::list_sessions(project_root),
         HistorySourceStrategy::None => Vec::new(),
     };
     for session in &mut sessions {
@@ -731,17 +736,19 @@ pub async fn list_acp_sessions(
             .into_iter()
             // agent 已按 cwd 过滤过，这里再兜一道：万一它忽略了 cwd 参数返回全局会话，
             // 不能让别的项目的会话漏进这个项目的导入列表。
-            .filter(|s| paths_match(&s.cwd, project_root))
-            .map(|s| ImportableSession {
-                agent_id: agent_id.to_string(),
-                import_history: def.import.history_support(),
-                session_id: s.session_id,
-                title: s.title.as_deref().map(truncate_title),
-                cwd: s.cwd,
-                updated_at: None,
-                message_count: None,
-                already_imported: false,
-                bound_conversation_id: None,
+            .filter_map(|s| {
+                let cwd = s.cwd.unwrap_or_else(|| project_root.to_string());
+                paths_match(&cwd, project_root).then(|| ImportableSession {
+                    agent_id: agent_id.to_string(),
+                    import_history: def.import.history_support(),
+                    session_id: s.session_id,
+                    title: s.title.as_deref().map(truncate_title),
+                    cwd,
+                    updated_at: s.updated_at,
+                    message_count: None,
+                    already_imported: false,
+                    bound_conversation_id: None,
+                })
             })
             .collect(),
     )
@@ -966,14 +973,11 @@ fn history_source_path(agent_id: &str, session_id: &str, project_root: &str) -> 
             }
             None
         }
-        HistorySourceStrategy::None => {
-            let _ = project_root;
-            None
-        }
+        HistorySourceStrategy::PiJsonl => pi::source_path(project_root, session_id),
+        HistorySourceStrategy::None => None,
     }
 }
 
-/// 用 ACP `session/load` 重放并转成消息（目前只有 opencode 真的重放）。
 async fn load_acp_history(
     agent_id: &str,
     project_root: &str,
@@ -1016,7 +1020,7 @@ fn parse_file_history(
     path: &Path,
 ) -> Result<Vec<crate::external_agents::import_history::ImportedMessage>, String> {
     use crate::external_agents::import_history::{
-        parse_claude_history, parse_codex_history, parse_grok_history,
+        parse_claude_history, parse_codex_history, parse_grok_history, parse_pi_history,
     };
 
     let raw = std::fs::read_to_string(path).map_err(|e| format!("读取会话失败：{e}"))?;
@@ -1024,6 +1028,7 @@ fn parse_file_history(
         HistorySourceStrategy::ClaudeJsonl => parse_claude_history(&raw),
         HistorySourceStrategy::GrokDirectory => parse_grok_history(&raw),
         HistorySourceStrategy::CodexRollout => parse_codex_history(&raw),
+        HistorySourceStrategy::PiJsonl => parse_pi_history(&raw),
         HistorySourceStrategy::None => return Err("该代理没有文件历史解析策略".to_string()),
     };
     Ok(messages)
@@ -1041,7 +1046,7 @@ async fn load_import_history(
     ),
     String,
 > {
-    match def.import.discovery {
+    let messages = match def.import.discovery {
         ImportDiscoveryStrategy::FileHistory => {
             let path = history_source_path(def.id, session_id, project_root)
                 .ok_or_else(|| "原生会话文件已移动或删除，请刷新导入列表".to_string())?;
@@ -1061,32 +1066,42 @@ async fn load_import_history(
                 return Err("原生会话文件不属于此项目目录".into());
             }
             let messages = parse_file_history(def.import.history_source, &path)?;
-            let mtime = file_mtime_ms(&path);
-            Ok((messages, Some(path), mtime))
-        }
-        ImportDiscoveryStrategy::Acp { .. } => {
-            let messages = load_acp_history(def.id, project_root, session_id)
-                .await
-                .ok_or_else(|| "该代理当前不支持读取原生会话历史".to_string())?;
-            if messages.is_empty() {
-                return Err("该代理未重放可显示的历史，无法安全导入此会话".into());
+            if def.import.history_source == HistorySourceStrategy::PiJsonl && messages.is_empty() {
+                return Err("Pi 会话没有可显示的历史".into());
             }
-            Ok((messages, None, None))
+            let mtime = file_mtime_ms(&path);
+            return Ok((messages, Some(path), mtime));
         }
-        ImportDiscoveryStrategy::None => Err(format!("{} 不支持导入原生会话", def.name)),
+        ImportDiscoveryStrategy::Acp { .. } => load_acp_history(def.id, project_root, session_id)
+            .await
+            .ok_or_else(|| "该代理当前不支持读取原生会话历史".to_string())?,
+        ImportDiscoveryStrategy::Antigravity => {
+            antigravity::load_history(project_root, session_id).await?
+        }
+        ImportDiscoveryStrategy::Dsh => dsh::load_history(project_root, session_id).await?,
+        ImportDiscoveryStrategy::None => return Err(format!("{} 不支持导入原生会话", def.name)),
+    };
+    if messages.is_empty() {
+        return Err("原生会话没有可显示的历史，无法导入".into());
     }
+    Ok((messages, None, None))
 }
 
-/// `LiveSessionHandle.protocol` 用的协议串。
-fn protocol_label(format: crate::external_agents::types::StreamFormat) -> &'static str {
-    use crate::external_agents::types::StreamFormat;
-    match format {
-        StreamFormat::ClaudeStreamJson => "claude_stream_json",
-        StreamFormat::CodexAppServer => "codex_app_server",
-        StreamFormat::AcpJsonRpc => "acp_json_rpc",
-        // pi 走自己的 RPC，且没有可导入的本地历史（design.md），这里不该被走到。
-        _ => "unknown",
-    }
+async fn list_sessions_for(
+    def: &RuntimeAgentDef,
+    project_root: &str,
+) -> Result<Vec<ImportableSession>, String> {
+    let mut sessions = match def.import.discovery {
+        ImportDiscoveryStrategy::FileHistory => list_file_sessions_for(def, project_root),
+        ImportDiscoveryStrategy::Acp { .. } => list_acp_sessions(def.id, project_root)
+            .await
+            .ok_or_else(|| "该代理当前不支持枚举原生会话".to_string())?,
+        ImportDiscoveryStrategy::Antigravity => antigravity::list_sessions(project_root).await?,
+        ImportDiscoveryStrategy::Dsh => dsh::list_sessions(project_root).await?,
+        ImportDiscoveryStrategy::None => return Err(format!("{} 不支持导入原生会话", def.name)),
+    };
+    sessions.retain(|session| paths_match(&session.cwd, project_root));
+    Ok(sessions)
 }
 
 /// 列出某个项目下所有可导入的会话（读文件的 + 走 ACP 的），并标出已导入的。
@@ -1104,13 +1119,21 @@ pub async fn list_importable_for_project(
     }
 
     let mut sessions = list_file_based_sessions(&root);
-    for def in AGENT_DEFS
+    let protocol_lists = AGENT_DEFS
         .iter()
-        .filter(|def| matches!(def.import.discovery, ImportDiscoveryStrategy::Acp { .. }))
+        .filter(|def| {
+            !matches!(
+                def.import.discovery,
+                ImportDiscoveryStrategy::None | ImportDiscoveryStrategy::FileHistory
+            )
+        })
+        .map(|def| list_sessions_for(def, &root));
+    for mut list in futures::future::join_all(protocol_lists)
+        .await
+        .into_iter()
+        .flatten()
     {
-        if let Some(list) = list_acp_sessions(def.id, &root).await {
-            sessions.extend(list);
-        }
+        sessions.append(&mut list);
     }
 
     let bound = bound_sessions(app);
@@ -1150,6 +1173,7 @@ pub(crate) fn original_import_cwd(record: &ImportRecord) -> Option<String> {
     let (id, cwd) = match record.agent_id.as_str() {
         "claude" => claude_session_identity(path)?,
         "codex" => codex_session_meta(path)?,
+        "pi" => pi::identity(path)?,
         "grok" => {
             let value: serde_json::Value = serde_json::from_str(
                 &std::fs::read_to_string(path.parent()?.join("summary.json")).ok()?,
@@ -1255,9 +1279,6 @@ pub async fn import_one_session(
     tauri::async_runtime::spawn(async move {
         let lock = import_lock(&agent_id, &session_id);
         let _guard = lock.lock().await;
-        if let Some(id) = existing_import(&app, &agent_id, &session_id).await? {
-            return Ok(id);
-        }
         import_one_session_owned(&app, &project_id, &agent_id, &session_id).await
     })
     .await
@@ -1281,31 +1302,35 @@ async fn import_one_session_owned(
     if !Path::new(&root).is_dir() {
         return Err(format!("项目目录不存在：{root}"));
     }
-    let selected = match def.import.discovery {
-        ImportDiscoveryStrategy::FileHistory => list_file_sessions_for(def, &root),
-        ImportDiscoveryStrategy::Acp { .. } => list_acp_sessions(agent_id, &root)
-            .await
-            .ok_or_else(|| "该代理当前不支持枚举原生会话".to_string())?,
-        ImportDiscoveryStrategy::None => return Err(format!("{} 不支持导入原生会话", def.name)),
-    }
-    .into_iter()
-    .find(|item| item.agent_id == agent_id && item.session_id == session_id)
-    .ok_or_else(|| "原生会话不属于此项目目录，请刷新导入列表".to_string())?;
-    if !paths_match(&selected.cwd, &root) {
-        return Err("原生会话工作目录不匹配".into());
-    }
-    let root = crate::utils::strip_windows_verbatim_prefix(
+    let canonical_root = crate::utils::strip_windows_verbatim_prefix(
         std::fs::canonicalize(&root).map_err(|error| error.to_string())?,
     )
     .to_string_lossy()
     .into_owned();
-    let (messages, source, source_mtime) = load_import_history(def, &root, session_id).await?;
+    if let Some(id) = existing_import(app, agent_id, session_id, &canonical_root).await? {
+        return Ok(id);
+    }
+    let source_root = if def.import.history_source == HistorySourceStrategy::PiJsonl {
+        &root
+    } else {
+        &canonical_root
+    };
+    let selected = list_sessions_for(def, source_root)
+        .await?
+        .into_iter()
+        .find(|item| item.agent_id == agent_id && item.session_id == session_id)
+        .ok_or_else(|| "原生会话不属于此项目目录，请刷新导入列表".to_string())?;
+    if !paths_match(&selected.cwd, &canonical_root) {
+        return Err("原生会话工作目录不匹配".into());
+    }
+    let (messages, source, source_mtime) =
+        load_import_history(def, source_root, session_id).await?;
     publish_import(
         app,
         project_id,
         def,
-        session_id,
-        root,
+        &selected,
+        canonical_root,
         (messages, source, source_mtime),
     )
     .await
@@ -1315,9 +1340,18 @@ async fn existing_import(
     app: &tauri::AppHandle,
     agent_id: &str,
     session_id: &str,
+    project_root: &str,
 ) -> Result<Option<String>, String> {
     recover_unpublished_imports(app, agent_id, session_id)?;
     if let Some(bound) = bound_sessions(app).get(&(agent_id.into(), session_id.into())) {
+        if let Some(cwd) =
+            crate::external_agents::workspace::bound_original_cwd(app, &bound.conversation_id)?
+        {
+            crate::external_agents::workspace::validate_bound_cwd(
+                &cwd,
+                Some(Path::new(project_root)),
+            )?;
+        }
         crate::chat::repository::repository(app)
             .list(app, 0, 1, None, None, None)
             .await
@@ -1331,7 +1365,7 @@ async fn publish_import(
     app: &tauri::AppHandle,
     project_id: &str,
     def: &RuntimeAgentDef,
-    session_id: &str,
+    selected: &ImportableSession,
     root: String,
     history: (
         Vec<crate::external_agents::import_history::ImportedMessage>,
@@ -1344,6 +1378,7 @@ async fn publish_import(
         ConversationContextState,
     };
     let agent_id = def.id;
+    let session_id = &selected.session_id;
     let (messages, source, source_mtime) = history;
 
     // 与对话的 created_at/updated_at 一致：**秒**。
@@ -1394,7 +1429,13 @@ async fn publish_import(
         chat_messages.push(message);
     }
 
-    let title = source_title(agent_id, source.as_deref())
+    let native_title = match def.stream_format {
+        StreamFormat::AntigravityStreamJson | StreamFormat::DshJsonRpc | StreamFormat::PiRpc => {
+            selected.title.as_deref().map(truncate_title)
+        }
+        _ => source_title(agent_id, source.as_deref()),
+    };
+    let title = native_title
         .or_else(|| {
             chat_messages
                 .iter()
@@ -1449,8 +1490,6 @@ async fn publish_import(
             external_agent_preset: None,
         },
     };
-    // 会话绑定：写哪种文件由 `resumes_session_via_cli` 决定（claude 走 CLI 的 `--resume`，
-    // 其余走 live handle）。写错了续聊就会开一条全新会话，历史静默丢失。
     if def.resumes_session_via_cli {
         crate::external_agents::session::save_session(
             app,
@@ -1465,16 +1504,25 @@ async fn publish_import(
                 model: None,
             },
         )?;
-    } else {
+    }
+    if !def.resumes_session_via_cli
+        || matches!(
+            def.stream_format,
+            StreamFormat::PiRpc | StreamFormat::AntigravityStreamJson
+        )
+    {
         crate::external_agents::session::save_live_handle(
             app,
             &conversation_id,
             &crate::external_agents::session::LiveSessionHandle {
                 supports_load: true,
                 agent_id: agent_id.to_string(),
-                protocol: protocol_label(def.stream_format).to_string(),
+                protocol: super::run::persistent_protocol_tag(def.stream_format).to_string(),
                 native_id: session_id.to_string(),
-                native_path: None,
+                native_path: source
+                    .as_deref()
+                    .filter(|_| def.stream_format == StreamFormat::PiRpc)
+                    .map(|path| path.to_string_lossy().into_owned()),
                 cwd: root.clone(),
             },
         )?;
@@ -1496,6 +1544,28 @@ async fn publish_import(
     }
 
     Ok(conversation_id)
+}
+
+pub(super) fn imported_pi_source(
+    app: &tauri::AppHandle,
+    conversation_id: &str,
+    native_id: Option<&str>,
+) -> Option<PathBuf> {
+    let native_id = native_id?;
+    let record =
+        load_import_record(app, conversation_id).filter(|record| record.agent_id == "pi")?;
+    if record.session_id == native_id {
+        return record.source_path.map(PathBuf::from);
+    }
+    crate::external_agents::session::load_live_handle(app, conversation_id)
+        .filter(|handle| handle.agent_id == "pi" && handle.native_id == native_id)?
+        .native_path
+        .map(PathBuf::from)
+}
+
+pub(super) fn pi_source_matches(path: &Path, native_id: &str, cwd: &Path) -> bool {
+    pi::identity(path)
+        .is_some_and(|(id, root)| id == native_id && paths_match(&root, &cwd.to_string_lossy()))
 }
 
 /// CLI 自己生成的会话标题。拿不到就返回 `None`，由调用方退回"第一句用户消息"。
@@ -1992,7 +2062,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_without_import_discovery_is_rejected() {
-        let def = get_agent_def("pi").expect("pi def");
+        let def = get_agent_def("gemini").expect("gemini def");
         let error = load_import_history(def, ".", "session")
             .await
             .expect_err("unsupported agents must not create empty conversations");

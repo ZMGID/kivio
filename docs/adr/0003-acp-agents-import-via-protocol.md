@@ -17,6 +17,12 @@ opencode 和 kimi 在 Kivio 里是 ACP 代理。导入它们的会话时，用 A
 
 2026-11-07 核验官方 Kimi Code 源码 `eb2035f3cad57cc12d4d5082ec626f7f0ea5f651` 后更新此判断。[`loadSession`](https://github.com/MoonshotAI/kimi-code/blob/eb2035f3cad57cc12d4d5082ec626f7f0ea5f651/packages/acp-server/src/server.ts#L297) 在返回前等待 `replayHistory`，[重放实现](https://github.com/MoonshotAI/kimi-code/blob/eb2035f3cad57cc12d4d5082ec626f7f0ea5f651/packages/acp-server/src/replay.ts) 把主代理历史转换为 ACP `session/update`。Kivio 因此复用 ACP 重放，不新增私有文件解析器。加载后没有可显示历史时拒绝导入，避免把有原生上下文的会话保存为空快照。此处是源码核验，本机未安装 Kimi，未证明所有已发布版本均支持重放。
 
+## Antigravity CLI
+
+Antigravity CLI 通过 `agy acp` 枚举并读取原生会话，续聊使用 `agy --conversation <id>`。Kivio 解码返回的文件 URI，并按真实工作目录筛选。Windows 上代理可能返回其他项目的会话，因此目录校验以返回的路径为准。
+
+已在 1.5.10 验证枚举、短会话重放和按 ID 续接。1.5.15 修复了长历史重放可能被提前截断的问题。 [官方发布记录](https://antigravity.google/docs/changelog)
+
 ## Considered Options
 
 **直接解析各自的本地存储做枚举。** 否决：格式各异（SQLite、jsonl 索引、按 cwd 哈希分目录的 JSON），而 `session/list` 一个方法就覆盖了，还顺带给出 agent 自己认可的 `sessionId`——那才是 `session/load` 会接受的 id，从文件里刨出来的不一定是。读文件确实更快，但这是导入列表的一次性开销，不在热路径上。

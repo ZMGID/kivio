@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
 import vm from 'node:vm'
 import test from 'node:test'
 
@@ -15,10 +18,12 @@ function fixture(preset = 'standard', previous = { provider: 'deepseek-official'
       }
     },
     Buffer,
+    realpath,
+    isAbsolute,
     McpClient: { Config: value => value },
     carrierKeyOf: carrier => carrier?.parent,
     createUserMessage: message => ({ ...message, id: 'message-1' }),
-    process: { env: { DSH_AGENT_PRESET: preset, DSH_PERMISSION_MODE: 'read-only' } },
+    process: { platform: process.platform, env: { DSH_AGENT_PRESET: preset, DSH_PERMISSION_MODE: 'read-only' } },
     console,
   }
   vm.runInNewContext(source.slice(0, source.indexOf('export const name'))
@@ -41,6 +46,7 @@ function fixture(preset = 'standard', previous = { provider: 'deepseek-official'
   }
   Object.assign(server, {
     provider: 'deepseek-official', model: 'flash', sessions: new Map(),
+    sessionCreations: new Map(),
     lifetime: new AbortController(),
     assertLiveAgent: () => {},
     attachToWorkspace: async () => {},
@@ -54,6 +60,70 @@ function fixture(preset = 'standard', previous = { provider: 'deepseek-official'
   })
   return { server, agent, mounted, injected, services }
 }
+
+test('cold import lists and reads original top-level sessions without opening an agent', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'kivio-dsh-import-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const project = join(root, 'project')
+  const other = join(root, 'project2')
+  await Promise.all([mkdir(project), mkdir(other)])
+  const { server, agent, services } = fixture()
+  const input = [{ type: 'text', text: 'The original prompt' }, { type: 'image', attachment: { id: 'ref' } }]
+  const events = [
+    { type: 'user/message', time: 100, data: { source: { kind: 'user' }, content: input } },
+    { type: 'user/message', time: 150, data: { source: { kind: 'runtime-context' }, content: [{ type: 'text', text: 'hidden' }] } },
+    { type: 'assistant/message', time: 200, data: { message: { content: [{ type: 'text', text: 'The original reply' }] } } },
+    { type: 'session/title', time: 210, data: { title: 'Native title' } },
+  ]
+  const store = new Map([
+    ['native-terminal-id', { header: { id: 'native-terminal-id', cwd: project }, events }],
+    ['sibling', { header: { id: 'sibling', cwd: other }, events }],
+    ['child', { header: { id: 'child', cwd: project, origin: 'subagent' }, events }],
+    ['moved', { header: { id: 'moved', cwd: project }, events: [...events, { type: 'workspace-root/change', data: { cwd: other } }] }],
+    ['empty', { header: { id: 'empty', cwd: project }, events: [] }],
+  ])
+  const opened = new Set()
+  server.ctx.agents = { resume: () => assert.fail('import must not activate a native session') }
+  server.ctx.attachments = { readImage: async ({ id }) => {
+    assert.equal(id, 'ref')
+    return { ref: { mediaType: 'image/png' }, data: Buffer.from('picture') }
+  } }
+  server.ctx.sessionPersistence = {
+    list: async () => [...store.values()],
+    open: async (id, access) => {
+      assert.equal(access, 'read')
+      opened.add(id)
+      return { ...store.get(id), read: async () => store.get(id), close: async () => opened.delete(id) }
+    },
+  }
+
+  const listed = await server.handleRequest('kivio/session.list', { cwd: project })
+  assert.deepEqual(JSON.parse(JSON.stringify(listed)), { sessions: [
+    { sessionId: 'native-terminal-id', cwd: project, title: 'Native title', updatedAt: 200, messageCount: 2 },
+  ] })
+  const history = await server.handleRequest('kivio/session.history', { cwd: project, sessionId: 'native-terminal-id' })
+  assert.deepEqual(JSON.parse(JSON.stringify(history)), { events: [
+    { type: 'user/message', time: 100, data: { content: [input[0], { type: 'image', mediaType: 'image/png', data: 'cGljdHVyZQ==' }] } },
+    { type: 'assistant/message', time: 200, data: { content: [{ type: 'text', text: 'The original reply' }] } },
+  ] })
+  for (const id of ['sibling', 'child', 'moved']) {
+    await assert.rejects(server.handleRequest('kivio/session.history', { cwd: project, sessionId: id }), /different project|subagent/)
+  }
+  await assert.rejects(server.handleRequest('session/open', {
+    sessionId: 'moved', resume: true, expectedCwd: project,
+  }), /does not match the imported project/)
+  agent.session.header.cwd = project
+  services.workingDirectory = { get: () => other }
+  server.ctx.agents.resume = async options => {
+    await options.setup({ agent }, agent)
+    return { agent }
+  }
+  await assert.rejects(server.handleRequest('session/open', {
+    sessionId: 'native-terminal-id', resume: true, expectedCwd: project,
+  }), /does not match the imported project/)
+  assert.equal(opened.size, 0)
+  assert.equal(server.sessions.size, 0)
+})
 
 test('custom presets reach the registry; old code sessions mount ptc', async () => {
   for (const [saved, expected] of [['my-reviewer', 'my-reviewer'], ['code', 'ptc']]) {

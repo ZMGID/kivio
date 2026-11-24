@@ -15,6 +15,13 @@ use super::session::codex_app_server::codex_message_phase;
 use serde_json::Value;
 use uuid::Uuid;
 
+#[path = "import/dsh_history.rs"]
+mod dsh;
+#[path = "import/pi_history.rs"]
+mod pi;
+pub(super) use dsh::parse_dsh_history;
+pub(super) use pi::{parse_pi_history, pi_history_preview};
+
 use crate::chat::types::{
     ChatMessage, ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase,
     ToolCallRecord, ToolCallStatus,

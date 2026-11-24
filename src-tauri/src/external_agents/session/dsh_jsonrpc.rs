@@ -100,6 +100,14 @@ pub struct DshJsonRpcSession {
     slash_commands: Vec<ExternalCliSlashCommand>,
 }
 
+struct DshProcess {
+    child: Child,
+    launch_patch: Option<tempfile::TempPath>,
+    stdin: AgentStdin,
+    reader: Lines<BufReader<AgentStdout>>,
+    stderr_tail: tokio::task::JoinHandle<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelRoute {
     provider: String,
@@ -351,6 +359,106 @@ enum ReadStep {
     Fatal,
 }
 
+async fn spawn_profile(
+    resolved_bin: &Path,
+    args: &[String],
+    cwd: &Path,
+    reasoning: Option<&str>,
+    sandbox: Option<&str>,
+    preset: Option<&str>,
+) -> Result<DshProcess, String> {
+    use crate::external_agents::{dsh_profile, spawn, wsl};
+
+    let launch_patch = dsh_profile::ensure_profile_ready(resolved_bin, reasoning, preset).await?;
+    let mut command = spawn::cli_command(resolved_bin);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .env("DSH_TELEMETRY_DISABLED", "1")
+        .env("DSH_PERMISSION_MODE", normalize_sandbox(sandbox))
+        .env(
+            "DSH_AGENT_PRESET",
+            dsh_profile::normalize_agent_preset(preset),
+        );
+    if let Some(path) = &launch_patch {
+        command
+            .arg("--patch")
+            .arg(wsl::path_for_cli(resolved_bin, path));
+    }
+    if wsl::is_wsl_target(resolved_bin) {
+        if let Some(home) = dsh_profile::dsh_home() {
+            command.env("DSH_HOME", wsl::path_for_cli(resolved_bin, &home));
+        }
+    }
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .no_console_window()
+        .kill_on_drop(true);
+    let mut child =
+        spawn::AgentChild::spawn(&mut command).map_err(|e| format!("spawn dsh: {e}"))?;
+    let stderr_tail = spawn::spawn_stderr_tail(child.stderr.take());
+    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let tail = spawn::join_stderr_tail(&mut child, stderr_tail).await;
+        return Err(spawn::fold_stderr(
+            "spawn dsh: missing stdio pipe".to_string(),
+            &tail,
+        ));
+    };
+    Ok(DshProcess {
+        child,
+        launch_patch,
+        stdin,
+        reader: BufReader::new(stdout).lines(),
+        stderr_tail,
+    })
+}
+
+pub(in crate::external_agents) async fn query_import(
+    resolved_bin: &Path,
+    cwd: &Path,
+    session_id: Option<&str>,
+) -> Result<Value, String> {
+    use crate::external_agents::{dsh_profile, spawn, wsl};
+
+    let _profile_boot_guard = DSH_PROFILE_BOOT_LOCK.lock().await;
+    let args = [
+        "--profile".to_owned(),
+        dsh_profile::KIVIO_PROFILE.to_owned(),
+    ];
+    let DshProcess {
+        mut child,
+        launch_patch: _launch_patch,
+        mut stdin,
+        mut reader,
+        stderr_tail,
+    } = spawn_profile(resolved_bin, &args, cwd, None, Some("read-only"), None).await?;
+    let native_cwd = wsl::path_for_cli(resolved_bin, cwd);
+    let (method, params) = match session_id {
+        Some(id) => (
+            "kivio/session.history",
+            json!({ "cwd": native_cwd, "sessionId": id }),
+        ),
+        None => ("kivio/session.list", json!({ "cwd": native_cwd })),
+    };
+    let result = async {
+        write_rpc(&mut stdin, 1, method, params).await?;
+        read_until_response(&mut reader, &mut stdin, 1, INITIALIZE_TIMEOUT).await
+    }
+    .await;
+    match result {
+        Ok(value) => {
+            shutdown_process(&mut child, &mut stdin, 2, stderr_tail).await;
+            Ok(value)
+        }
+        Err(error) => {
+            let tail = spawn::join_stderr_tail(&mut child, stderr_tail).await;
+            Err(spawn::fold_stderr(format!("dsh {method}: {error}"), &tail))
+        }
+    }
+}
+
 impl DshJsonRpcSession {
     /// 生成 Kivio profile、拉起 dsh，并完成 `initialize` 握手。
     pub async fn connect(
@@ -363,6 +471,7 @@ impl DshJsonRpcSession {
         sandbox: Option<&str>,
         preset: Option<&str>,
         mcp: Option<(&str, &str)>,
+        ensure_original_cwd: bool,
     ) -> Result<Self, String> {
         let _profile_boot_guard = DSH_PROFILE_BOOT_LOCK.lock().await;
         let (route, native_effort) = resolve_dsh_selection(model)?;
@@ -380,12 +489,13 @@ impl DshJsonRpcSession {
         {
             return Err("missing credential".to_string());
         }
-        let launch_patch = crate::external_agents::dsh_profile::ensure_profile_ready(
-            resolved_bin,
-            reasoning,
-            preset,
-        )
-        .await?;
+        let DshProcess {
+            mut child,
+            launch_patch,
+            mut stdin,
+            mut reader,
+            stderr_tail,
+        } = spawn_profile(resolved_bin, args, cwd, reasoning, sandbox, preset).await?;
 
         let session_id = resume_session_id
             .map(str::trim)
@@ -393,64 +503,6 @@ impl DshJsonRpcSession {
             .map(str::to_string)
             .unwrap_or_else(|| format!("kivio-{}", Uuid::new_v4()));
         let wants_resume = resume_session_id.is_some_and(|id| !id.trim().is_empty());
-        let mut command = crate::external_agents::spawn::cli_command(resolved_bin);
-        command
-            .args(args)
-            .current_dir(cwd)
-            .env("DSH_TELEMETRY_DISABLED", "1")
-            .env("DSH_PERMISSION_MODE", normalize_sandbox(sandbox))
-            .env(
-                "DSH_AGENT_PRESET",
-                crate::external_agents::dsh_profile::normalize_agent_preset(preset),
-            );
-        if let Some(path) = &launch_patch {
-            command
-                .arg("--patch")
-                .arg(crate::external_agents::wsl::path_for_cli(
-                    resolved_bin,
-                    path,
-                ));
-        }
-        if crate::external_agents::wsl::is_wsl_target(resolved_bin) {
-            if let Some(home) = crate::external_agents::dsh_profile::dsh_home() {
-                command.env(
-                    "DSH_HOME",
-                    crate::external_agents::wsl::path_for_cli(resolved_bin, &home),
-                );
-            }
-        }
-        command
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .no_console_window()
-            .kill_on_drop(true);
-        let mut child = crate::external_agents::spawn::AgentChild::spawn(&mut command)
-            .map_err(|e| format!("spawn dsh: {e}"))?;
-        let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
-        let mut stdin = match child.stdin.take() {
-            Some(stdin) => stdin,
-            None => {
-                let tail =
-                    crate::external_agents::spawn::join_stderr_tail(&mut child, stderr_tail).await;
-                return Err(crate::external_agents::spawn::fold_stderr(
-                    "spawn dsh: stdin unavailable".to_string(),
-                    &tail,
-                ));
-            }
-        };
-        let stdout = match child.stdout.take() {
-            Some(stdout) => stdout,
-            None => {
-                let tail =
-                    crate::external_agents::spawn::join_stderr_tail(&mut child, stderr_tail).await;
-                return Err(crate::external_agents::spawn::fold_stderr(
-                    "spawn dsh: stdout unavailable".to_string(),
-                    &tail,
-                ));
-            }
-        };
-        let mut reader = BufReader::new(stdout).lines();
 
         let mut next_rpc_id: u64 = 1;
         let handshake = async {
@@ -544,17 +596,19 @@ impl DshJsonRpcSession {
 
             let open_id = next_rpc_id;
             next_rpc_id += 1;
-            write_rpc(
-                &mut stdin,
-                open_id,
-                "session/open",
-                json!({ "sessionId": session_id, "resume": wants_resume }),
-            )
-            .await
-            .map_err(|e| format!("dsh session/open: {e}"))?;
+            let mut open_params = json!({ "sessionId": session_id, "resume": wants_resume });
+            let open_error = if ensure_original_cwd && wants_resume {
+                open_params["expectedCwd"] = json!(init_cwd);
+                "dsh imported session/open"
+            } else {
+                "dsh session/open"
+            };
+            write_rpc(&mut stdin, open_id, "session/open", open_params)
+                .await
+                .map_err(|e| format!("{open_error}: {e}"))?;
             let opened = read_until_response(&mut reader, &mut stdin, open_id, INITIALIZE_TIMEOUT)
                 .await
-                .map_err(|e| format!("dsh session/open: {e}"))?;
+                .map_err(|e| format!("{open_error}: {e}"))?;
             let resumed = opened
                 .get("resumed")
                 .and_then(Value::as_bool)
@@ -564,12 +618,10 @@ impl DshJsonRpcSession {
                 // shape from our own handshake. Phrase it as a missing session so
                 // `is_missing_session_error` / fresh-connect fallback can fire.
                 if wants_resume && !resumed {
-                    return Err(format!(
-                        "dsh session/open: session \"{session_id}\" not found"
-                    ));
+                    return Err(format!("{open_error}: session \"{session_id}\" not found"));
                 }
                 return Err(format!(
-                    "dsh session/open: resume mismatch (requested={wants_resume}, actual={resumed})"
+                    "{open_error}: resume mismatch (requested={wants_resume}, actual={resumed})"
                 ));
             }
             let mut slash_commands = Vec::new();
@@ -1117,20 +1169,32 @@ impl DshJsonRpcSession {
 
     /// 优先走协议 shutdown，再有界等待；没退出就杀进程组。
     pub async fn close(mut self) {
-        let id = self.next_id;
-        let _ = write_rpc(&mut self.stdin, id, "shutdown", Value::Null).await;
-        let _ = self.stdin.shutdown().await;
-        if timeout(SHUTDOWN_GRACE, self.child.wait()).await.is_err() {
-            crate::external_agents::spawn::kill_agent_process_tree(&mut self.child);
-            let _ = timeout(SHUTDOWN_GRACE, self.child.wait()).await;
-        }
-        // Windows shims can exit before a grandchild releases the inherited stderr
-        // pipe. Never let that detached handle wedge the profile boot lock forever.
-        let mut stderr_tail = self.stderr_tail;
-        if timeout(SHUTDOWN_GRACE, &mut stderr_tail).await.is_err() {
-            stderr_tail.abort();
-            let _ = stderr_tail.await;
-        }
+        shutdown_process(
+            &mut self.child,
+            &mut self.stdin,
+            self.next_id,
+            self.stderr_tail,
+        )
+        .await;
+    }
+}
+
+async fn shutdown_process(
+    child: &mut Child,
+    stdin: &mut AgentStdin,
+    id: u64,
+    mut stderr_tail: tokio::task::JoinHandle<String>,
+) {
+    let _ = write_rpc(stdin, id, "shutdown", Value::Null).await;
+    let _ = stdin.shutdown().await;
+    if timeout(SHUTDOWN_GRACE, child.wait()).await.is_err() {
+        crate::external_agents::spawn::kill_agent_process_tree(child);
+        let _ = timeout(SHUTDOWN_GRACE, child.wait()).await;
+    }
+    // Windows shims can exit before a grandchild releases the inherited stderr pipe.
+    if timeout(SHUTDOWN_GRACE, &mut stderr_tail).await.is_err() {
+        stderr_tail.abort();
+        let _ = stderr_tail.await;
     }
 }
 
@@ -1873,7 +1937,7 @@ fn rpc_error_message(value: &Value) -> Option<String> {
 
 pub fn is_missing_session_error(err: &str) -> bool {
     let lower = err.to_ascii_lowercase();
-    if !lower.contains("dsh session/open:") {
+    if !lower.starts_with("dsh session/open:") {
         return false;
     }
     // Checksum / auth failures are not "the native id is gone" — fail loud.
@@ -3586,6 +3650,9 @@ mod tests {
         assert!(!is_missing_session_error(
             "dsh session/open: persisted log checksum mismatch"
         ));
+        assert!(!is_missing_session_error(
+            "dsh imported session/open: session \"native\" not found"
+        ));
         assert!(!is_missing_session_error("dsh initialize: auth failed"));
     }
 
@@ -5007,6 +5074,7 @@ mod tests {
             Some("read-only"),
             None,
             None,
+            false,
         )
         .await
         .expect("dsh profile handshake");
@@ -5040,6 +5108,7 @@ mod tests {
             Some("read-only"),
             None,
             None,
+            false,
         )
         .await
         .expect("connect live dsh");
@@ -5121,6 +5190,7 @@ mod tests {
             Some("read-only"),
             None,
             None,
+            false,
         )
         .await
         .expect("connect live dsh");
@@ -5153,6 +5223,7 @@ mod tests {
             Some("read-only"),
             None,
             None,
+            false,
         )
         .await
         .expect("resume live dsh");
@@ -5216,6 +5287,7 @@ mod tests {
             Some("read-only"),
             None,
             None,
+            false,
         )
         .await
         .expect("connect live dsh");

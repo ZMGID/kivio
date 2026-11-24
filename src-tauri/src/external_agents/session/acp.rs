@@ -3560,6 +3560,11 @@ mod tests {
                 None,
             ),
             (
+                init.clone(),
+                Some(json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"other"}})),
+                None,
+            ),
+            (
                 init,
                 Some(json!({"jsonrpc":"2.0","id":2,"result":{}})),
                 Some(vec![]),
@@ -5853,8 +5858,9 @@ mod live_reasoning_tests {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AcpSessionSummary {
     pub session_id: String,
-    pub cwd: String,
+    pub cwd: Option<String>,
     pub title: Option<String>,
+    pub updated_at: Option<i64>,
 }
 
 /// ACP `session/list` 探针：起进程 → `initialize` → 按 `cwd` 翻页拉会话 → 关掉。
@@ -5876,14 +5882,12 @@ pub async fn probe_acp_sessions(
     // ponytail: 每次列表都起一次进程握手（实测 opencode ~2s）。导入入口是低频动作，
     // 不做连接复用；真觉得慢再挂到 detection 的缓存上。
     let mut child = crate::external_agents::spawn::AgentChild::spawn(
-        crate::external_agents::spawn::cli_command(bin)
+        crate::external_agents::spawn::cli_probe_command(bin)
             .args(args)
             .current_dir(cwd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .no_console_window()
-            .kill_on_drop(true),
+            .stderr(std::process::Stdio::null()),
     )
     .ok()?;
 
@@ -5933,17 +5937,18 @@ pub async fn probe_acp_sessions(
             }
             sessions.push(AcpSessionSummary {
                 session_id: session_id.to_string(),
-                cwd: item
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&cwd_text)
-                    .to_string(),
+                cwd: item.get("cwd").and_then(Value::as_str).map(str::to_owned),
                 title: item
                     .get("title")
                     .and_then(|v| v.as_str())
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(str::to_string),
+                updated_at: item
+                    .get("updatedAt")
+                    .and_then(Value::as_str)
+                    .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                    .map(|value| value.timestamp_millis()),
             });
         }
         cursor = match result.get("nextCursor") {
@@ -5995,14 +6000,12 @@ pub async fn probe_acp_session_history(
     timeout_secs: u64,
 ) -> Option<Vec<Value>> {
     let mut child = crate::external_agents::spawn::AgentChild::spawn(
-        crate::external_agents::spawn::cli_command(bin)
+        crate::external_agents::spawn::cli_probe_command(bin)
             .args(args)
             .current_dir(cwd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .no_console_window()
-            .kill_on_drop(true),
+            .stderr(std::process::Stdio::null()),
     )
     .ok()?;
 
@@ -6066,7 +6069,12 @@ async fn read_acp_session_history(
             AcpNext::Frame(AcpFrame::Response { id, result })
                 if id.as_u64() == Some(2) && tail_deadline.is_none() =>
             {
-                if !result.ok()?.is_object() {
+                let result = result.ok()?;
+                let reply = result.as_object()?;
+                if reply
+                    .get("sessionId")
+                    .is_some_and(|value| value.as_str() != Some(session_id))
+                {
                     return None;
                 }
                 tail_deadline = Some(std::time::Instant::now() + Duration::from_secs(3));

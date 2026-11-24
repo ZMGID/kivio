@@ -1819,11 +1819,17 @@ where
         } else {
             None
         };
+        let imported_source = super::import::imported_pi_source(
+            app,
+            conversation_id,
+            resumable_native.as_deref(),
+        );
         let mut session = crate::external_agents::session::pi_rpc::PiRpcSession::connect(
             resolved_bin,
             &turn_args,
             cwd,
             resumable_native.as_deref(),
+            imported_source.as_deref(),
             chat_credential
                 .as_ref()
                 .map(|credential| (credential.url.as_str(), credential.authorization.as_str())),
@@ -2274,7 +2280,7 @@ async fn publish_live_session(
     generation: u64,
     resolved_bin: &Path,
     session: crate::external_agents::session::live::LiveSession,
-    handle: crate::external_agents::session::LiveSessionHandle,
+    mut handle: crate::external_agents::session::LiveSessionHandle,
 ) -> Result<(), String> {
     let control = session.control.clone();
     lease.track(&control);
@@ -2293,6 +2299,10 @@ async fn publish_live_session(
                             get_agent_def(&session.agent_id).ok_or("unknown external CLI")?,
                             &resolved_bin,
                         )?;
+                    }
+                    if handle.agent_id == "pi" && handle.native_path.is_none() {
+                        handle.native_path = super::import::imported_pi_source(app, id, Some(&handle.native_id))
+                            .map(|path| path.to_string_lossy().into_owned());
                     }
                     lease.publish(session, || save_live_binding(app, id, &handle))
                 })
@@ -4369,6 +4379,8 @@ async fn connect_persistent_session(
                         // Same contract as Codex / ACP: resume failure must surface. Swallowing
                         // `session/open` and creating a fresh `kivio-*` id made save_live_handle
                         // overwrite the real binding. Missing-session is classified one layer up.
+                        let imported = super::import::load_import_record(app, conversation_id)
+                            .is_some_and(|record| record.agent_id == "dsh" && record.session_id == sid);
                         let session = DshJsonRpcSession::connect(
                             resolved_bin,
                             args,
@@ -4379,6 +4391,7 @@ async fn connect_persistent_session(
                             sandbox,
                             preset,
                             mcp,
+                            imported,
                         )
                         .await
                         .map_err(|err| {
@@ -4411,6 +4424,7 @@ async fn connect_persistent_session(
                         sandbox,
                         preset,
                         mcp,
+                        false,
                     )
                     .await?;
                     let id = session.session_id().to_string();
@@ -4431,11 +4445,17 @@ async fn connect_persistent_session(
                     .identified(&identity))
                 }
                 StreamFormat::PiRpc => {
+                    let imported_source = super::import::imported_pi_source(
+                        app,
+                        conversation_id,
+                        resume_native.as_deref(),
+                    );
                     let session = crate::external_agents::session::pi_rpc::PiRpcSession::connect(
                         resolved_bin,
                         args,
                         cwd,
                         resume_native.as_deref(),
+                        imported_source.as_deref(),
                         mcp,
                     )
                     .await?;
