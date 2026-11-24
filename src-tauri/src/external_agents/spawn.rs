@@ -52,6 +52,42 @@ pub struct AgentChild {
     group: Option<u32>,
 }
 
+pub(super) fn acquire_cli_spawn_resource(
+    command: &mut Command,
+) -> std::io::Result<Option<super::session::live::ResourceLease>> {
+    let marker = command
+        .as_std()
+        .get_envs()
+        .find(|(key, _)| *key == "KIVIO_INTERNAL_CLI_RESOURCE")
+        .and_then(|(_, value)| value)
+        .map(|value| value.to_owned());
+    command.env_remove("KIVIO_INTERNAL_CLI_RESOURCE");
+    marker
+        .map(|value| {
+            let (agent, binary, expected, revision): (
+                Option<String>,
+                PathBuf,
+                String,
+                Option<u64>,
+            ) = serde_json::from_str(&value.to_string_lossy()).map_err(std::io::Error::other)?;
+            if super::session::live::resource_path(&binary) != expected {
+                return Err(std::io::Error::other("CLI executable changed before spawn"));
+            }
+            let keys = super::session::live::runtime_resources(agent.as_deref(), &binary);
+            let lease = super::session::live::ResourceLease::acquire(keys, false)
+                .map_err(std::io::Error::other)?;
+            if agent.as_deref().is_some_and(|agent| {
+                revision.is_none() || super::overrides::launch_revision(agent) != revision
+            }) {
+                return Err(std::io::Error::other(
+                    "CLI configuration changed before spawn",
+                ));
+            }
+            Ok(lease)
+        })
+        .transpose()
+}
+
 impl AgentChild {
     pub fn id(&self) -> Option<u32> {
         self.child.as_ref().and_then(|child| child.id())
@@ -69,38 +105,7 @@ impl AgentChild {
     }
 
     pub fn spawn(command: &mut Command) -> std::io::Result<Self> {
-        let marker = command
-            .as_std()
-            .get_envs()
-            .find(|(key, _)| *key == "KIVIO_INTERNAL_CLI_RESOURCE")
-            .and_then(|(_, value)| value)
-            .map(|value| value.to_owned());
-        command.env_remove("KIVIO_INTERNAL_CLI_RESOURCE");
-        let resource = marker
-            .map(|value| {
-                let (agent, binary, expected, revision): (
-                    Option<String>,
-                    PathBuf,
-                    String,
-                    Option<u64>,
-                ) = serde_json::from_str(&value.to_string_lossy())
-                    .map_err(std::io::Error::other)?;
-                if super::session::live::resource_path(&binary) != expected {
-                    return Err(std::io::Error::other("CLI executable changed before spawn"));
-                }
-                let keys = super::session::live::runtime_resources(agent.as_deref(), &binary);
-                let lease = super::session::live::ResourceLease::acquire(keys, false)
-                    .map_err(std::io::Error::other)?;
-                if agent.as_deref().is_some_and(|agent| {
-                    revision.is_none() || super::overrides::launch_revision(agent) != revision
-                }) {
-                    return Err(std::io::Error::other(
-                        "CLI configuration changed before spawn",
-                    ));
-                }
-                Ok(lease)
-            })
-            .transpose()?;
+        let resource = acquire_cli_spawn_resource(command)?;
         #[cfg(unix)]
         command.process_group(0);
         command.kill_on_drop(true);

@@ -1,5 +1,5 @@
 //! Native account discovery and explicit Codex usage resets. Never starts a conversation or returns credentials.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod antigravity_status;
 mod grok_identity;
 mod kimi_binding;
@@ -216,18 +216,20 @@ pub(super) async fn probe(
                 Ok(usage) => (usage, None),
                 Err(error) => (Value::Null, Some(error)),
             };
-            #[cfg(unix)]
-            let account =
-                if antigravity_quota_groups(&usage).is_some_and(|groups| !groups.is_empty()) {
-                    let mut identity_command = agent_probe_command(def, bin);
-                    identity_command.current_dir(cwd);
-                    antigravity_status::identity(identity_command)
-                        .await
-                        .unwrap_or(Value::Null)
-                } else {
-                    Value::Null
-                };
-            #[cfg(not(unix))]
+            #[cfg(any(unix, windows))]
+            let account = if antigravity_quota_groups(&usage)
+                .is_some_and(|groups| !groups.is_empty())
+                && !super::wsl::is_wsl_target(bin)
+            {
+                let mut identity_command = agent_probe_command(def, bin);
+                identity_command.current_dir(cwd);
+                antigravity_status::identity(identity_command)
+                    .await
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+            #[cfg(not(any(unix, windows)))]
             let account = Value::Null;
             Ok(reading(def.id, protocol, &account, &usage, unavailable))
         }
@@ -846,6 +848,30 @@ mod tests {
         assert_eq!(windows[0]["resetsAt"], "2026-11-21T09:00:00Z");
         assert_eq!(windows[1]["name"], "Gemini 4 Argon · 7d");
         assert_eq!(windows[1]["usedPercent"], 100.0);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a signed-in native Antigravity CLI with a reported membership tier"]
+    async fn live_antigravity_windows_account_includes_identity_and_quota() {
+        use crate::external_agents::{registry::get_agent_def, spawn::resolve_binary};
+
+        let def = get_agent_def("antigravity").expect("registered agent");
+        let bin = resolve_binary(def)
+            .await
+            .expect("installed Antigravity CLI");
+        let cwd = std::env::current_dir().expect("current workspace");
+        let result = probe(def, def.account.unwrap(), &bin, &cwd).await.unwrap();
+        assert!(result.snapshot["windows"]
+            .as_array()
+            .is_some_and(|windows| !windows.is_empty()));
+        assert_eq!(result.snapshot["account"]["type"], "google");
+        assert!(result.snapshot["account"]["email"]
+            .as_str()
+            .is_some_and(|email| email.contains('@')));
+        assert!(result.snapshot["account"]["plan"]
+            .as_str()
+            .is_some_and(|plan| !plan.is_empty()));
     }
 
     #[test]
