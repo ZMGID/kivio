@@ -28,7 +28,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     name: 'Crab-ai',
     baseUrl: 'https://api-slb.crab-ai.net/v1',
-    apiKeyUrl: 'https://crab-ai.net/register?aff=KIVIO',
     sponsored: true,
   },
   {
