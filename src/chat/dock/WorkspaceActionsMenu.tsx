@@ -4,7 +4,7 @@ import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 // 段三 = 历史分支；段四 = 后台任务 / 子代理。
 // Git 数据来自 useGitBadge（只在面板可见时订阅），主操作规则见 workspaceGitAction。
 // 位置：面板贴对话区右缘；内联常驻时通过 --chat-details-inset 让出内容宽度。
-import { useCallback, useContext, useEffect, useInsertionEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useInsertionEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import CursorIcon from '@lobehub/icons/es/Cursor/components/Mono'
 import WindsurfIcon from '@lobehub/icons/es/Windsurf/components/Mono'
@@ -14,7 +14,7 @@ import { notifyError } from '../../components/appNoticeStore'
 import { i18n, type Lang } from '../../components/i18n'
 import type { GitBranchesResult } from '../../api/dockContracts'
 import type { BackgroundTaskInfo } from '../../api/tauri'
-import { getRememberedEditor, getWorkspaceItemOverrides, getWorkspacePanelOpen, rememberEditor, rememberWorkspaceItemOverrides, rememberWorkspacePanelOpen } from '../persistence'
+import { getRememberedEditor, getWorkspaceItemOverrides, getWorkspacePanelOpen, rememberEditor, rememberWorkspaceItemOverrides, rememberWorkspacePanelOpen, subscribeWorkspacePanelOpen } from '../persistence'
 import { chatApi } from '../api'
 import { ChatRouteActiveContext } from '../chatRouteActiveContext'
 import { ConversationHistoryBranches, type HistoryBranchActions } from '../ConversationHistoryBranches'
@@ -194,18 +194,10 @@ function WorkspaceActionsPanel({
   contextState,
 }: WorkspaceActionsMenuProps & { inline: boolean }) {
   const t = i18n[lang]
-  const [inlineChoice, setInlineChoice] = useState(() => conversationId ? getWorkspacePanelOpen(conversationId) : null)
+  const autoOpen = useSyncExternalStore(subscribeWorkspacePanelOpen, getWorkspacePanelOpen)
   const [popoverOpen, setPopoverOpen] = useState(false)
-  const setChoice = useCallback((next: boolean) => {
-    if (inline) {
-      setInlineChoice(next)
-      if (conversationId) rememberWorkspacePanelOpen(conversationId, next)
-    } else setPopoverOpen(next)
-  }, [conversationId, inline])
-  // 项目对话（含还没开始的新对话）默认展开；无项目对话默认收起，点开后按对话记住。
-  const open = inline ? (inlineChoice ?? Boolean(projectName)) : popoverOpen
+  const open = inline ? (autoOpen ?? Boolean(projectName)) : popoverOpen
   const presence = usePresence(open)
-  const setOpen = (next: boolean) => { if (next || !inline) setChoice(next) }
   const showGit = Boolean(projectName)
   const { state, diffStat, loading: gitLoading, applyMutationState, refresh } = useGitBadge(open && showGit ? workdir : '', true)
   const tasks = useBackgroundTasks(conversationId)
@@ -239,7 +231,7 @@ function WorkspaceActionsPanel({
   }
   const { roster, refresh: refreshRoster } = useSubagentRoster(open ? conversationId : null)
 
-  // 浮层只临时打开，恢复内联布局后即关闭，不能覆盖常驻面板的收起选择。
+  // 窗口恢复内联布局时，清掉临时浮层状态。
   useLayoutEffect(() => { if (inline) setPopoverOpen(false) }, [inline])
   // 标题栏包含窗口按钮，不能用触发按钮的右缘代替聊天区右缘。
   useLayoutEffect(() => {
@@ -277,11 +269,11 @@ function WorkspaceActionsPanel({
     const onDown = (event: PointerEvent) => {
       const target = event.target as Element | null
       if (target?.closest?.(`[${PANEL_SCOPE_ATTR}]`) || wrapRef.current?.contains(target)) return
-      setChoice(false)
+      setPopoverOpen(false)
     }
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || document.querySelector('dialog[open]')) return
-      setChoice(false)
+      setPopoverOpen(false)
       wrapRef.current?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true })
     }
     document.addEventListener('pointerdown', onDown)
@@ -290,7 +282,7 @@ function WorkspaceActionsPanel({
       document.removeEventListener('pointerdown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [open, inline, setChoice])
+  }, [open, inline])
 
   // 打开浮层时把焦点移进面板，键盘可直接 Tab 操作；内联常驻不抢焦点。
   useEffect(() => {
@@ -483,7 +475,7 @@ function WorkspaceActionsPanel({
       <PanelRow
         icon={<AgentAvatar agentId={agent.id} />}
         title={agent.activity ?? undefined}
-        onClick={() => { setOpen(false); if (conversationId) requestDockSubagent({ conversationId, agentId: agent.id }) }}
+        onClick={() => { setPopoverOpen(false); if (conversationId) requestDockSubagent({ conversationId, agentId: agent.id }) }}
       >
         <span className="min-w-0 flex-1 truncate">{agent.displayName || agent.id}</span>
         <AgentStatus state={agent.status} zh={lang === 'zh'} />
@@ -513,7 +505,10 @@ function WorkspaceActionsPanel({
         label={runningTasks > 0 ? `${t.workspaceMenu} · ${tasksLabel}` : t.workspaceMenu}
         size="sm"
         variant="ghost"
-        onClick={() => setChoice(!open)}
+        onClick={() => {
+          rememberWorkspacePanelOpen(!open)
+          if (!inline) setPopoverOpen(!open)
+        }}
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-pressed={open && !inline}
@@ -700,7 +695,7 @@ function WorkspaceActionsPanel({
                   onCancel={() => setPublishing(false)}
                 />
               )}
-              {show.changes && <PanelRow icon={<FileDiff className={PANEL_ICON} />} onClick={onOpenGitPanel ? () => { setOpen(false); onOpenGitPanel() } : undefined}>
+              {show.changes && <PanelRow icon={<FileDiff className={PANEL_ICON} />} onClick={onOpenGitPanel ? () => { setPopoverOpen(false); onOpenGitPanel() } : undefined}>
                 <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
                   <span className="shrink-0">{t.workspaceChanges}</span>
                   <span className="min-w-0 truncate font-normal text-neutral-400">
@@ -737,20 +732,20 @@ function WorkspaceActionsPanel({
             <div className="flex items-center gap-2 px-2.5 pb-1 pt-1.5 text-[12px] font-medium text-neutral-400">
               <span className="min-w-0 flex-1">{t.chatBgJobs}</span>
               {runningTasks > 0 && <span aria-label={tasksLabel} className="shrink-0 text-success">{runningTasks}</span>}
-              {onOpenTasks && <IconButton label={t.dockTabTasks} variant="ghost" size="sm" onClick={() => { setOpen(false); onOpenTasks() }}>
+              {onOpenTasks && <IconButton label={t.dockTabTasks} variant="ghost" size="sm" onClick={() => { setPopoverOpen(false); onOpenTasks() }}>
                 <Activity size={14} />
               </IconButton>}
             </div>
             <div className="custom-scrollbar max-h-[13.5rem] overflow-y-auto">
               {activeTasks.map(task => <WorkspaceTaskRow key={`${task.source}:${task.id}`} task={task} conversationId={conversationId} lang={lang}
-                onOpen={onOpenTasks ? () => { setOpen(false); onOpenTasks() } : undefined} />)}
+                onOpen={onOpenTasks ? () => { setPopoverOpen(false); onOpenTasks() } : undefined} />)}
               {finishedTasks.length > 0 && <details className="group/finished-tasks">
                 <summary className={`${ITEM} list-none`}>
                   <ChevronRight size={14} className="shrink-0 transition-transform group-open/finished-tasks:rotate-90" aria-hidden="true" />
                   {t.chatBgFinished} · {finishedTasks.length}
                 </summary>
                 {finishedTasks.map(task => <WorkspaceTaskRow key={`${task.source}:${task.id}`} task={task} conversationId={conversationId} lang={lang}
-                  onOpen={onOpenTasks ? () => { setOpen(false); onOpenTasks() } : undefined} />)}
+                  onOpen={onOpenTasks ? () => { setPopoverOpen(false); onOpenTasks() } : undefined} />)}
               </details>}
             </div>
           </PanelSection>}

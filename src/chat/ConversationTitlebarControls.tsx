@@ -84,7 +84,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   usage,
   contextState,
 }: ConversationTitlebarControlsProps) {
-  // 工作区面板对所有 agent 对话可用；无项目对话里不含 Git，且默认收起（见 WorkspaceActionsMenu）。
+  // 工作区面板对所有 agent 对话可用；无项目对话里不含 Git。
   const conversationId = conversation?.id ?? null
   const showWorkspace = !usesChatRuntime
   return (

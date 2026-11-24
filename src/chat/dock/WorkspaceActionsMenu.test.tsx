@@ -8,6 +8,8 @@ import { getNotices } from '../../components/appNoticeStore'
 import type { SubagentRoster } from '../../api/subagents'
 import type { BackgroundTaskInfo } from '../../api/tauri'
 
+const panelStorageKey = 'kivio-chat-workspace-panel'
+
 const mocks = vi.hoisted(() => ({
   badge: { state: null as GitRepoState | null, diffStat: null, loading: false },
   badgeWorkdirs: [] as string[],
@@ -16,7 +18,6 @@ const mocks = vi.hoisted(() => ({
   tasks: [] as BackgroundTaskInfo[],
   stopBackgroundTask: vi.fn(),
   getBranches: vi.fn(),
-  panelChoice: new Map<string, boolean>(),
   itemOverrides: {} as Record<string, boolean>,
   rememberedEditor: null as string | null,
   rememberEditor: vi.fn(),
@@ -51,11 +52,10 @@ vi.mock('../useSubagentRoster', () => ({ useSubagentRoster: () => ({ roster: moc
 vi.mock('../AgentAvatar', () => ({ AgentAvatar: () => null }))
 vi.mock('../AgentProgress', () => ({ AgentStatus: () => null }))
 vi.mock('../api', () => ({ chatApi: { getBranches: mocks.getBranches, generateCommitMessage: mocks.generateCommitMessage } }))
-vi.mock('../persistence', () => ({
+vi.mock('../persistence', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../persistence')>(),
   getRememberedEditor: () => mocks.rememberedEditor,
   rememberEditor: mocks.rememberEditor,
-  getWorkspacePanelOpen: (id: string) => mocks.panelChoice.get(id) ?? null,
-  rememberWorkspacePanelOpen: (id: string, open: boolean) => { mocks.panelChoice.set(id, open) },
   getWorkspaceItemOverrides: () => mocks.itemOverrides,
   rememberWorkspaceItemOverrides: (next: Record<string, boolean>) => { mocks.itemOverrides = next },
 }))
@@ -86,7 +86,7 @@ beforeEach(() => {
   mocks.badgeWorkdirs = []
   mocks.tasks = []
   mocks.stopBackgroundTask.mockResolvedValue(undefined)
-  mocks.panelChoice.clear()
+  window.localStorage.removeItem(panelStorageKey)
   mocks.itemOverrides = {}
   mocks.rememberedEditor = null
   mocks.roster = null
@@ -122,13 +122,12 @@ describe('WorkspaceActionsMenu', () => {
       useLayoutEffect(() => {
         measured.push(document.documentElement.style.getPropertyValue('--chat-details-inset'))
       }, [id])
-      return <WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId={id} dockOpen={false} lang="zh" />
+      return <WorkspaceActionsMenu workdir="/repo" projectName={id === 'loose' ? null : 'Repo'} conversationId={id} dockOpen={false} lang="zh" />
     }
-    mocks.panelChoice.set('closed', false)
     const view = render(<Conversation id="first" />)
     measured.length = 0
     view.rerender(<Conversation id="second" />)
-    view.rerender(<Conversation id="closed" />)
+    view.rerender(<Conversation id="loose" />)
     view.rerender(<Conversation id="first" />)
     expect(measured).toEqual(['316px', '', '316px'])
   })
@@ -439,11 +438,8 @@ describe('WorkspaceActionsMenu', () => {
     expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
     view.rerender(<WorkspaceActionsMenu {...props} projectName={null} conversationId="loose" />)
     expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
-    expect(mocks.panelChoice.get('loose')).toBe(true)
     view.rerender(<WorkspaceActionsMenu {...props} projectName="Repo" conversationId="old" />)
-    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
-    expect(mocks.panelChoice.get('old')).toBe(false)
+    expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
   })
 
   it('omits folder rows for a chat without a working directory', () => {
@@ -451,8 +447,8 @@ describe('WorkspaceActionsMenu', () => {
     expect(within(panel).queryByRole('button', { name: /打开/ })).not.toBeInTheDocument()
   })
 
-  it('never restores an inline preference as an automatic popover on another conversation', () => {
-    mocks.panelChoice.set('saved-open', true)
+  it('never restores the auto-open preference as a popover on another conversation', () => {
+    window.localStorage.setItem(panelStorageKey, 'true')
     const props = { workdir: '/repo', projectName: 'Repo', dockOpen: true, inlineAllowed: false, lang: 'zh' as const }
     const view = render(<WorkspaceActionsMenu {...props} conversationId="first" />)
     view.rerender(<WorkspaceActionsMenu {...props} conversationId="saved-open" />)
@@ -460,28 +456,33 @@ describe('WorkspaceActionsMenu', () => {
     expect(mocks.badgeWorkdirs.every((workdir) => !workdir)).toBe(true)
   })
 
-  it('keeps inline and popover choices separate through window resizing', () => {
-    mocks.panelChoice.set('c1', false)
+  it('remembers titlebar toggles in a narrow window when the panel can open inline again', () => {
+    window.localStorage.setItem(panelStorageKey, 'false')
     const resize = (width: number) => act(() => {
       vi.stubGlobal('innerWidth', width)
       fireEvent(window, new Event('resize'))
     })
     resize(1200)
     render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen={false} lang="zh" />)
+    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
     resize(800)
-    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    const toggle = screen.getByRole('button', { name: /^工作区/ })
+    fireEvent.click(toggle)
     expect(screen.getByRole('dialog', { name: '工作区' })).toBeInTheDocument()
+    fireEvent.click(toggle)
     resize(1200)
     expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
-    expect(mocks.panelChoice.get('c1')).toBe(false)
     resize(800)
     expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
+    fireEvent.click(toggle)
+    resize(1200)
+    expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
   })
 
   it('restores an explicitly opened no-project panel after narrowing and widening the window', () => {
     render(<WorkspaceActionsMenu workdir="/repo" projectName={null} conversationId="new" dockOpen={false} lang="zh" />)
     fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
-    expect(mocks.panelChoice.get('new')).toBe(true)
+    expect(window.localStorage.getItem(panelStorageKey)).toBe('true')
     act(() => { vi.stubGlobal('innerWidth', 800); fireEvent(window, new Event('resize')) })
     expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
     act(() => { vi.stubGlobal('innerWidth', 1200); fireEvent(window, new Event('resize')) })
@@ -511,13 +512,37 @@ describe('WorkspaceActionsMenu', () => {
     expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
   })
 
-  it('keeps a manual collapse of a project chat across remounts', () => {
+  it('remembers the last manual toggle across projects, new chats and remounts', () => {
     const props = { workdir: '/repo', projectName: 'Repo', conversationId: 'new', dockOpen: false, lang: 'zh' as const }
     const view = render(<WorkspaceActionsMenu {...props} />)
     expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    expect(window.localStorage.getItem(panelStorageKey)).toBe('false')
+    view.rerender(<WorkspaceActionsMenu {...props} workdir="/other" projectName="Other" conversationId={null} />)
+    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
     view.unmount()
-    render(<WorkspaceActionsMenu {...props} />)
+    const reopened = render(<WorkspaceActionsMenu {...props} conversationId="other" />)
+    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    expect(window.localStorage.getItem(panelStorageKey)).toBe('true')
+    reopened.unmount()
+    render(<WorkspaceActionsMenu {...props} projectName={null} />)
+    expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
+  })
+
+  it('uses the most recent legacy toggle for any project', () => {
+    window.localStorage.setItem(panelStorageKey, '{"old-chat":true,"latest-chat":false}')
+    render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="new" dockOpen={false} lang="zh" />)
+    expect(screen.getByRole('button', { name: /^工作区/ })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('responds to a workspace preference change from another window', () => {
+    render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen={false} lang="zh" />)
+    expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
+    act(() => {
+      window.localStorage.setItem(panelStorageKey, 'false')
+      window.dispatchEvent(new StorageEvent('storage', { key: panelStorageKey }))
+    })
     expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
   })
 
@@ -668,5 +693,6 @@ describe('WorkspaceActionsMenu', () => {
     expect(screen.getByRole('dialog', { name: '工作区' })).toBeInTheDocument()
     act(() => { fireEvent.keyDown(document, { key: 'Escape' }) })
     expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
+    expect(window.localStorage.getItem(panelStorageKey)).toBe('true')
   })
 })

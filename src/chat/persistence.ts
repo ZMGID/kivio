@@ -55,9 +55,11 @@ function getLocalStorageItem(key: string): string | null {
 
 function setLocalStorageItem(key: string, value: string) {
   try {
-    window.localStorage?.setItem(key, value)
+    window.localStorage.setItem(key, value)
+    return true
   } catch {
     // Storage can be unavailable in restricted previews. Chat still works without persistence.
+    return false
   }
 }
 
@@ -328,33 +330,42 @@ export function rememberEditor(editor: string) {
   setLocalStorageItem(CHAT_PREFERRED_EDITOR_KEY, editor)
 }
 
-// ---------- 工作区面板：按对话记住内联展开/收起 ----------
+// ---------- 工作区面板：全局记住最后一次手动开关 ----------
 
 const CHAT_WORKSPACE_PANEL_KEY = 'kivio-chat-workspace-panel'
-const WORKSPACE_PANEL_MAX_ENTRIES = 300
+const workspacePanelListeners = new Set<() => void>()
+let workspacePanelOpenInMemory: boolean | null = null
 
-function readWorkspacePanelMap(): Record<string, boolean> {
+export function getWorkspacePanelOpen(): boolean | null {
+  if (workspacePanelOpenInMemory !== null) return workspacePanelOpenInMemory
+  const raw = getLocalStorageItem(CHAT_WORKSPACE_PANEL_KEY)
+  if (raw === null) return null
+  if (raw === 'true' || raw === 'false') return raw === 'true'
   try {
-    const parsed = JSON.parse(getLocalStorageItem(CHAT_WORKSPACE_PANEL_KEY) ?? '{}')
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, boolean> : {}
+    const legacy: unknown = JSON.parse(raw)
+    if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return null
+    // 旧版每次先删除再插入该对话的选择，最后一项就是最近一次操作。
+    return Object.values(legacy).reverse().find((value: unknown): value is boolean => typeof value === 'boolean') ?? null
   } catch {
-    return {}
+    return null
   }
 }
 
-/** null = 用户没对这条对话操作过，按默认规则决定。 */
-export function getWorkspacePanelOpen(conversationId: string): boolean | null {
-  const value = readWorkspacePanelMap()[conversationId]
-  return typeof value === 'boolean' ? value : null
+export function subscribeWorkspacePanelOpen(listener: () => void) {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === CHAT_WORKSPACE_PANEL_KEY || event.key === null) listener()
+  }
+  workspacePanelListeners.add(listener)
+  window.addEventListener('storage', onStorage)
+  return () => {
+    workspacePanelListeners.delete(listener)
+    window.removeEventListener('storage', onStorage)
+  }
 }
 
-export function rememberWorkspacePanelOpen(conversationId: string, open: boolean) {
-  const map = readWorkspacePanelMap()
-  delete map[conversationId]
-  map[conversationId] = open
-  const keys = Object.keys(map)
-  for (const key of keys.slice(0, Math.max(0, keys.length - WORKSPACE_PANEL_MAX_ENTRIES))) delete map[key]
-  setLocalStorageItem(CHAT_WORKSPACE_PANEL_KEY, JSON.stringify(map))
+export function rememberWorkspacePanelOpen(open: boolean) {
+  workspacePanelOpenInMemory = setLocalStorageItem(CHAT_WORKSPACE_PANEL_KEY, String(open)) ? null : open
+  for (const listener of workspacePanelListeners) listener()
 }
 
 // ---------- 工作区面板：显示哪些项（参照 T3 的 threadDetailsItems，只存与默认不同的选择） ----------
