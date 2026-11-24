@@ -2275,7 +2275,9 @@ where
     .map_err(|_| "Pi 导入会话校验超时".to_string())?
     .map_err(|_| "Pi 无法确认已打开导入的会话".to_string())?;
     let actual_id = response.pointer("/data/sessionId").and_then(Value::as_str);
-    let actual_path = response.pointer("/data/sessionFile").and_then(Value::as_str);
+    let actual_path = response
+        .pointer("/data/sessionFile")
+        .and_then(Value::as_str);
     let has_messages = response
         .pointer("/data/messageCount")
         .and_then(Value::as_u64)
@@ -2841,10 +2843,18 @@ mod tests {
                 "data": { "sessionId": id, "sessionFile": source, "messageCount": count }
             });
             let peer = tokio::spawn(async move {
-                let request = BufReader::new(server_stdin).lines().next_line().await.unwrap().unwrap();
+                let request = BufReader::new(server_stdin)
+                    .lines()
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .unwrap();
                 let request: Value = serde_json::from_str(&request).unwrap();
                 assert_eq!(request["type"], "get_state");
-                server_stdout.write_all(format!("{response}\n").as_bytes()).await.unwrap();
+                server_stdout
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
             });
             let result = confirm_pi_import_resume(
                 &mut BufReader::new(stdout).lines(),

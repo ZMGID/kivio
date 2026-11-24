@@ -1819,11 +1819,8 @@ where
         } else {
             None
         };
-        let imported_source = super::import::imported_pi_source(
-            app,
-            conversation_id,
-            resumable_native.as_deref(),
-        );
+        let imported_source =
+            super::import::imported_pi_source(app, conversation_id, resumable_native.as_deref());
         let mut session = crate::external_agents::session::pi_rpc::PiRpcSession::connect(
             resolved_bin,
             &turn_args,
@@ -2301,8 +2298,9 @@ async fn publish_live_session(
                         )?;
                     }
                     if handle.agent_id == "pi" && handle.native_path.is_none() {
-                        handle.native_path = super::import::imported_pi_source(app, id, Some(&handle.native_id))
-                            .map(|path| path.to_string_lossy().into_owned());
+                        handle.native_path =
+                            super::import::imported_pi_source(app, id, Some(&handle.native_id))
+                                .map(|path| path.to_string_lossy().into_owned());
                     }
                     lease.publish(session, || save_live_binding(app, id, &handle))
                 })
@@ -4380,7 +4378,9 @@ async fn connect_persistent_session(
                         // `session/open` and creating a fresh `kivio-*` id made save_live_handle
                         // overwrite the real binding. Missing-session is classified one layer up.
                         let imported = super::import::load_import_record(app, conversation_id)
-                            .is_some_and(|record| record.agent_id == "dsh" && record.session_id == sid);
+                            .is_some_and(|record| {
+                                record.agent_id == "dsh" && record.session_id == sid
+                            });
                         let session = DshJsonRpcSession::connect(
                             resolved_bin,
                             args,

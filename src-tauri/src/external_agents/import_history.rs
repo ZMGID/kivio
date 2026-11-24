@@ -992,12 +992,7 @@ fn append_acp_text(pending: &mut Pending, update: &Value, is_reasoning: bool) {
             .get_or_insert_with(String::new)
             .push_str(&collected);
     } else {
-        pending.push_segment(
-            kind,
-            ChatMessageSegmentPhase::Plain,
-            Some(collected),
-            None,
-        );
+        pending.push_segment(kind, ChatMessageSegmentPhase::Plain, Some(collected), None);
     }
 }
 
@@ -1061,7 +1056,10 @@ mod tests {
         let messages = parse_acp_updates(&updates);
         let message = &messages[0].message;
         assert_eq!(message.segments.len(), 3);
-        assert_eq!(message.segments[0].text.as_deref(), Some("Checking the file."));
+        assert_eq!(
+            message.segments[0].text.as_deref(),
+            Some("Checking the file.")
+        );
         assert_eq!(message.segments[1].tool_call_id.as_deref(), Some("read"));
         assert_eq!(message.segments[2].text.as_deref(), Some("Done."));
         assert_eq!(

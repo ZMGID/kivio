@@ -18,7 +18,9 @@ pub(crate) async fn chat_read_attachment(
     workspace_relative: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let workspace_path = if workspace_relative.unwrap_or(false) {
-        if conversation_id.as_deref().is_none_or(|id| id.trim().is_empty())
+        if conversation_id
+            .as_deref()
+            .is_none_or(|id| id.trim().is_empty())
             || path.starts_with(['/', '\\'])
             || path.contains(':')
             || !mime_type_for_attachment(&path).starts_with("image/")

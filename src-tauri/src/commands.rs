@@ -701,7 +701,10 @@ fn local_file_path_from_href(
     base: Option<&std::path::Path>,
 ) -> Result<PathBuf, String> {
     let href = href.trim();
-    let raw = if href.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://")) {
+    let raw = if href
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
+    {
         // 走 url crate 而不是手撕前缀：`file:///a%20b.html` 这类百分号编码得正确还原。
         url::Url::parse(href)
             .map_err(|e| format!("无法解析 file URL：{e}"))?
@@ -743,7 +746,9 @@ pub(crate) async fn resolve_local_file_link(
 ) -> Result<PathBuf, String> {
     let needs_base = {
         let trimmed = href.trim();
-        !trimmed.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
+        !trimmed
+            .get(..7)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
             && !std::path::Path::new(trimmed).is_absolute()
     };
     let base = if needs_base {
