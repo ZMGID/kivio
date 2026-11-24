@@ -59,6 +59,9 @@ impl PersistedQuota {
         def: &RuntimeAgentDef,
     ) -> Option<PathBuf> {
         account_type(def.account?.protocol)?;
+        if def.account?.protocol == AccountProtocol::KimiWeb {
+            return None;
+        }
         Some(usage_dir.join(format!("{}-quota-v1.json", def.id)))
     }
 
@@ -436,7 +439,7 @@ key = "oauth/kimi-code"
 
         fn disk(&self) -> Option<PersistedQuota> {
             PersistedQuota::for_profile(
-                Some(self.path()),
+                PersistedQuota::path(self.directory.path(), self.def),
                 self.def,
                 self.home.clone(),
                 self.workspace.clone(),
@@ -667,91 +670,100 @@ key = "oauth/kimi-code"
         assert!(profile.disk().is_none());
     }
 
+    #[test]
+    fn kimi_uses_only_credential_file_metadata_and_skips_disk_cache() {
+        let profile = Profile::new("kimi");
+        fs::write(
+            profile.home.join("credentials/kimi-code.json"),
+            b"opaque native format",
+        )
+        .unwrap();
+        assert!(PersistedQuota::path(profile.directory.path(), profile.def).is_none());
+        let binding = profile.disk().unwrap();
+        assert!(binding.matches_current_profile());
+        profile.login("different-account", "rotated");
+        assert!(!binding.matches_current_profile());
+    }
+
     #[tokio::test]
-    async fn grok_and_kimi_reopen_the_owned_reading_and_hide_it_after_a_login_change() {
-        for (agent, kind, plan, credential) in [
-            ("grok", "grok", "SuperGrok", "auth.json"),
-            ("kimi", "kimiCode", "Andante", "credentials/kimi-code.json"),
-        ] {
-            let profile = Profile::new(agent);
-            let quota = || {
-                let mut reading = reported();
-                reading.snapshot["agentId"] = json!(agent);
-                reading.snapshot["account"]["type"] = json!(kind);
-                reading.snapshot["account"]["plan"] = json!(plan);
-                reading
-            };
-            let first = AccountSnapshots::default();
-            assert!(
-                profile
-                    .read(&first, AccountSnapshotMode::Automatic, || Ok(quota()))
-                    .await
-                    .1
-            );
-            let content = fs::read_to_string(profile.path()).unwrap();
-            for private in [
-                "profile-user-one",
-                "workspace-fixture",
-                "fixture-token-one",
-                "user@example.test",
-                "balance",
-            ] {
-                assert!(!content.contains(private));
-            }
-            if agent == "grok" {
-                profile.login("profile-user-one", "rotated");
-            }
-            let restarted = AccountSnapshots::default();
-            let (restored, updated) = profile
-                .read(&restarted, AccountSnapshotMode::Cached, || {
-                    panic!("cached read must not launch a quota probe")
-                })
-                .await;
-            assert!(!updated);
-            let restored = restored.unwrap();
-            assert_eq!(restored["agentId"], agent);
-            assert_eq!(restored["account"]["plan"], plan);
-            assert_eq!(restored["windows"][0]["usedPercent"], 51.0);
-            let (stale, _) = profile
-                .read(
-                    &AccountSnapshots::default(),
-                    AccountSnapshotMode::Automatic,
-                    || Err("temporary error".into()),
-                )
-                .await;
-            let stale = stale.unwrap();
-            assert_eq!(stale["refreshError"], "temporary error");
-            assert_eq!(stale["windows"], restored["windows"]);
-
-            let raced = profile
-                .read(&restarted, AccountSnapshotMode::Refresh, || {
-                    profile.login("different-user", "switched-token");
-                    Ok(quota())
-                })
-                .await;
-            assert_eq!(raced, (None, false));
-            assert_eq!(fs::read_to_string(profile.path()).unwrap(), content);
-            assert_eq!(
-                profile
-                    .read(&restarted, AccountSnapshotMode::Cached, || panic!(
-                        "no probe"
-                    ))
-                    .await,
-                (None, false)
-            );
-
+    async fn grok_reopens_the_owned_reading_and_hides_it_after_a_login_change() {
+        let (agent, kind, plan, credential) = ("grok", "grok", "SuperGrok", "auth.json");
+        let profile = Profile::new(agent);
+        let quota = || {
+            let mut reading = reported();
+            reading.snapshot["agentId"] = json!(agent);
+            reading.snapshot["account"]["type"] = json!(kind);
+            reading.snapshot["account"]["plan"] = json!(plan);
+            reading
+        };
+        let first = AccountSnapshots::default();
+        assert!(
             profile
-                .read(&restarted, AccountSnapshotMode::Refresh, || Ok(quota()))
-                .await;
-            fs::remove_file(profile.home.join(credential)).unwrap();
-            assert_eq!(
-                profile
-                    .read(&restarted, AccountSnapshotMode::Cached, || panic!(
-                        "no probe"
-                    ))
-                    .await,
-                (None, false)
-            );
+                .read(&first, AccountSnapshotMode::Automatic, || Ok(quota()))
+                .await
+                .1
+        );
+        let content = fs::read_to_string(profile.path()).unwrap();
+        for private in [
+            "profile-user-one",
+            "workspace-fixture",
+            "fixture-token-one",
+            "user@example.test",
+            "balance",
+        ] {
+            assert!(!content.contains(private));
         }
+        profile.login("profile-user-one", "rotated");
+        let restarted = AccountSnapshots::default();
+        let (restored, updated) = profile
+            .read(&restarted, AccountSnapshotMode::Cached, || {
+                panic!("cached read must not launch a quota probe")
+            })
+            .await;
+        assert!(!updated);
+        let restored = restored.unwrap();
+        assert_eq!(restored["agentId"], agent);
+        assert_eq!(restored["account"]["plan"], plan);
+        assert_eq!(restored["windows"][0]["usedPercent"], 51.0);
+        let (stale, _) = profile
+            .read(
+                &AccountSnapshots::default(),
+                AccountSnapshotMode::Automatic,
+                || Err("temporary error".into()),
+            )
+            .await;
+        let stale = stale.unwrap();
+        assert_eq!(stale["refreshError"], "temporary error");
+        assert_eq!(stale["windows"], restored["windows"]);
+
+        let raced = profile
+            .read(&restarted, AccountSnapshotMode::Refresh, || {
+                profile.login("different-user", "switched-token");
+                Ok(quota())
+            })
+            .await;
+        assert_eq!(raced, (None, false));
+        assert_eq!(fs::read_to_string(profile.path()).unwrap(), content);
+        assert_eq!(
+            profile
+                .read(&restarted, AccountSnapshotMode::Cached, || panic!(
+                    "no probe"
+                ))
+                .await,
+            (None, false)
+        );
+
+        profile
+            .read(&restarted, AccountSnapshotMode::Refresh, || Ok(quota()))
+            .await;
+        fs::remove_file(profile.home.join(credential)).unwrap();
+        assert_eq!(
+            profile
+                .read(&restarted, AccountSnapshotMode::Cached, || panic!(
+                    "no probe"
+                ))
+                .await,
+            (None, false)
+        );
     }
 }

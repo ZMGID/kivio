@@ -3,7 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
@@ -91,11 +90,18 @@ pub(super) fn quota_owner(home: &Path) -> Option<String> {
     if oauth.get("key")?.as_str()? != format!("oauth/{key}") {
         return None;
     }
-    let token: Value =
-        serde_json::from_slice(&read_small(&credentials.join(format!("{key}.json"))).ok()?).ok()?;
-    let access = super::display_text(&token["access_token"])?;
-    let refresh = super::display_text(&token["refresh_token"])?;
-    // Kimi's file has no stable account id. A different or rotated credential must
-    // establish a fresh reading before it can reuse the disk cache.
-    fingerprint(&(home, base_url, key, access, refresh))
+    // This is an in-process invalidation hint. Only the native CLI reads OAuth tokens.
+    let slot = credentials.join(format!("{key}.json"));
+    let metadata = fs::symlink_metadata(&slot).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    fingerprint(&(
+        home,
+        base_url,
+        key,
+        metadata.len(),
+        metadata.modified().ok()?,
+        metadata.created().ok(),
+    ))
 }
