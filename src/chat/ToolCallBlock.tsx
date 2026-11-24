@@ -1761,14 +1761,14 @@ export function ToolCallCluster({
     : ''
 
   return (
-    <div className="not-prose mb-1 min-w-0 text-[15px] leading-6 text-[var(--text-muted)]" data-tool-call-cluster>
+    <div className="not-prose min-w-0 py-1 text-[15px] leading-6 text-[var(--text-muted)]" data-tool-call-cluster>
       <button
         type="button"
         aria-expanded={open}
         title={reasoningOnly && (activityCount ?? segments.length) === 1 ? (open ? t.chatMsgThinkingCollapse : t.chatMsgThinkingExpand) : undefined}
         data-chat-disclosure
         data-tauri-drag-region="false"
-        className="flex min-h-6 w-full min-w-0 items-center gap-1.5 rounded-md text-left transition-colors hover:text-[var(--text)]"
+        className="flex min-h-6 w-full min-w-0 items-center gap-2 rounded-md text-left text-[13px]/5 font-normal transition-colors hover:text-foreground focus-visible:text-foreground [&>svg:first-child]:grayscale"
         onClick={() => {
           if (!open) onExpand?.()
           setOpen(!open)
@@ -1776,7 +1776,7 @@ export function ToolCallCluster({
       >
         {showReasoning ? <Brain size={14} className="shrink-0 text-neutral-400 dark:text-neutral-500" /> :
           currentTool && displayStatus ? <ToolTypeIcon toolCall={currentTool} status={displayStatus} /> : <Wrench size={14} className="shrink-0" />}
-        <span className={`max-w-full shrink-0 truncate font-medium text-[var(--text)]${activeTool && currentStatus === 'running' ? ' chat-motion-tool-shimmer' : ''}`}>
+        <span className={`min-w-0 truncate${activeTool && currentStatus === 'running' ? ' chat-motion-tool-shimmer' : ''}`}>
           {open ? t.chatToolActivitiesCount.replace('{n}', String(activityCount ?? segments.length)) :
             showReasoning ? (messageStreaming && latestReasoning?.streaming ? 'Thinking…' : 'Thought') :
               messageStreaming && currentTool ? (imageRead

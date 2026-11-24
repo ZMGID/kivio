@@ -3,21 +3,40 @@ use tauri::AppHandle;
 use tauri_plugin_shell::ShellExt;
 
 use crate::chat::attachments::{
-    inspect_attachment_sources, read_attachment_as_data_url, resolve_attachment_file_path,
-    save_pasted_attachment, save_pasted_image, InspectedAttachment, PastedAttachmentSave,
-    PastedImageSave,
+    inspect_attachment_sources, mime_type_for_attachment, read_attachment_as_data_url,
+    resolve_attachment_file_path, save_pasted_attachment, save_pasted_image, InspectedAttachment,
+    PastedAttachmentSave, PastedImageSave,
 };
 
-/// 读取附件为 data URL，供前端 `<img>` 预览。`conversation_id` 为空时按本机绝对路径读取（发送前预览）。
+/// 读取附件为 data URL。工作目录图片则按对话解析相对路径，并返回原图的绝对路径。
 #[tauri::command]
 pub(crate) async fn chat_read_attachment(
     app: AppHandle,
     conversation_id: Option<String>,
     path: String,
     thumbnail: Option<bool>,
+    workspace_relative: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    let workspace_path = if workspace_relative.unwrap_or(false) {
+        if conversation_id.as_deref().is_none_or(|id| id.trim().is_empty())
+            || path.starts_with(['/', '\\'])
+            || path.contains(':')
+            || !mime_type_for_attachment(&path).starts_with("image/")
+        {
+            return Err("无效的工作目录图片路径".to_string());
+        }
+        Some(
+            crate::commands::resolve_local_file_link(app.clone(), &path, conversation_id.clone())
+                .await?,
+        )
+    } else {
+        None
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        let full = resolve_attachment_file_path(&app, conversation_id.as_deref(), &path)?;
+        let full = match &workspace_path {
+            Some(path) => path.clone(),
+            None => resolve_attachment_file_path(&app, conversation_id.as_deref(), &path)?,
+        };
         let data_url = if thumbnail.unwrap_or(false) {
             crate::chat::attachments::read_attachment_thumbnail(&full)?
         } else {
@@ -26,6 +45,7 @@ pub(crate) async fn chat_read_attachment(
         Ok(serde_json::json!({
             "success": true,
             "data": data_url,
+            "path": workspace_path.as_ref().map(|path| path.to_string_lossy()),
         }))
     })
     .await

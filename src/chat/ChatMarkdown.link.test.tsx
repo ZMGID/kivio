@@ -79,6 +79,12 @@ describe('ChatMarkdown 链接点击', () => {
     expect(openLocalFile).toHaveBeenCalledWith('/tmp/board/index.html', null)
   })
 
+  it('opens a Windows file link written with a leading slash', () => {
+    const event = clickLink('[截图](/C:/Work/Kivio/output/chart.png)')
+    expect(event.defaultPrevented).toBe(true)
+    expect(openLocalFile).toHaveBeenCalledWith('C:/Work/Kivio/output/chart.png', null)
+  })
+
   it('相对路径也交给后端（按会话工作目录解析），绝不放行默认导航', () => {
     const event = clickLink('[看板](assets/index.html)')
     expect(event.defaultPrevented).toBe(true)

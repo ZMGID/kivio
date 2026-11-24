@@ -205,7 +205,7 @@ fn extension_for_image_mime(mime_type: &str) -> &'static str {
     }
 }
 
-fn mime_type_for_attachment(name: &str) -> &'static str {
+pub(crate) fn mime_type_for_attachment(name: &str) -> &'static str {
     let ext = Path::new(name)
         .extension()
         .and_then(|ext| ext.to_str())

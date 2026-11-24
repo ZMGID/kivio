@@ -1,10 +1,6 @@
-import { FolderIcon as FolderOpen } from '../components/FileIcon'
-import { useT } from '../components/i18n'
-
-import { useState } from 'react'
 import { FileIcon } from '../components/FileIcon'
 import { fileKindVisual, folderKindVisual } from '../components/fileIconVisual'
-import { DockContextMenu, type DockMenuAnchor } from './dock/DockContextMenu'
+import { useFileLocationMenu } from './useFileLocationMenu'
 
 /** 正文里本地文件链接前的类型图标；与附件卡片共用同一份类型映射。 */
 export function FileKindIcon({ name, folder = false }: { name: string; folder?: boolean }) {
@@ -28,30 +24,15 @@ export function FileChip({
   variant?: 'card' | 'inline' | 'compact'
   onRevealLocation?: () => Promise<void>
 }) {
-  const t = useT()
-  const [menuAnchor, setMenuAnchor] = useState<DockMenuAnchor | null>(null)
-  const [locationError, setLocationError] = useState(false)
+  const { onContextMenu, menu } = useFileLocationMenu(onRevealLocation)
   const visual = kind === 'folder' ? folderKindVisual() : fileKindVisual(name)
-  const contextMenu = onRevealLocation ? (event: React.MouseEvent) => {
-    event.preventDefault()
-    event.stopPropagation()
-    setLocationError(false)
-    setMenuAnchor({ left: event.clientX, top: event.clientY })
-  } : undefined
-  const menu = <>
-    {menuAnchor && onRevealLocation && <DockContextMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} items={[{
-      key: 'reveal', label: t.chatMsgRevealLocation, icon: <FolderOpen open size={16} />,
-      onSelect: () => { void onRevealLocation().catch(() => setLocationError(true)) },
-    }]} />}
-    {locationError && <span role="status" className="ml-1 text-xs text-neutral-500">{t.chatMsgRevealLocationFailed}</span>}
-  </>
   if (variant === 'inline') {
     return (
       <>
       <button
         type="button"
         onClick={onClick}
-        onContextMenu={contextMenu}
+        onContextMenu={onContextMenu}
         className="inline max-w-full cursor-pointer rounded-sm border-0 bg-transparent p-0 text-left align-baseline text-blue-600 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] dark:text-blue-400"
         style={{ font: 'inherit', overflowWrap: 'anywhere' }}
         title={name}
@@ -69,7 +50,7 @@ export function FileChip({
     <button
       type="button"
       onClick={onClick}
-      onContextMenu={contextMenu}
+      onContextMenu={onContextMenu}
       className={`flex shrink-0 items-center gap-2 rounded-lg border border-neutral-200/90 bg-neutral-50 text-left hover:bg-neutral-100 ${variant === 'compact' ? 'h-8 w-[18rem] max-w-full px-2' : 'h-16 w-[9.5rem] px-1.5'}`}
       title={name}
       aria-label={ariaLabel ?? name}

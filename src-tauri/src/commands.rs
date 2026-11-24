@@ -701,7 +701,7 @@ fn local_file_path_from_href(
     base: Option<&std::path::Path>,
 ) -> Result<PathBuf, String> {
     let href = href.trim();
-    let raw = if href.len() >= 7 && href[..7].eq_ignore_ascii_case("file://") {
+    let raw = if href.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://")) {
         // 走 url crate 而不是手撕前缀：`file:///a%20b.html` 这类百分号编码得正确还原。
         url::Url::parse(href)
             .map_err(|e| format!("无法解析 file URL：{e}"))?
@@ -734,13 +734,32 @@ fn local_file_path_from_href(
     Ok(path)
 }
 
-/// 用系统默认程序打开**本地文件**（模型输出里的 `file://` / 绝对路径 / 相对路径链接）。
-///
-/// 与 `open_external`（只认 http(s)）分开而不是放宽它：把关方式完全不同——见
-/// `local_file_path_from_href` 与 `EXECUTABLE_LOCAL_EXTENSIONS`。
-///
 /// 相对路径的基准取 `dock_resolve_cwd`——**与 agent 实际写文件的目录同一个解析器**（右侧
 /// Dock 也用它）。CLI 写完文件常给一条 `assets/index.html` 这样的相对链接。
+pub(crate) async fn resolve_local_file_link(
+    app: AppHandle,
+    href: &str,
+    conversation_id: Option<String>,
+) -> Result<PathBuf, String> {
+    let needs_base = {
+        let trimmed = href.trim();
+        !trimmed.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
+            && !std::path::Path::new(trimmed).is_absolute()
+    };
+    let base = if needs_base {
+        let id = conversation_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        match crate::dock::dock_resolve_cwd(app, id, None).await {
+            Ok(dir) => Some(PathBuf::from(dir)),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    local_file_path_from_href(href, base.as_deref())
+}
+
 #[tauri::command]
 #[allow(deprecated)]
 pub(crate) async fn open_local_file(
@@ -748,25 +767,19 @@ pub(crate) async fn open_local_file(
     href: String,
     conversation_id: Option<String>,
 ) -> Result<(), String> {
-    let needs_base = {
-        let trimmed = href.trim();
-        !(trimmed.len() >= 7 && trimmed[..7].eq_ignore_ascii_case("file://"))
-            && !std::path::Path::new(trimmed).is_absolute()
-    };
-    let base = if needs_base {
-        let id = conversation_id
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        match crate::dock::dock_resolve_cwd(app.clone(), id, None).await {
-            Ok(dir) => Some(PathBuf::from(dir)),
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
-    let path = local_file_path_from_href(&href, base.as_deref())?;
+    let path = resolve_local_file_link(app.clone(), &href, conversation_id).await?;
     let path_str = path.to_str().ok_or_else(|| "路径不是 UTF-8".to_string())?;
     app.shell().open(path_str, None).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn reveal_local_file(
+    app: AppHandle,
+    path: String,
+    conversation_id: Option<String>,
+) -> Result<(), String> {
+    let path = resolve_local_file_link(app, &path, conversation_id).await?;
+    crate::dock::fs::reveal_file_in_manager(&path)
 }
 
 /// data URL → 临时文件名（只保留 basename，挡住 `../` 与目录分隔符）。

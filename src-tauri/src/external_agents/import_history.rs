@@ -920,6 +920,15 @@ pub fn parse_acp_updates(updates: &[Value]) -> Vec<ImportedMessage> {
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "{}".to_string());
                 pending.push_tool(id, name, arguments);
+                if let (Some(record), Some(kind)) = (
+                    pending.tool_calls.last_mut(),
+                    update.get("kind").and_then(Value::as_str),
+                ) {
+                    record.structured_content = Some(serde_json::json!({
+                        "sessionUpdate": "tool_call",
+                        "kind": kind,
+                    }));
+                }
                 apply_acp_tool_status(&mut pending, &mut out, update);
             }
             "tool_call_update" => apply_acp_tool_status(&mut pending, &mut out, update),
@@ -955,44 +964,40 @@ fn append_acp_text(pending: &mut Pending, update: &Value, is_reasoning: bool) {
         }
         _ => {}
     }
-    if collected.trim().is_empty() {
+    let kind = if is_reasoning {
+        ChatMessageSegmentKind::Reasoning
+    } else {
+        ChatMessageSegmentKind::Text
+    };
+    let adjacent = pending
+        .segments
+        .last()
+        .is_some_and(|segment| segment.kind == kind);
+    if collected.is_empty() || (!adjacent && collected.trim().is_empty()) {
         return;
     }
-    // chunk 是逐片来的：直接续在末尾，不额外插换行，也不新起一个段落——
-    // 每片一个段落会让一句话在界面上碎成一串。
     let target = if is_reasoning {
         &mut pending.reasoning
     } else {
         &mut pending.text
     };
-    let fresh = target.is_empty();
     target.push_str(&collected);
-    if fresh {
-        let kind = if is_reasoning {
-            ChatMessageSegmentKind::Reasoning
-        } else {
-            ChatMessageSegmentKind::Text
-        };
+    if let Some(segment) = pending
+        .segments
+        .last_mut()
+        .filter(|segment| segment.kind == kind)
+    {
+        segment
+            .text
+            .get_or_insert_with(String::new)
+            .push_str(&collected);
+    } else {
         pending.push_segment(
             kind,
             ChatMessageSegmentPhase::Plain,
-            Some(String::new()),
+            Some(collected),
             None,
         );
-    }
-    // 段落文本跟着累积的正文走，避免和 `content` 不一致。
-    let latest = if is_reasoning {
-        pending.reasoning.clone()
-    } else {
-        pending.text.clone()
-    };
-    let want = if is_reasoning {
-        ChatMessageSegmentKind::Reasoning
-    } else {
-        ChatMessageSegmentKind::Text
-    };
-    if let Some(segment) = pending.segments.iter_mut().rev().find(|s| s.kind == want) {
-        segment.text = Some(latest);
     }
 }
 
@@ -1040,6 +1045,32 @@ mod tests {
 
     fn jsonl(lines: &[&str]) -> String {
         lines.join("\n")
+    }
+
+    #[test]
+    fn acp_import_keeps_text_and_tool_steps_in_order() {
+        use serde_json::json;
+        let updates = [
+            json!({"sessionUpdate":"agent_message_chunk","content":{"text":"Checking"}}),
+            json!({"sessionUpdate":"agent_message_chunk","content":{"text":" "}}),
+            json!({"sessionUpdate":"agent_message_chunk","content":{"text":"the file."}}),
+            json!({"sessionUpdate":"tool_call","toolCallId":"read","title":"Check the fixture","kind":"read","rawInput":{"path":"probe.txt"}}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"read","status":"completed"}),
+            json!({"sessionUpdate":"agent_message_chunk","content":{"text":"Done."}}),
+        ];
+        let messages = parse_acp_updates(&updates);
+        let message = &messages[0].message;
+        assert_eq!(message.segments.len(), 3);
+        assert_eq!(message.segments[0].text.as_deref(), Some("Checking the file."));
+        assert_eq!(message.segments[1].tool_call_id.as_deref(), Some("read"));
+        assert_eq!(message.segments[2].text.as_deref(), Some("Done."));
+        assert_eq!(
+            message.tool_calls[0]
+                .structured_content
+                .as_ref()
+                .and_then(|payload| payload.get("kind")),
+            Some(&json!("read"))
+        );
     }
 
     #[test]

@@ -222,6 +222,17 @@ describe('groupTimelineSegments', () => {
 })
 
 describe('summarizeToolGroup', () => {
+  it.each([
+    { name: 'view_file', arguments: { path: 'probe.txt' }, text: '读取 1 个文件' },
+    { name: 'Read the fixture', arguments: { sessionUpdate: 'tool_call', kind: 'read', rawInput: { path: 'probe.txt' } }, text: '读取 1 个文件' },
+    { name: 'Check the output', arguments: { sessionUpdate: 'tool_call', kind: 'execute' }, text: '执行 1 条命令' },
+  ])('uses recorded CLI tool metadata for $name', ({ name, arguments: args, text }) => {
+    const summary = summarizeToolGroup([toolSegment('t1', 1, 'c1')], [
+      tool({ id: 'c1', name, source: 'external_cli', arguments: args }),
+    ])
+    expect(summary.text).toBe(text)
+  })
+
   it('summarizes a single category with file count (done)', () => {
     const segments = [toolSegment('t1', 1, 'c1'), toolSegment('t2', 2, 'c2')]
     const toolCalls = [

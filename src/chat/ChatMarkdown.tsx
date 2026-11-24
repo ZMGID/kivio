@@ -21,10 +21,11 @@ import { artifactReferenceId } from './artifactReferences'
 import { artifactId } from './artifactPresentation'
 import { ArtifactFileChip } from './GeneratedFileArtifacts'
 import { FileKindIcon } from './fileChip'
+import { useFileLocationMenu } from './useFileLocationMenu'
 import { isSourceCodeFile } from '../components/fileIconVisual'
 import { requestDockPreview } from './dock/dockPreview'
 import { SiteIcon } from './linkSiteIcon'
-import { loadArtifactDataUrl } from './attachmentPreview'
+import { loadArtifactDataUrl, loadAttachmentDataUrl, loadWorkspaceImagePreview } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
 import { citationKey, citationMapsEqual, remarkCitations, type CitationKey, type CitationView } from './citations'
 import { citationPopoverPosition, type CitationPopoverPosition } from './citationPopover'
@@ -44,7 +45,7 @@ import { readThemeKey, readThemeToken, useThemeKey } from './chatTheme'
 import { useConversationTransition } from './conversationTransitionStore'
 import { api } from '../api/tauri'
 import { copyToClipboard } from '../utils/clipboard'
-import { IconButton } from '../components/Button'
+import { Button, IconButton } from '../components/Button'
 import { kbOpenSource } from './knowledgeBase'
 import { notifyError } from '../components/appNoticeStore'
 import { CliCommandReport } from './CliCommandReport'
@@ -1019,12 +1020,19 @@ function LinkAnchor({
   // 页内锚点（目录跳转）保留默认行为：它不会导航走，只是滚动。
   const isHashOnly = decodedHref.startsWith('#')
   const localTarget = !isWeb && !isSystemScheme && !isHashOnly && decodedHref ? localLinkTarget(decodedHref) : null
+  const { onContextMenu, menu } = useFileLocationMenu(
+    localTarget && !localTarget.folder && (conversationId || /^(?:[a-z]:[\\/]|\/)/i.test(localTarget.path))
+      ? () => api.revealLocalFile(localTarget.path, conversationId)
+      : undefined,
+  )
   return (
+    <>
     <a
       // 不能加 target="_blank"：WRY 的 new-window 处理在 WKWebView 委托层，
       // JS preventDefault 拦不住，会和下面的 openExternal 各开一个网页（双开）。
       href={decodedHref || undefined}
       rel="noopener noreferrer"
+      onContextMenu={onContextMenu}
       // Tailwind preflight 会抹掉 <a> 的颜色和下划线，不加样式链接与正文无法区分。
       className="cursor-pointer text-[var(--accent)] underline decoration-[color-mix(in_srgb,var(--accent)_35%,transparent)] decoration-1 underline-offset-[3px] transition-colors hover:decoration-[var(--accent)]"
       onClick={(event) => {
@@ -1040,8 +1048,10 @@ function LinkAnchor({
         }
         if (!decodedHref) return
         if (localTarget?.preview && requestDockPreview(localTarget.path, { line: localTarget.line, conversationId })) return
+        const path = localTarget && (localTarget.line !== undefined || !/^file:\/\//i.test(decodedHref))
+          ? localTarget.path : decodedHref
         void api
-          .openLocalFile(localTarget?.line ? localTarget.path : decodedHref, conversationId)
+          .openLocalFile(path, conversationId)
           .catch((err) => notifyError(t.chatMsgOpenLinkFailed + String(err)))
       }}
     >
@@ -1049,6 +1059,8 @@ function LinkAnchor({
       {localTarget && <FileKindIcon name={localTarget.name} folder={localTarget.folder} />}
       {children}
     </a>
+    {menu}
+    </>
   )
 }
 
@@ -1066,7 +1078,7 @@ function localLinkTarget(href: string) {
   } else if (/^[a-z][\w+.-]*:/i.test(path) && !/^[a-z]:[\\/]/i.test(path)) {
     return null
   }
-  path = safeDecodeURIComponent(path).replace(/^\/([a-z]:\/)/i, '$1')
+  path = safeDecodeURIComponent(path).replace(/^\/(?=[a-z]:[\\/])/i, '')
   if (/^[\\/]{2}/.test(path)) return null
   const folder = /[\\/]$/.test(path)
   const trimmed = path.replace(/[\\/]+$/, '')
@@ -1242,8 +1254,12 @@ function artifactBasename(name: string): string {
   return artifactKey(name).split('/').filter(Boolean).pop() ?? artifactKey(name)
 }
 
-function isExternalOrAbsoluteImageSrc(src: string): boolean {
-  return /^(https?:|data:|blob:|tauri:|asset:|file:|\/)/i.test(src)
+function isBrowserImageSrc(src: string): boolean {
+  return /^(?:https?:|data:|blob:|tauri:|asset:|\/\/)/i.test(src)
+}
+
+function isLocalImageReference(src: string): boolean {
+  return /^(?:file:|[a-z]:[\\/]|\/(?!\/)|\\\\)/i.test(src)
 }
 
 const chatMarkdownUrlTransform: UrlTransform = (url) => {
@@ -1287,34 +1303,52 @@ function MarkdownArtifactImage({
   conversationId?: string | null
   onImageClick?: (src: string, alt: string, name?: string) => void
 }) {
+  const t = useT()
   const inline = artifact ? artifactDataUrl(artifact) : ''
+  const absolute = isLocalImageReference(rawSrc)
+  const local = !artifact && !isBrowserImageSrc(rawSrc) && (absolute || conversationId) ? localLinkTarget(rawSrc) : null
+  const localPath = local && isImageArtifact({ name: local.name, path: local.path }) ? local.path : undefined
+  const path = artifact?.path ?? localPath
+  const name = artifact?.name ?? local?.name ?? rawSrc
+  const [retry, setRetry] = useState(0)
   const [loadedImage, setLoadedImage] = useState<{
-    path: string
+    referencePath: string
     conversationId?: string | null
-    src: string
+    image: { src: string; path: string } | null
   } | null>(null)
   // Cached Markdown keeps this component mounted. A new file/conversation must
   // never display the previous file while its read is pending or after failure.
-  const src = inline || (artifact?.path
-    ? loadedImage?.path === artifact.path && loadedImage.conversationId === conversationId ? loadedImage.src : ''
-    : isExternalOrAbsoluteImageSrc(rawSrc) ? rawSrc : '')
+  const loaded = loadedImage?.referencePath === path && loadedImage?.conversationId === conversationId ? loadedImage : null
+  const src = inline || (path ? loaded?.image?.src : isBrowserImageSrc(rawSrc) ? rawSrc : '')
+  const resolvedPath = loaded?.image?.path ?? path
 
   useEffect(() => {
-    if (inline || !artifact?.path) return
+    if (inline || !path) return
     let cancelled = false
-    const path = artifact.path
-    void loadArtifactDataUrl(artifact, conversationId).then((loaded) => {
-      if (!cancelled) setLoadedImage({ path, conversationId, src: loaded ?? '' })
+    const preview = localPath && !absolute && conversationId
+      ? loadWorkspaceImagePreview(localPath, conversationId)
+      : (artifact ? loadArtifactDataUrl(artifact, conversationId) : loadAttachmentDataUrl({ path, name, type: 'image' }, null, true))
+          .then(src => src ? { path, src } : null)
+    void preview.then((image) => {
+      if (!cancelled) setLoadedImage({ referencePath: path, conversationId, image })
     })
     return () => {
       cancelled = true
     }
-  }, [artifact, conversationId, inline, rawSrc])
+  }, [absolute, artifact, conversationId, inline, localPath, name, path, retry])
 
-  if (!src) return null
+  if (!src) return localPath && loaded ? (
+    <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
+      <span role="status">{t.chatImagePreviewFailed}</span>
+      <Button variant="ghost" size="sm" onClick={() => {
+        setLoadedImage(null)
+        setRetry((value) => value + 1)
+      }}>{t.chatImageRetryOriginal}</Button>
+    </span>
+  ) : null
   const openViewer = () => {
-    if (artifact?.path) {
-      openChatImageViewer({ src, alt, name: artifact.name ?? rawSrc, path: artifact.path, conversationId })
+    if (resolvedPath) {
+      openChatImageViewer({ src, alt, name, path: resolvedPath, conversationId })
     } else {
       onImageClick?.(src, alt, rawSrc)
     }
@@ -1324,10 +1358,8 @@ function MarkdownArtifactImage({
       <ChatInlineImage
         src={src}
         alt={alt}
-        name={artifact?.name ?? rawSrc}
-        path={artifact
-          ? artifact.path ?? artifact.filePath ?? artifact.localPath
-          : /^(?:[a-z]:[\\/]|\/|\\\\)/i.test(rawSrc) ? rawSrc : undefined}
+        name={name}
+        path={resolvedPath ?? artifact?.filePath ?? artifact?.localPath}
         conversationId={conversationId}
         onOpenViewer={openViewer}
         className="mb-2 mr-2"
@@ -1379,7 +1411,7 @@ const referencedMarkdownComponents: Components = {
     const rawSrc = decodeKivioInternalUrl(typeof src === 'string' ? src : '')
     const altText = alt ?? ''
     if (rawSrc.startsWith('artifact:')) return <MarkdownArtifactReference url={rawSrc} label={altText} image />
-    const artifact = rawSrc && !isExternalOrAbsoluteImageSrc(rawSrc)
+    const artifact = rawSrc && !isBrowserImageSrc(rawSrc) && !isLocalImageReference(rawSrc)
       ? context.artifactLookup.get(artifactKey(rawSrc)) ?? context.artifactLookup.get(artifactBasename(rawSrc))
       : undefined
     return <MarkdownArtifactImage rawSrc={rawSrc} alt={altText} artifact={artifact}

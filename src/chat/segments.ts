@@ -35,6 +35,7 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
   creategoal: 'todo_write',
   updategoal: 'todo_write',
   readimage: 'read',
+  viewfile: 'read',
   runcode: 'bash',
   subagent: 'agent',
   subagentfork: 'agent',
@@ -292,7 +293,8 @@ function toolCallArgObject(toolCall: ToolCallRecord): Record<string, unknown> | 
 }
 
 function toolCallPathList(toolCall: ToolCallRecord): string[] {
-  const args = toolCallArgObject(toolCall)
+  const input = toolCallArgObject(toolCall)
+  const args = recordObject(input?.rawInput) ?? input
   const paths: string[] = []
   const extra = args?.paths
   if (Array.isArray(extra)) {
@@ -737,6 +739,15 @@ function categorizeTool(toolCall: ToolCallRecord): ToolGroupCategory {
       toolCall.source !== 'skill' &&
       toolCall.source !== 'mixer')
   if (isMcp) return 'mcp'
+  if (toolCall.source === 'external_cli') {
+    const payload = recordObject(toolCall.structured_content ?? toolCall.structuredContent)
+    const input = payload ?? toolCallArgObject(toolCall)
+    if (input?.sessionUpdate === 'tool_call' || input?.sessionUpdate === 'tool_call_update') {
+      if (input.kind === 'read') return 'read'
+      if (input.kind === 'edit') return 'fileWrite'
+      if (input.kind === 'execute') return 'runCommand'
+    }
+  }
   return 'other'
 }
 

@@ -4,6 +4,7 @@ import { fileLocationAction } from './fileLocation'
 import { ArtifactFileChip } from './GeneratedFileArtifacts'
 import { ChatMarkdown } from './ChatMarkdown'
 import { ChatAttachments } from './ChatAttachments'
+import { AppNoticeHost } from '../components/AppNotice'
 
 const invoke = vi.hoisted(() => vi.fn())
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invoke(...args) }))
@@ -34,6 +35,29 @@ describe('file location actions', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: '打开所在位置' }))
     expect(invoke).toHaveBeenCalledWith('chat_reveal_generated_artifact', { path: '/tmp/报告.md' })
   })
+  it.each([
+    ['/C:/Work/Kivio/output/tool-call-screenshots/expanded.png', 'C:/Work/Kivio/output/tool-call-screenshots/expanded.png'],
+    ['file:///tmp/test%20report.pdf', '/tmp/test report.pdf'],
+    ['src/chat/ChatMarkdown.tsx:1004', 'src/chat/ChatMarkdown.tsx'],
+  ])('locates the file behind a Markdown link (%s)', (href, path) => {
+    const parent = vi.fn()
+    render(<div onContextMenu={parent}>
+      <ChatMarkdown content={`[展开命令详情](${href})`} conversationId="conv_test" />
+    </div>)
+    fireEvent.contextMenu(screen.getByRole('link', { name: /展开命令详情/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '打开所在位置' }))
+    expect(parent).not.toHaveBeenCalled()
+    expect(invoke.mock.calls).toEqual([['reveal_local_file', { path, conversationId: 'conv_test' }]])
+  })
+  it('keeps the message menu available when right-clicking a web link', () => {
+    const parent = vi.fn()
+    render(<div onContextMenu={parent}>
+      <ChatMarkdown content="[官网](https://example.com/a.png)" conversationId="conv_test" />
+    </div>)
+    fireEvent.contextMenu(screen.getByRole('link', { name: /官网/ }))
+    expect(parent).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menuitem', { name: '打开所在位置' })).not.toBeInTheDocument()
+  })
   it('keeps the actual file path on a Markdown image whose display source is a data URL', () => {
     render(<ChatMarkdown content="![图表](artifact:art_image)" conversationId="conv_test" artifacts={[
       { id: 'art_image', name: '图表.png', path: 'saved.png', data_url: 'data:image/png;base64,AAAA', mime_type: 'image/png' },
@@ -52,9 +76,10 @@ describe('file location actions', () => {
   it('reports a file that has been removed instead of silently failing', async () => {
     invoke.mockImplementation(command => command === 'chat_reveal_generated_artifact'
       ? Promise.reject(new Error('missing file')) : Promise.resolve(undefined))
-    render(<ArtifactFileChip artifact={{ name: '报告.md', path: '/tmp/报告.md' }} />)
+    render(<><ArtifactFileChip artifact={{ name: '报告.md', path: '/tmp/报告.md' }} /><AppNoticeHost /></>)
     fireEvent.contextMenu(screen.getByRole('button', { name: '打开文件 报告.md' }))
     fireEvent.click(screen.getByRole('menuitem', { name: '打开所在位置' }))
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('无法打开所在位置'))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('无法打开所在位置'))
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }))
   })
 })

@@ -585,6 +585,7 @@ pub fn run() {
             commands::commit_translation,
             commands::open_external,
             commands::open_local_file,
+            commands::reveal_local_file,
             commands::open_data_url_file,
             commands::open_html_preview,
             html_preview::open_html_render,

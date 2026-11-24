@@ -87,6 +87,21 @@ export async function loadAttachmentDataUrl(
   return readImageDataUrl(attachment.path, previewConversationId, thumbnail)
 }
 
+export async function loadWorkspaceImagePreview(
+  path: string,
+  conversationId: string,
+): Promise<{ path: string; src: string } | null> {
+  if (!isTauriRuntime()) return null
+  try {
+    const result = await invoke<{ success: boolean; data?: string; path?: string }>(
+      'chat_read_attachment', { path, conversationId, thumbnail: true, workspaceRelative: true },
+    )
+    return result.success && result.data && result.path ? { path: result.path, src: result.data } : null
+  } catch {
+    return null
+  }
+}
+
 export async function openAttachment(
   attachment: AttachmentLike,
   conversationId?: string | null,
