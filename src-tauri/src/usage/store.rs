@@ -1,9 +1,11 @@
 use super::*;
 use rusqlite::{
-    params, params_from_iter, types::Value, Connection, OptionalExtension, TransactionBehavior,
+    params, params_from_iter, types::Value, Connection, ErrorCode, OptionalExtension,
+    TransactionBehavior,
 };
 use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 fn unsigned<T: TryFrom<i64>>(value: i64) -> rusqlite::Result<T> {
     T::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, value))
@@ -16,9 +18,23 @@ fn db_error(error: impl std::fmt::Display) -> String {
 pub(super) fn open(dir: &Path) -> Result<Connection, String> {
     fs::create_dir_all(dir).map_err(db_error)?;
     let mut db = Connection::open(dir.join("usage.sqlite3")).map_err(db_error)?;
-    db.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(db_error)?;
-    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+    let busy_timeout = Duration::from_secs(5);
+    db.busy_timeout(busy_timeout).map_err(db_error)?;
+    let deadline = Instant::now() + busy_timeout;
+    loop {
+        match db.execute_batch("PRAGMA journal_mode=WAL;") {
+            Ok(()) => break,
+            Err(error)
+                if error.sqlite_error_code() == Some(ErrorCode::DatabaseBusy)
+                    && Instant::now() < deadline =>
+            {
+                // Competing journal-mode changes can return SQLITE_BUSY without waiting.
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(db_error(error)),
+        }
+    }
+    db.execute_batch("PRAGMA synchronous=FULL;")
         .map_err(db_error)?;
     let version: i64 = db
         .query_row("PRAGMA user_version", [], |r| r.get(0))
