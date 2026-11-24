@@ -867,27 +867,6 @@ pub(crate) fn get_metadata(app: &AppHandle, id: &str) -> std::result::Result<Con
     read(app, id, |view| view.metadata(app))
 }
 
-pub(crate) async fn backfill(app: AppHandle) {
-    let handle = app.clone();
-    let ids = tauri::async_runtime::spawn_blocking(move || {
-        let dir = super::storage::conversations_dir(&handle)?;
-        let mut ids = super::storage::conversation_file_ids_in_dir(&dir)?;
-        ids.retain(|id| !database_path(&dir.join(format!("{id}.json"))).exists());
-        Ok::<_, String>(ids)
-    })
-    .await;
-    if let Ok(Ok(ids)) = ids {
-        for id in ids {
-            if let Err(error) = super::repository::repository(&app)
-                .with_existing_conversation_storage(&app, &id, |app, id| read(app, id, |_| Ok(())))
-                .await
-            {
-                eprintln!("history backfill skipped {id}: {error}");
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

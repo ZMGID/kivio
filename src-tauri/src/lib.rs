@@ -390,7 +390,6 @@ pub fn run() {
                 rapidocr::RapidOcrClient::new(offline_models),
             ));
             app.manage(chat::repository::ConversationRepository::default());
-            tauri::async_runtime::spawn(chat::history_projection::backfill(app.handle().clone()));
             usage::start_price_refresh(app.handle().clone());
             app.manage(scheduled_tasks::ScheduledTasks::load(
                 app.path()
