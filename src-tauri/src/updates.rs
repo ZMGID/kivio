@@ -9,6 +9,8 @@ use uuid::Uuid;
 use crate::api::with_standard_request_timeout;
 use crate::state::AppState;
 
+const REPO: &str = "ZMGID/kivio";
+
 /// 检查 GitHub Releases 的最新版本。
 ///
 /// 双通道：先查 `api.github.com`（能拿到 release notes）；失败（网络 / 非 2xx /
@@ -22,7 +24,6 @@ pub(crate) async fn check_github_latest_release(
     if crate::app_data::is_dev() {
         return Err("Kivio Dev 请通过源码构建更新，不安装正式版更新".to_string());
     }
-    const REPO: &str = "ZMGID/kivio";
     let current = env!("CARGO_PKG_VERSION");
 
     // 主通道：api.github.com（成功即返回，无论 available 真假）。
@@ -208,7 +209,6 @@ pub(crate) async fn download_update_asset(
     if crate::app_data::is_dev() {
         return Err("Kivio Dev 请通过源码构建更新，不安装正式版更新".to_string());
     }
-    const REPO: &str = "ZMGID/kivio";
     let version = normalize_release_version(&version)
         .ok_or_else(|| format!("无效的 release 版本号: {version}"))?;
     let name = release_asset_name_for(&version, std::env::consts::OS, std::env::consts::ARCH)
@@ -239,7 +239,8 @@ pub(crate) async fn download_update_asset(
         return Err(format!("下载返回 {}", resp.status()));
     }
     let total = resp.content_length().unwrap_or(0);
-    let mut file = fs::File::create(&dest).map_err(|e| format!("创建文件失败: {e}"))?;
+    let mut file = tempfile::NamedTempFile::new_in(std::env::temp_dir())
+        .map_err(|e| format!("创建文件失败: {e}"))?;
     let mut downloaded: u64 = 0;
     let mut last_emitted_pct: i32 = -1;
     while let Some(chunk) = resp
@@ -268,6 +269,8 @@ pub(crate) async fn download_update_asset(
             );
         }
     }
+    file.persist(&dest)
+        .map_err(|e| format!("保存更新包失败: {e}"))?;
     // 收尾再 emit 一次确保 100% 落地
     let _ = app.emit(
         "update-download-progress",
@@ -327,11 +330,77 @@ fn launch_nsis_silent_update(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn windows_update_version(path: &std::path::Path) -> Option<String> {
+    let filename = path.file_name()?.to_str()?;
+    let version = filename
+        .strip_prefix("kivio-update-")?
+        .strip_suffix(".exe")?;
+    let normalized = normalize_release_version(version)?;
+    (normalized == version
+        && path == std::env::temp_dir().join(filename)
+        && is_newer_version(version, env!("CARGO_PKG_VERSION")))
+    .then_some(normalized)
+}
+
+#[cfg(windows)]
+fn verified_installer(path: &std::path::Path, expected: &str) -> Result<fs::File, String> {
+    use sha2::{Digest, Sha256};
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_REPARSE_POINT, FILE_SHARE_READ};
+
+    let digest = expected.trim();
+    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("官方发布的 SHA-256 格式错误".into());
+    }
+    // Open the entry itself and hold a read-only sharing lock through ShellExecute.
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ.0)
+        .custom_flags(windows::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)
+        .map_err(|e| format!("无法锁定更新包: {e}"))?;
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err("更新包必须是普通文件".into());
+    }
+    let mut hash = Sha256::new();
+    std::io::copy(&mut file, &mut hash).map_err(|e| e.to_string())?;
+    if !format!("{:x}", hash.finalize()).eq_ignore_ascii_case(digest) {
+        return Err("更新包与官方 SHA-256 不符，请重新下载".into());
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+async fn install_windows_update(app: &AppHandle, path: String) -> Result<(), String> {
+    use tauri::Manager;
+    let version =
+        windows_update_version(std::path::Path::new(&path)).ok_or("无效的更新包路径或版本")?;
+    let asset = release_asset_name_for(&version, "windows", std::env::consts::ARCH)
+        .ok_or("当前架构没有 Windows 更新包")?;
+    let checksum = release_download_url(REPO, &version, &format!("{asset}.sha256"));
+    let digest = with_standard_request_timeout(app.state::<AppState>().http.get(checksum))
+        .send()
+        .await
+        .and_then(|response| response.error_for_status())
+        .map_err(|e| format!("无法获取官方更新校验值: {e}"))?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _verified = verified_installer(std::path::Path::new(&path), &digest)?;
+        launch_nsis_silent_update(&path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 启动安装包并退出当前应用。
 /// - macOS（.dmg）：hdiutil 挂载 → cp Kivio Desktop.app 到 /Applications → 卸载 → open 新版 → app.exit(0)
 /// - Windows（.exe）：ShellExecute 跑 NSIS 静默更新，立即 exit 让 installer 能覆盖正在运行的 exe
 #[tauri::command]
-pub(crate) fn install_update_and_quit(app: AppHandle, path: String) -> Result<(), String> {
+pub(crate) async fn install_update_and_quit(app: AppHandle, path: String) -> Result<(), String> {
     if crate::app_data::is_dev() {
         return Err("Kivio Dev 请通过源码构建更新，不安装正式版更新".to_string());
     }
@@ -422,7 +491,7 @@ pub(crate) fn install_update_and_quit(app: AppHandle, path: String) -> Result<()
 
     #[cfg(target_os = "windows")]
     {
-        launch_nsis_silent_update(&path)?;
+        install_windows_update(&app, path).await?;
         app.exit(0);
         return Ok(());
     }
@@ -437,6 +506,30 @@ pub(crate) fn install_update_and_quit(app: AppHandle, path: String) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_requires_official_digest_and_prevents_replacement_before_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update.exe");
+        fs::write(&path, b"abc").unwrap();
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(verified_installer(&path, "missing").is_err());
+        assert!(verified_installer(&path, &"0".repeat(64)).is_err());
+        let locked = verified_installer(&path, digest).unwrap();
+        assert!(fs::write(&path, b"changed").is_err());
+        assert!(fs::remove_file(&path).is_err());
+        drop(locked);
+        fs::write(&path, b"changed").unwrap();
+        assert!(verified_installer(&path, digest).is_err());
+        assert!(windows_update_version(&path).is_none());
+        let temp = std::env::temp_dir();
+        assert!(windows_update_version(&temp.join("kivio-update-0.0.1.exe")).is_none());
+        assert_eq!(
+            windows_update_version(&temp.join("kivio-update-999.0.0.exe")).as_deref(),
+            Some("999.0.0")
+        );
+    }
 
     #[test]
     fn is_newer_version_handles_basic_semver() {

@@ -127,6 +127,10 @@ jobs:
 
   tauri-release:
     needs: [source, create-release, model-database]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -221,6 +225,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Installer resources do not match the source.' }
           "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
 
+      - name: Attest Windows installer provenance
+        if: matrix.platform == 'windows-latest'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.windows-installer.outputs.path }}
+          create-storage-record: false
+
       - name: Package portable zip and upload verified Windows artifacts
         if: matrix.platform == 'windows-latest'
         env:
@@ -232,4 +243,7 @@ jobs:
           & ./scripts/package-windows-portable.ps1 -Version $ver
           $zip = "src-tauri/target/release/bundle/portable/Kivio.Desktop_${ver}_x64-portable.zip"
           if (-not (Test-Path -LiteralPath $zip)) { throw "portable zip not found: $zip" }
-          gh release upload $env:RELEASE_TAG $env:VERIFIED_INSTALLER $zip --clobber --repo $env:GITHUB_REPOSITORY
+          $checksum = Join-Path $env:RUNNER_TEMP "Kivio.Desktop_${ver}_x64-setup.exe.sha256"
+          (Get-FileHash -LiteralPath $env:VERIFIED_INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant() |
+            Set-Content -LiteralPath $checksum -Encoding ascii
+          gh release upload $env:RELEASE_TAG $env:VERIFIED_INSTALLER $checksum $zip --clobber --repo $env:GITHUB_REPOSITORY

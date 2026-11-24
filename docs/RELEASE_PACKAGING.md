@@ -59,6 +59,7 @@ GitHub release packaging (this is the official path — do not build installers 
    ```bash
    gh run watch <RUN_ID> --repo ZMGID/kivio --exit-status
    gh release view vX.Y.Z --repo ZMGID/kivio --json url,assets
+   gh attestation verify Kivio.Desktop_X.Y.Z_x64-setup.exe --repo ZMGID/kivio --signer-workflow ZMGID/kivio/.github/workflows/release.yml
    ```
 7. **Replace the CI-generated release body with hand-written bilingual notes.** The
    workflow publishes the release with a boilerplate body ("Automated macOS…");
@@ -139,7 +140,7 @@ The icon work and packaging/autostart fixes are not installed on the user's PC y
 | DPI | Tao initializes Per-Monitor V2 awareness, with older-OS fallbacks. This does not prove every custom overlay scales correctly. | 100/150/200% scaling, mixed-DPI monitors, unplug/reconnect a monitor, no inaccessible windows. |
 | Windows 11 Snap hover | **Remaining gap:** custom maximize button has no native `WM_NCHITTEST` / `HTMAXBUTTON` integration. | Implement and verify the native hover menu; do not infer support from Win+Arrow alone. |
 | Update mode | **Remaining gap:** portable uses the NSIS updater and becomes an installed edition. Portable README now states this and explains manual ZIP replacement. | Separate portable update UX; interrupted download, installer failure and rollback. |
-| Update trust | **Remaining gap:** current updater downloads via HTTPS but does not independently verify an artifact signature before execution. Installed Windows EXE is unsigned. | Set up code-signing credentials and authenticated update verification; signing is not solved by setting a publisher string. |
+| Update trust | Windows publishes a SHA-256 companion file alongside the NSIS installer. The updater checks that digest from the matching GitHub release and locks the verified file through launch. Windows publisher signing is still pending. | Verify rejection of a modified package. Test Windows publisher trust separately once code-signing credentials are available. |
 | Accessibility / appearance | Button labels and keyboard-focus styling exist; reduced-motion rules exist. Not a full accessibility pass. | Narrator, keyboard-only use, Windows contrast themes, light/dark mode and text scaling. |
 
 Microsoft's [Snap layout guidance](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/ui/apply-snap-layout-menu)
