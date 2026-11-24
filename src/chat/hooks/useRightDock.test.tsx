@@ -190,6 +190,22 @@ describe('useRightDock: persisted UI state', () => {
 })
 
 describe('useRightDock: preview channels', () => {
+  it('resolves a clicked link against its own conversation when the directory lookup is pending', async () => {
+    const { result, rerender } = setup()
+    await act(async () => {})
+    let ready: (cwd: string) => void = () => {}
+    mockResolveCwd.mockImplementationOnce(() => new Promise(resolve => { ready = resolve }))
+    rerender({ conversationId: 'c2', projectId: null, agentRuntimeKind: 'builtin' })
+    act(() => {
+      expect(requestDockPreview('old.md', { conversationId: 'c1' })).toBe(false)
+      requestDockPreview('docs/first.md', { conversationId: 'c2' })
+      requestDockPreview('docs/report.md', { conversationId: 'c2', line: 23 })
+    })
+    expect(result.current.preview).toBeNull()
+    await act(async () => { ready('D:/next-project') })
+    expect(result.current.preview).toMatchObject({ workdir: 'D:/next-project', path: 'docs/report.md', line: 23 })
+  })
+
   it('file preview inside the workdir opens files tab, reveals and previews', async () => {
     const { result } = setup()
     await act(async () => {})

@@ -39,7 +39,7 @@ export type DockRevealRequest = {
 /** 工具卡片 → 右侧栏预览：点文件名预览文件（workdir 可以不同于文件树，如写到桌面的
  *  文件用其所在目录）；点 +N -N 徽标预览整份带色 diff；claude 提交计划时预览整份计划。 */
 export type DockPreviewRequest =
-  | { kind: 'file'; workdir: string; path: string; nonce: number }
+  | { kind: 'file'; workdir: string; path: string; line?: number; readOnly?: boolean; nonce: number }
   | { kind: 'diff'; title: string; patch: string; nonce: number }
   | { kind: 'markdown'; title: string; text: string; nonce: number }
   | null

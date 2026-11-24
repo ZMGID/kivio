@@ -33,9 +33,14 @@ describe('resolveDockPreviewTarget', () => {
     expect(resolveDockPreviewTarget('\\\\?\\C:\\work\\proj\\y.txt', workdir)?.revealRel).toBe('y.txt')
   })
 
-  it('returns null for blank input, a bare root file, or a relative path without workdir', () => {
+  it('keeps the filesystem root for files directly under a drive or POSIX root', () => {
+    expect(resolveDockPreviewTarget('/x.txt', workdir)?.request).toEqual({ workdir: '/', path: 'x.txt' })
+    expect(resolveDockPreviewTarget('D:/x.txt', workdir)?.request).toEqual({ workdir: 'D:/', path: 'x.txt' })
+    expect(resolveDockPreviewTarget('C:/x.txt', 'C:/')?.revealRel).toBe('x.txt')
+  })
+
+  it('returns null for blank input or a relative path without workdir', () => {
     expect(resolveDockPreviewTarget('   ', workdir)).toBeNull()
-    expect(resolveDockPreviewTarget('/x', workdir)).toBeNull()
     expect(resolveDockPreviewTarget('src/a.ts', '')).toBeNull()
   })
 })

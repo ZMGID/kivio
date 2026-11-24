@@ -83,7 +83,7 @@ export function FileTreePanel({
   /** 就地查看器：点树里的文件 / 工具卡片文件预览（workdir 任意）/ 工具卡片 diff 预览 /
    *  计划预览。 */
   const [viewer, setViewer] = useState<
-    | { kind: 'file'; workdir: string; path: string }
+    | { kind: 'file'; workdir: string; path: string; line?: number; readOnly?: boolean; nonce?: number }
     | { kind: 'diff'; title: string; patch: string }
     | { kind: 'markdown'; title: string; text: string }
     | null
@@ -182,15 +182,8 @@ export function FileTreePanel({
   // 工具卡片预览请求：nonce 变化直接开查看器（workdir 由请求携带，可以在树外）。
   useEffect(() => {
     if (!previewRequest || previewRequest.nonce === 0) return
-    setViewer(
-      previewRequest.kind === 'file'
-        ? { kind: 'file', workdir: previewRequest.workdir, path: previewRequest.path }
-        : previewRequest.kind === 'markdown'
-          ? { kind: 'markdown', title: previewRequest.title, text: previewRequest.text }
-          : { kind: 'diff', title: previewRequest.title, patch: previewRequest.patch },
-    )
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewRequest?.nonce])
+    setViewer(previewRequest)
+  }, [previewRequest])
 
   // ---------- 操作 ----------
 
@@ -813,8 +806,12 @@ export function FileTreePanel({
       )}
       {viewer?.kind === 'file' && (
         <FileViewer
+          key={JSON.stringify([viewer.workdir, viewer.path])}
           workdir={viewer.workdir}
           path={viewer.path}
+          line={viewer.line}
+          requestNonce={viewer.nonce}
+          readOnly={viewer.readOnly}
           lang={lang}
           onClose={() => setViewer(null)}
         />

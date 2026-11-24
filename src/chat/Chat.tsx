@@ -2941,7 +2941,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     ? <span className="truncate text-sm">{currentConversation.title}</span>
     : conversationTitlebarControls
   const showConversationDock = chatView === 'conversation' && !conversationOccupied
-    && (!usesChatRuntime || Boolean(dock.subagent.selection))
+    && (!usesChatRuntime || Boolean(dock.subagent.selection) || (dockOpen && dock.preview?.kind === 'file'))
   // 侧栏 / 右侧面板开合时，主区内容平移到新位置（只动 transform，不逐帧重排）。
   const [panelRow, setPanelRow] = useState<HTMLDivElement | null>(null)
   usePanelShiftMotion(

@@ -22,13 +22,19 @@ export function resolveDockPreviewTarget(rawPath: string, workdir: string): Dock
   const wd = normalizePath(workdir)
   const isAbsolute = /^(?:[a-zA-Z]:)?\//.test(target)
   if (isAbsolute) {
-    if (wd && target.toLowerCase().startsWith(`${wd.toLowerCase()}/`)) {
-      const revealRel = target.slice(wd.length + 1)
+    const prefix = wd.endsWith('/') ? wd : wd + '/'
+    const inTree = /^[a-z]:\//i.test(wd)
+      ? target.toLowerCase().startsWith(prefix.toLowerCase())
+      : target.startsWith(prefix)
+    if (wd && inTree) {
+      const revealRel = target.slice(prefix.length)
       return { request: { workdir, path: revealRel }, revealRel }
     }
     const idx = target.lastIndexOf('/')
-    if (idx <= 0) return null
-    return { request: { workdir: target.slice(0, idx), path: target.slice(idx + 1) }, revealRel: null }
+    if (idx === target.length - 1) return null
+    const parent = target.slice(0, idx)
+    const root = !parent || /^[a-z]:$/i.test(parent) ? parent + '/' : parent
+    return { request: { workdir: root, path: target.slice(idx + 1) }, revealRel: null }
   }
   if (!workdir) return null
   const revealRel = target.replace(/^\.\//, '')

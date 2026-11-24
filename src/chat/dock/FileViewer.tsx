@@ -1,7 +1,7 @@
 // 文件查看器：文件树点击文件后就地预览（行号 + 轻量语法高亮，virtua 虚拟化），
 // 可切换编辑（纯文本 textarea）保存。读取/保存走 dock_fs_read / dock_fs_write。
-import { memo, useEffect, useState } from 'react'
-import { VList } from 'virtua'
+import { memo, useEffect, useRef, useState } from 'react'
+import { VList, type VListHandle } from 'virtua'
 import { ExternalLink, Loader2, Pencil, X } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
 import { Button, IconButton } from '../../components/Button'
@@ -47,11 +47,14 @@ const CodeLine = memo(function CodeLine({
 type FileViewerProps = {
   workdir: string
   path: string
+  line?: number
+  requestNonce?: number
+  readOnly?: boolean
   lang: Lang
   onClose: () => void
 }
 
-export function FileViewer({ workdir, path, lang, onClose }: FileViewerProps) {
+export function FileViewer({ workdir, path, line, requestNonce, readOnly, lang, onClose }: FileViewerProps) {
   const t = i18n[lang]
   const [content, setContent] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -59,6 +62,7 @@ export function FileViewer({ workdir, path, lang, onClose }: FileViewerProps) {
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const list = useRef<VListHandle>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -106,6 +110,9 @@ export function FileViewer({ workdir, path, lang, onClose }: FileViewerProps) {
   const language = languageForFile(path)
   const lines = content !== null ? content.split('\n') : []
   const gutterCh = String(Math.max(lines.length, 1)).length
+  useEffect(() => {
+    if (line && lines.length) list.current?.scrollToIndex(Math.min(line, lines.length) - 1, { align: 'center' })
+  }, [line, lines.length, requestNonce])
 
   return (
     <div className="absolute inset-0 z-10 flex flex-col bg-[var(--theme-surface-soft)]">
@@ -121,7 +128,7 @@ export function FileViewer({ workdir, path, lang, onClose }: FileViewerProps) {
         ) : (
           <span className="min-w-0 flex-1" />
         )}
-        {mode === 'view' && content !== null && (
+        {mode === 'view' && content !== null && !readOnly && (
           <IconButton label={t.dockViewerEdit} size="sm" variant="ghost" onClick={() => { setDraft(content); setMode('edit') }}>
             <Pencil size={13} />
           </IconButton>
@@ -174,7 +181,7 @@ export function FileViewer({ workdir, path, lang, onClose }: FileViewerProps) {
         </div>
       ) : (
         <div className="custom-scrollbar min-h-0 flex-1 overflow-x-auto py-1">
-          <VList className="custom-scrollbar h-full">
+          <VList ref={list} className="custom-scrollbar h-full">
             {lines.map((line, index) => (
               <CodeLine key={index} line={line} language={language} lineNo={index + 1} gutterCh={gutterCh} />
             ))}

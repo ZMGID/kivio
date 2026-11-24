@@ -6,6 +6,7 @@ import { subagentsApi } from '../../api/subagents'
 import { useRightDock } from '../hooks/useRightDock'
 import { requestDockDiffPreview, requestDockMarkdownPreview, requestDockPreview, requestDockSubagent } from './dockPreview'
 import { SubagentLifecycleEvent } from '../SubagentTimelineEvents'
+import { ChatMarkdown } from '../ChatMarkdown'
 import { RightDock } from './RightDock'
 
 const { loadedPanels } = vi.hoisted(() => ({ loadedPanels: [] as string[] }))
@@ -15,7 +16,7 @@ vi.mock('./FileTreePanel', () => {
   return {
     FileTreePanel: ({ active, previewRequest, revealPath }: {
       active: boolean
-      previewRequest: { kind: string; nonce: number; path?: string; text?: string } | null
+      previewRequest: { kind: string; nonce: number; path?: string; text?: string; line?: number } | null
       revealPath: string | null
     }) => (
       <div
@@ -23,6 +24,7 @@ vi.mock('./FileTreePanel', () => {
         data-active={active}
         data-preview-kind={previewRequest?.kind}
         data-preview-path={previewRequest?.path}
+        data-preview-line={previewRequest?.line}
         data-preview-nonce={previewRequest?.nonce}
       >
         <input aria-label="File search" defaultValue="" />
@@ -56,6 +58,7 @@ vi.mock('../../api/settingsCache', () => ({
   subscribeSettings: () => () => {},
 }))
 vi.mock('../../api/tauri', () => ({ api: {
+  openLocalFile: vi.fn(async () => {}),
   chatListBackgroundTasks: vi.fn(),
   chatKillBackgroundCommand: vi.fn(),
   chatStopExternalBackgroundTask: vi.fn(),
@@ -401,6 +404,20 @@ describe('RightDock tabs', () => {
 describe('RightDock external requests', () => {
   beforeEach(() => {
     window.localStorage.clear()
+  })
+
+  it.each([
+    ['C:/Work/Kivio/src/chat/CompactionDivider.tsx#L23', 'CompactionDivider.tsx', '23'],
+    ['<docs/工程 说明.md:12>', 'docs/工程 说明.md', '12'],
+    ['file:///tmp/project/a%20b.py:3:2', 'a b.py', '3'],
+  ])('opens the clicked Markdown file link %s in the files panel', async (href, path, line) => {
+    render(<><DockHarness /><ChatMarkdown conversationId="conv-1" content={`[本地改动](${href})`} /></>)
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('link', { name: /本地改动/ }))
+    const panel = screen.getByTestId('files-panel')
+    expect(panel).toBeVisible()
+    expect(panel).toHaveAttribute('data-preview-path', path)
+    expect(panel).toHaveAttribute('data-preview-line', line)
   })
 
   it('shows the launcher on ordinary open but displays the first and repeated files previews', async () => {

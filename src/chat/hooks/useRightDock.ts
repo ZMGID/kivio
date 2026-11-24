@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { peekSettings, subscribeSettings } from '../../api/settingsCache'
+import { notifyError } from '../../components/appNoticeStore'
+import { useT } from '../../components/i18n'
 import type { AgentRuntimeConfig } from '../api'
 import { dockApi } from '../dock/api'
 import {
@@ -42,6 +44,7 @@ export function useRightDock({
   agentRuntimeKind,
   worktreePath,
 }: UseRightDockOptions) {
+  const t = useT()
   const [open, setOpen] = useState(() => getRememberedDockOpen())
   const [width, setWidthState] = useState(() => getRememberedDockWidth())
   const [tab, setTabState] = useState<DockTab>(() => getRememberedDockTab())
@@ -57,23 +60,6 @@ export function useRightDock({
   const [treeExpanded, setTreeExpandedState] = useState<string[]>([])
   const [reveal, setReveal] = useState<DockRevealRequest>(null)
   const [preview, setPreview] = useState<DockPreviewRequest>(null)
-
-  // 工作目录跟随当前会话 / 选中项目 / agent runtime 变化，由后端 dock_resolve_cwd 解析。
-  useEffect(() => {
-    if (worktreePath) return
-    let cancelled = false
-    dockApi
-      .resolveCwd(conversationId, projectId)
-      .then((cwd) => {
-        if (!cancelled) setWorkdir(cwd)
-      })
-      .catch(() => {
-        if (!cancelled) setWorkdir('')
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [conversationId, projectId, agentRuntimeKind, workingRoot, worktreePath])
 
   // 文件树展开状态按 workdir 持久化，workdir 切换时重新载入。
   useEffect(() => {
@@ -135,17 +121,46 @@ export function useRightDock({
     setReveal((prev) => ({ path, nonce: (prev?.nonce ?? 0) + 1 }))
   }, [showTab])
 
-  // 工具卡片点文件名 → dock 查看器预览（解析规则见 dockPreviewTarget）。
-  useEffect(() => onDockPreviewRequest((rawPath) => {
-    const target = resolveDockPreviewTarget(rawPath, workdir)
-    if (!target) return
-    showTab('files')
-    if (target.revealRel) {
-      const revealRel = target.revealRel
-      setReveal((prev) => ({ path: revealRel, nonce: (prev?.nonce ?? 0) + 1 }))
+  // A click during a conversation switch must wait for that conversation's directory.
+  useEffect(() => {
+    let active = true
+    let cwd = worktreePath ?? ''
+    let resolving = !cwd
+    let pending: (() => void) | undefined
+    setPreview(null)
+    setReveal(null)
+    setWorkdir(cwd)
+    if (resolving) {
+      void dockApi.resolveCwd(conversationId, projectId).catch(() => '').then((resolved) => {
+        if (!active) return
+        resolving = false
+        cwd = resolved
+        setWorkdir(cwd)
+        pending?.()
+      })
     }
-    setPreview((prev) => ({ kind: 'file', ...target.request, nonce: (prev?.nonce ?? 0) + 1 }))
-  }), [showTab, workdir])
+    const unsubscribe = onDockPreviewRequest((rawPath, link) => {
+      if (link?.conversationId && link.conversationId !== conversationId) return false
+      const openFile = () => {
+        const target = resolveDockPreviewTarget(rawPath, cwd)
+        if (!target) {
+          notifyError(t.chatMsgOpenLinkFailed + rawPath)
+          return
+        }
+        showTab('files')
+        const path = target.revealRel
+        if (path) setReveal((prev) => ({ path, nonce: (prev?.nonce ?? 0) + 1 }))
+        setPreview((prev) => ({
+          kind: 'file', ...target.request, line: link?.line,
+          readOnly: !!link && path === null, nonce: (prev?.nonce ?? 0) + 1,
+        }))
+      }
+      if (resolving) pending = openFile
+      else openFile()
+      return true
+    })
+    return () => { active = false; unsubscribe() }
+  }, [conversationId, projectId, agentRuntimeKind, workingRoot, worktreePath, showTab, t.chatMsgOpenLinkFailed])
 
   // 工具卡片点 +N -N 徽标 → dock 侧栏渲染整份带色 diff。
   useEffect(() => onDockDiffPreviewRequest((payload) => {

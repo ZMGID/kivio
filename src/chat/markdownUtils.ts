@@ -123,9 +123,10 @@ export function normalizeMarkdownForRender(content: string): string {
  */
 export function preserveLocalMarkdownLinks(content: string): string {
   return outsideCode(content, (text) =>
-    text.replace(/(!?\[[^\]]*\]\()([^\s)]+)(\))/g, (_match, prefix: string, destination: string, suffix: string) => {
+    text.replace(/(!?\[[^\]]*\]\()(?:<([^<>\n]+)>|([^\s)]+))(\))/g, (match, prefix: string, angled: string | undefined, bare: string, suffix: string) => {
+      const destination = angled ?? bare
       if (/^(?:https?:|mailto:|tel:|sms:|data:|blob:|tauri:|asset:|#)/i.test(destination)) {
-        return `${prefix}${destination}${suffix}`
+        return match
       }
       if (/^file:\/\//i.test(destination)) {
         return `${prefix}https://kivio.local/__kivio-file?target=${encodeURIComponent(destination)}${suffix}`

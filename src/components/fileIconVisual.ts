@@ -35,6 +35,10 @@ function extensionOf(name: string): string {
   return base.slice(dot + 1).toLowerCase()
 }
 
+export function isSourceCodeFile(name: string): boolean {
+  return CODE_EXTS.has(extensionOf(name))
+}
+
 export function folderKindVisual(): FileKindVisual {
   return {
     label: 'FOLDER',

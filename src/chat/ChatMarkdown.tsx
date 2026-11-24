@@ -21,6 +21,8 @@ import { artifactReferenceId } from './artifactReferences'
 import { artifactId } from './artifactPresentation'
 import { ArtifactFileChip } from './GeneratedFileArtifacts'
 import { FileKindIcon } from './fileChip'
+import { isSourceCodeFile } from '../components/fileIconVisual'
+import { requestDockPreview } from './dock/dockPreview'
 import { SiteIcon } from './linkSiteIcon'
 import { loadArtifactDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
@@ -1010,6 +1012,7 @@ function LinkAnchor({
   conversationId?: string | null
 }) {
   const decodedHref = decodeKivioInternalUrl(href)
+  const t = useT()
   const isWeb = /^https?:\/\//i.test(decodedHref)
   // 这些 scheme 保留 <a> 默认行为，由系统协议处理器接走（不会导航 webview 自身）。
   const isSystemScheme = /^(mailto|tel|sms):/i.test(decodedHref)
@@ -1036,11 +1039,10 @@ function LinkAnchor({
           return
         }
         if (!decodedHref) return
-        // 其余一律当本地文件交给系统默认程序。相对路径的基准由后端按会话工作目录解析
-        // （与 agent 写文件的目录同一个解析器），前端不拼路径。
+        if (localTarget?.preview && requestDockPreview(localTarget.path, { line: localTarget.line, conversationId })) return
         void api
-          .openLocalFile(decodedHref, conversationId)
-          .catch((err) => console.error('openLocalFile failed', err))
+          .openLocalFile(localTarget?.line ? localTarget.path : decodedHref, conversationId)
+          .catch((err) => notifyError(t.chatMsgOpenLinkFailed + String(err)))
       }}
     >
       {isWeb && <SiteIcon url={decodedHref} />}
@@ -1050,20 +1052,33 @@ function LinkAnchor({
   )
 }
 
-/** 从本地链接里取出用于判断图标的文件名：去掉 file://、行号后缀（:12、:12:3、#L12）。
- *  没有扩展名或以斜杠结尾的当文件夹——前端不查文件系统，这是展示层的启发式。 */
-function localLinkTarget(href: string): { name: string; folder: boolean } {
-  const path = href
-    .replace(/^file:\/\//i, '')
-    .replace(/[?#].*$/, '')
-    .replace(/:\d+(?::\d+)?$/, '')
+function localLinkTarget(href: string) {
+  const position = /(?:#L(\d+)(?:C\d+)?(?:-L?\d+(?:C\d+)?)?|:(\d+)(?:[:-]\d+)?)$/i.exec(href)
+  let path = position ? href.slice(0, position.index) : href.replace(/(\.(?:md|markdown))#[^/\\]*$/i, '$1')
+  if (/^file:\/\//i.test(path)) {
+    try {
+      const url = new URL(path)
+      if (url.hostname && url.hostname !== 'localhost') return null
+      path = url.pathname
+    } catch {
+      return null
+    }
+  } else if (/^[a-z][\w+.-]*:/i.test(path) && !/^[a-z]:[\\/]/i.test(path)) {
+    return null
+  }
+  path = safeDecodeURIComponent(path).replace(/^\/([a-z]:\/)/i, '$1')
+  if (/^[\\/]{2}/.test(path)) return null
   const folder = /[\\/]$/.test(path)
   const trimmed = path.replace(/[\\/]+$/, '')
   const name = trimmed.slice(Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\')) + 1)
-  const looksLikeFile = /\.[^.]+$/.test(name) || EXTENSIONLESS_FILES.has(name.toLowerCase())
-  return { name, folder: folder || !looksLikeFile }
+  const extensionless = EXTENSIONLESS_FILES.has(name.toLowerCase())
+  const looksLikeFile = /\.[^.]+$/.test(name) || extensionless
+  const preview = !folder && (extensionless || isSourceCodeFile(name) || TEXT_FILE_SUFFIX.test(name))
+  const line = position ? Number(position[1] ?? position[2]) : undefined
+  return { path, name, folder: folder || !looksLikeFile, preview, line }
 }
 
+const TEXT_FILE_SUFFIX = /\.(?:md|markdown|mdx|rst|txt|log|tex|bib|jsonc?|jsonl|ya?ml|toml|ini|cfg|conf|env|properties|xml|csv|tsv|lock|diff|patch|gitignore|gitattributes|editorconfig|cs|fs|dart|lua|pl|r|scala|gradle|clj|exs?|erl|hs|ml|mm?|s|asm|zig|proto|graphql|sass|styl|sol|tf|cmake|ipynb|fish|psm1|cmd|astro)$/i
 const EXTENSIONLESS_FILES = new Set(['makefile', 'dockerfile', 'license', 'readme', 'changelog', 'procfile', 'gemfile', 'rakefile', 'justfile'])
 
 /** 引用角标 `[n]`：点击弹出对应来源片段。KB 命中显示「文档 · 标题 · 正文」；
