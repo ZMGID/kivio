@@ -30,8 +30,6 @@ function realUsageTokens(usage?: MessageUsage | null): { total: number; label: s
   const output = usage.output_tokens ?? usage.outputTokens
   const input = usage.input_tokens ?? usage.inputTokens
   const total = usage.total_tokens ?? usage.totalTokens
-  // 千位以上收成 K（`↑38897` → `↑38.9K`）：这一行是回答下面的元信息条，精确到个位既没人读、
-  // 又比旁边的上下文用量条（一直是 K）长出一截。口径与那条一致，用同一个 formatTokensK。
   if (output != null && input != null) {
     return {
       total: input + output,

@@ -72,7 +72,6 @@ import {
 } from './conversationTransitionStore'
 import type { AssistantStreamStats, MessageListProps } from './MessageList'
 import type { InputBarProps } from './InputBar'
-import { SessionUsageStrip } from './SessionUsageStrip'
 import { deriveDshPresetModes, derivePermissionModes, useDetectedExternalAgents, useDshCustomPresets } from './permissionModes'
 import { ContextIndicator } from './ContextIndicator'
 import {
@@ -2349,6 +2348,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         model={usesExternalRuntime ? activeAgentRuntime.externalModel : activeModel}
         providerId={usesExternalRuntime ? undefined : activeProviderId}
         contextState={contextState}
+        sessionUsage={currentConversation?.history_usage}
+        usageMessages={currentConversation?.messages}
+        apiFormats={providerApiFormats}
         messageCount={displayMessages.length}
         lastMessageId={displayMessages[displayMessages.length - 1]?.id}
         loading={contextLoading}
@@ -2372,11 +2374,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       contextError,
       contextLoading,
       contextState,
+      currentConversation?.history_usage,
+      currentConversation?.messages,
       displayMessages,
       handleClearContext,
       handleCompressContext,
       handleStopCompression,
       handleRefreshContext,
+      providerApiFormats,
       streamCoarse.streaming,
       activeAgentRuntime.externalAgentId,
       uiLang,
@@ -2768,19 +2773,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     replyModels: activeReplyModels,
     onChangeReplyModels: handleChangeReplyModels,
     contextSlot: composerContextSlot,
-    usageSlot: (
-      <SessionUsageStrip
-        conversationId={currentConversation?.id}
-        generating={streamCoarse.streaming}
-        messages={displayMessages}
-        sessionUsage={currentConversation?.history_usage}
-        lang={uiLang}
-        apiFormats={providerApiFormats}
-        defaultApiFormat={currentConversation ? (providerApiFormats[currentConversation.provider_id] ?? '') : ''}
-        cacheIncludedInInput={usesExternalRuntime ? activeAgentRuntime.externalAgentId === 'codex' : undefined}
-        hideCost={usesExternalRuntime}
-      />
-    ),
     modeOptions: composerModes.options,
     modeValue: composerModes.current,
     onModeChange: handleComposerModeChange,
@@ -2802,8 +2794,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     composerForceKnowledgeSearch,
     composerKnowledgeBaseIds,
     composerAdditionalDirectories,
-    displayMessages,
-    providerApiFormats,
     loadInputHistory,
     conversationProject,
     currentConversation,

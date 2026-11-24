@@ -507,32 +507,6 @@ impl UsageLedger {
         }
     }
 
-    pub(super) fn conversation_cost(
-        &self,
-        dir: &Path,
-        conversation_id: &str,
-    ) -> Result<ConversationCost, String> {
-        let mut db = open(dir)?;
-        let tx = db.transaction().map_err(db_error)?;
-        let prefix = format!("subagent-{conversation_id}-");
-        // Binary range keeps prefix matching literal (IDs may contain SQL wildcards).
-        // shortcut: a non-UUID root may prefix another root; store explicit ancestry if IDs change.
-        let upper = format!("subagent-{conversation_id}.");
-        let mut result = tx.query_row(
-            "SELECT sum(CASE WHEN cost_usd >= 0 AND usage_source != 'missing' THEN cost_usd END),
-             coalesce(sum(cost_usd IS NULL OR cost_usd < 0 OR usage_source='missing'),0)
-             FROM records WHERE conversation_id=?1 OR (conversation_id>=?2 AND conversation_id<?3)",
-            params![conversation_id, prefix, upper],
-            |r| Ok(ConversationCost {
-                cost_usd: r.get(0)?,
-                unpriced_requests: unsigned(r.get(1)?)?,
-                skipped_records: 0,
-            }),
-        ).map_err(db_error)?;
-        result.skipped_records = skipped(&tx)?;
-        Ok(result)
-    }
-
     pub(super) fn clear(&self, dir: &Path) -> Result<(), String> {
         let mut db = open(dir)?;
         let tx = db

@@ -89,7 +89,7 @@ describe('ContextIndicator character share', () => {
       />,
     )
     fireEvent.click(screen.getByLabelText('Context'))
-    expect(screen.getByText('53.0k/1000.0k (5.3%)')).toBeTruthy()
+    expect(screen.getByText('53.0k/1.0m (5.3%)')).toBeTruthy()
     expect(screen.getByText('Character share')).toBeTruthy()
     expect(screen.getByText('System prompt')).toBeTruthy()
     expect(screen.getByText('Tools')).toBeTruthy()
@@ -106,6 +106,33 @@ describe('ContextIndicator character share', () => {
 })
 
 describe('ContextIndicator usage panel', () => {
+  it('shows external CLI cache hits from the full session beside context capacity', () => {
+    openPanel({
+      usesExternalRuntime: true,
+      externalAgentId: 'codex',
+      contextState: { token_count_source: 'provider_context_reported', reported_context_tokens: 25_000, context_window_tokens: 100_000 },
+      sessionUsage: [{ provider_id: null, input_less_cached: 300, input_plus_cache_write: 1000, cached: 700, output: 20 }],
+    })
+    expect(screen.getByText('25.0k/100.0k (25%)')).toBeVisible()
+    expect(screen.getByText('Average cache hit rate')).toBeVisible()
+    expect(screen.getByText('70%')).toBeVisible()
+  })
+
+  it('shows a reported cache hit rate of zero', () => {
+    openPanel({ contextState: { ...breakdownState, cache_hit_rate: 0 } })
+    expect(screen.getByText('Average cache hit rate')).toBeVisible()
+    expect(screen.getByText('0%')).toBeVisible()
+  })
+
+  it('uses stored Claude messages when there is no history usage summary', () => {
+    openPanel({
+      usesExternalRuntime: true,
+      externalAgentId: 'claude',
+      usageMessages: [{ id: 'answer', role: 'assistant', content: '', timestamp: 1,
+        usage: { input_tokens: 300, cached_input_tokens: 700, cache_creation_input_tokens: 100 } }],
+    })
+    expect(screen.getByText('63.6%')).toBeVisible()
+  })
 
   it('lets keyboard users scroll details and returns focus on Escape', () => {
     render(<ContextIndicator lang="en" />)

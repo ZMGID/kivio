@@ -83,6 +83,7 @@ export interface ComposerEditorHandle {
   readonly canUndo: boolean
   readonly canRedo: boolean
   readonly atCommand: boolean
+  atVerticalBoundary: (direction: 'up' | 'down') => boolean
 }
 
 type Props = {
@@ -146,6 +147,20 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       get atCommand() {
         const v = viewRef.current
         return !!v && (v.state.selection.$from.nodeBefore?.type === schema.nodes.command || !v.state.selection.empty)
+      },
+      atVerticalBoundary(direction) {
+        const view = viewRef.current
+        if (!view) return false
+        // A second key can arrive before ProseMirror observes the native selection change.
+        const selection = view.dom.ownerDocument.getSelection()
+        if (!selection?.isCollapsed || !selection.focusNode || !view.dom.contains(selection.focusNode)) return false
+        const end = view.state.doc.content.size
+        const caret = view.posAtDOM(selection.focusNode, selection.focusOffset)
+        if (caret === (direction === 'up' ? 0 : end)) return true
+        if (plainText(view.state.doc).includes('\n')) return false
+        const first = view.coordsAtPos(0)
+        const last = view.coordsAtPos(end, -1)
+        return first.bottom > last.top
       },
     }
   }, [])

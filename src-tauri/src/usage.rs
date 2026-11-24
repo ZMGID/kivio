@@ -435,29 +435,6 @@ pub fn today_usage(dir: &Path) -> Result<TodayUsage, String> {
     store::today(dir)
 }
 
-#[tauri::command]
-pub async fn usage_get_conversation_cost(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<ConversationCost, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        state
-            .usage_ledger
-            .conversation_cost(&state.usage_dir, &conversation_id)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[derive(Debug, Default, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationCost {
-    pub cost_usd: Option<f64>,
-    pub unpriced_requests: usize,
-    pub skipped_records: usize,
-}
-
 mod native;
 mod pricing;
 mod store;
@@ -1329,114 +1306,9 @@ mod tests {
     }
 
     #[test]
-    fn conversation_cost_tracks_appends_and_clear() {
+    fn concurrent_appends_and_failed_writes_preserve_usage_stats() {
         let dir = tempfile::tempdir().unwrap();
         let ledger = UsageLedger::default();
-        let usage_dir = dir.path().join("usage");
-        for (id, cost) in [
-            ("parent", Some(0.125)),
-            ("subagent-parent-child", Some(0.25)),
-            ("subagent-parent-child", Some(0.5)),
-            ("subagent-parent-child", None),
-            ("subagent-other-child", Some(99.0)),
-        ] {
-            let mut record = base_record("openai_chat");
-            record.conversation_id = Some(id.into());
-            record.cost_usd = cost;
-            ledger.append(&usage_dir, &record).unwrap();
-        }
-        let cost = ledger.conversation_cost(&usage_dir, "parent").unwrap();
-        assert_eq!(cost.cost_usd, Some(0.875));
-        assert_eq!(cost.unpriced_requests, 1);
-        let mut extra = base_record("openai_chat");
-        extra.conversation_id = Some("subagent-parent-child-2".into());
-        extra.cost_usd = Some(0.125);
-        ledger.append(&usage_dir, &extra).unwrap();
-        assert_eq!(
-            ledger
-                .conversation_cost(&usage_dir, "parent")
-                .unwrap()
-                .cost_usd,
-            Some(1.0)
-        );
-        let restart = UsageLedger::default();
-        assert_eq!(
-            restart
-                .conversation_cost(&usage_dir, "parent")
-                .unwrap()
-                .cost_usd,
-            Some(1.0)
-        );
-        ledger.clear(&usage_dir).unwrap();
-        assert_eq!(
-            ledger
-                .conversation_cost(&usage_dir, "parent")
-                .unwrap()
-                .cost_usd,
-            None
-        );
-        ledger.append(&usage_dir, &extra).unwrap();
-        assert_eq!(
-            ledger
-                .conversation_cost(&usage_dir, "parent")
-                .unwrap()
-                .cost_usd,
-            Some(0.125)
-        );
-    }
-
-    #[test]
-    fn conversation_cost_recovers_root_prefix_nested_and_continued_usage() {
-        let dir = tempfile::tempdir().unwrap();
-        let ledger = UsageLedger::default();
-        let root = "conv_00000000-0000-4000-8000-000000000001";
-        let other = "conv_00000000-0000-4000-8000-000000000002";
-        let similar = format!("{root}2");
-        let child = format!("subagent-{root}-Worker");
-        let nested = format!("{child}.Nested");
-        let next_child = format!("{child}-2");
-        let other_child = format!("subagent-{other}-Worker");
-        let similar_child = format!("subagent-{similar}-Worker");
-        let missing_separator = format!("subagent-{root}");
-        // Query before writing, then verify both existing and restarted readers.
-        ledger.conversation_cost(dir.path(), root).unwrap();
-        for (id, cost) in [
-            (root, Some(1.0)),
-            (child.as_str(), Some(0.25)),
-            (child.as_str(), Some(0.5)),
-            (nested.as_str(), Some(0.125)),
-            (nested.as_str(), Some(0.0625)),
-            (next_child.as_str(), Some(0.03125)),
-            (child.as_str(), None),
-            (other, Some(4.0)),
-            (other_child.as_str(), Some(8.0)),
-            (similar.as_str(), Some(16.0)),
-            (similar_child.as_str(), Some(32.0)),
-            (missing_separator.as_str(), Some(64.0)),
-        ] {
-            let mut record = base_record("openai_chat");
-            record.conversation_id = Some(id.into());
-            record.cost_usd = cost;
-            ledger.append(dir.path(), &record).unwrap();
-        }
-        let restart = UsageLedger::default();
-        for index in [&ledger, &restart] {
-            let cost = index.conversation_cost(dir.path(), root).unwrap();
-            assert_eq!(cost.cost_usd, Some(1.96875));
-            assert_eq!(cost.unpriced_requests, 1);
-            assert_eq!(cost.skipped_records, 0);
-            assert_eq!(
-                index.conversation_cost(dir.path(), other).unwrap().cost_usd,
-                Some(12.0)
-            );
-        }
-    }
-
-    #[test]
-    fn concurrent_appends_and_failed_writes_preserve_the_cost_aggregate() {
-        let dir = tempfile::tempdir().unwrap();
-        let ledger = UsageLedger::default();
-        ledger.conversation_cost(dir.path(), "parent").unwrap();
         let mut record = base_record("openai_chat");
         record.conversation_id = Some("parent".into());
         record.cost_usd = Some(0.125);
@@ -1451,63 +1323,18 @@ mod tests {
                 });
             }
         });
-        assert_eq!(
-            ledger
-                .conversation_cost(dir.path(), "parent")
-                .unwrap()
-                .cost_usd,
-            Some(16.0)
-        );
-        assert_eq!(
-            UsageLedger::default()
-                .conversation_cost(dir.path(), "parent")
-                .unwrap()
-                .cost_usd,
-            Some(16.0)
-        );
+        let query = UsageStatsQuery {
+            range: "all".into(),
+            ..Default::default()
+        };
+        for reader in [&ledger, &UsageLedger::default()] {
+            let stats = reader.stats(dir.path(), query.clone()).unwrap();
+            assert_eq!(stats.summary.total_requests, 128);
+            assert_eq!(stats.summary.total_cost_usd, 16.0);
+        }
         let invalid = dir.path().join("not-a-directory");
         fs::write(&invalid, "").unwrap();
         assert!(ledger.append(&invalid, &record).is_err());
-        assert!(ledger.conversation_cost(&invalid, "parent").is_err());
-    }
-
-    #[test]
-    fn conversation_cost_covers_all_recorded_requests_without_conflating_unknown_and_free() {
-        let dir = tempfile::tempdir().unwrap();
-        let ledger = UsageLedger::default();
-        for (id, age_days, cost, usage_source) in [
-            ("a", 400, Some(0.125), "provider_reported"),
-            ("a", 0, Some(0.25), "provider_reported"),
-            ("a", 0, None, "provider_reported"),
-            ("a", 0, Some(0.0), "missing"),
-            ("other", 0, Some(999.0), "provider_reported"),
-            ("free", 0, Some(0.0), "provider_reported"),
-        ] {
-            let mut record = base_record("openai_chat");
-            record.conversation_id = Some(id.into());
-            record.created_at -= age_days * 86400;
-            record.cost_usd = cost;
-            record.usage_source = usage_source.into();
-            ledger.append(dir.path(), &record).unwrap();
-        }
-        let cost = ledger.conversation_cost(dir.path(), "a").unwrap();
-        assert_eq!(cost.cost_usd, Some(0.375));
-        assert_eq!(cost.unpriced_requests, 2);
-        assert_eq!(cost.skipped_records, 0);
-        assert_eq!(
-            ledger
-                .conversation_cost(dir.path(), "free")
-                .unwrap()
-                .cost_usd,
-            Some(0.0)
-        );
-        assert_eq!(
-            ledger
-                .conversation_cost(dir.path(), "absent")
-                .unwrap()
-                .cost_usd,
-            None
-        );
     }
 
     #[test]

@@ -23,7 +23,6 @@ import {
   derivePermissionModes,
   useDshCustomPresets,
 } from '../permissionModes'
-import { SessionUsageStrip } from '../SessionUsageStrip'
 import { normalizeSkill, resolveSendSkillId, skillRecommendedTools, skillsForExpert } from '../skillSelection'
 import { findUnavailableRecommendedTools } from '../toolAvailability'
 import type {
@@ -559,6 +558,9 @@ export function usePopoutComposer({
         model={usesExternalRuntime ? runtime.externalModel : conversation?.model}
         providerId={usesExternalRuntime ? undefined : conversation?.provider_id}
         contextState={contextState}
+        sessionUsage={conversation?.history_usage}
+        usageMessages={conversation?.messages}
+        apiFormats={providerApiFormats}
         messageCount={displayMessages.length}
         lastMessageId={displayMessages[displayMessages.length - 1]?.id}
         loading={contextLoading}
@@ -577,6 +579,8 @@ export function usePopoutComposer({
     [
       conversation?.model,
       conversation?.provider_id,
+      conversation?.history_usage,
+      conversation?.messages,
       runtime.externalModel,
       contextCompressing,
       contextError,
@@ -587,6 +591,7 @@ export function usePopoutComposer({
       handleCompressContext,
       handleStopCompression,
       handleRefreshContext,
+      providerApiFormats,
       lang,
       streaming,
       runtime.externalAgentId,
@@ -652,19 +657,6 @@ export function usePopoutComposer({
     replyModels: conversation?.reply_models ?? conversation?.replyModels ?? [],
     onChangeReplyModels: handleChangeReplyModels,
     contextSlot,
-    usageSlot: (
-      <SessionUsageStrip
-        conversationId={conversation?.id}
-        generating={streaming}
-        messages={displayMessages}
-        sessionUsage={conversation?.history_usage}
-        lang={lang}
-        apiFormats={providerApiFormats}
-        defaultApiFormat={conversation ? (providerApiFormats[conversation.provider_id] ?? '') : ''}
-        cacheIncludedInInput={usesExternalRuntime ? runtime.externalAgentId === 'codex' : undefined}
-        hideCost={usesExternalRuntime}
-      />
-    ),
     modeOptions: composerModes.options,
     modeValue: composerModes.current,
     onModeChange: handleComposerModeChange,

@@ -629,7 +629,6 @@ pub fn run() {
             commands::replace_translation_pack_status,
             commands::replace_translation_pack_install,
             usage::usage_get_stats,
-            usage::usage_get_conversation_cost,
             usage::usage_clear,
             usage::usage_sync_cli,
             chat::commands::interaction::get_request_debug_records,

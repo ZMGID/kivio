@@ -24,6 +24,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComponentProps<ty
     get canUndo() { return document.queryCommandEnabled?.('undo') ?? false },
     get canRedo() { return document.queryCommandEnabled?.('redo') ?? false },
     atCommand: false,
+    atVerticalBoundary(direction) {
+      const { value, selectionStart, selectionEnd } = input.current!
+      return selectionStart === selectionEnd &&
+        (!value.includes('\n') || selectionStart === (direction === 'up' ? 0 : value.length))
+    },
   }))
   return <textarea ref={input} value={props.value} placeholder={props.placeholder}
     readOnly={props.readOnly} aria-busy={props.busy} className={props.className}

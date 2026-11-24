@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="UTF-8"><title>Chat composer</title></head>
+<body><div id="root" class="chat-main-pane" style="width: 480px"></div><script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { InputBar } from '/src/chat/InputBar.tsx';
+import { LangContext } from '/src/components/i18n.ts';
+import '/src/styles/app.css';
+
+const previous = '这是上一条已经发出的提问。它和正在编辑的草稿一样长，会在输入框里自动折行。'.repeat(2);
+createRoot(document.getElementById('root')).render(
+  React.createElement(LangContext.Provider, { value: 'zh' },
+    React.createElement(InputBar, { inputHistory: [previous], onSend() {} })));
+</script></body></html>

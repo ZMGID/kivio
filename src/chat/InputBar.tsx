@@ -353,8 +353,6 @@ export interface InputBarProps {
   /** 已有对话内容后锁定（dsh 只允许空白 agent 换 preset）。 */
   presetLocked?: boolean
   presetLockedReason?: string
-  /** 常驻费用、缓存及 token 用量，位于底栏模式按钮左侧。 */
-  usageSlot?: ReactNode
 }
 
 export const InputBar = memo(function InputBar({
@@ -420,7 +418,6 @@ export const InputBar = memo(function InputBar({
   onPresetChange,
   presetLocked = false,
   presetLockedReason,
-  usageSlot,
 }: InputBarProps) {
   const t = useT()
   // 生成中的输入模式：Enter 直接发送补充消息，且只锁「要打后端」的入口。附件的选择 / 粘贴 / 拖入
@@ -1135,10 +1132,7 @@ export const InputBar = memo(function InputBar({
       const el = editorRef.current
       if (!el) return
       const up = e.key === 'ArrowUp'
-      // 多行文本只在首尾切换历史，保留正文中的光标移动与选区操作。
-      const atBoundary = !input.includes('\n') ||
-        (up ? el.selectionStart === 0 : el.selectionEnd === input.length)
-      if (el.selectionStart === el.selectionEnd && atBoundary) {
+      if (el.atVerticalBoundary(up ? 'up' : 'down')) {
         if (!historyRef.current && up) {
           if (onLoadInputHistory) {
             e.preventDefault()
@@ -1916,7 +1910,6 @@ export const InputBar = memo(function InputBar({
             </IconButton>
             </div>
             <div className="chat-composer-tool-actions ml-auto flex items-center justify-end gap-2">
-            {usageSlot}
             {presetEntryEnabled && activePresetOption && (
               <div className="relative min-w-0 max-w-full shrink-0 self-center">
                 <button

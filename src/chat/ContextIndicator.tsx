@@ -1,6 +1,6 @@
 import { Button, IconButton } from '../components/Button'
 import { Archive, Eraser, RefreshCw, Square } from 'lucide-react'
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   autoCompactPercent,
@@ -10,7 +10,8 @@ import {
   reportedContextTokens,
 } from './contextPanel'
 import { i18n, type I18n, type Lang } from '../components/i18n'
-import type { ConversationContextState } from './types'
+import type { ChatMessage, ConversationContextState, ProviderTokenUsage } from './types'
+import { sessionTokenUsage } from './sessionTokenUsage'
 import { usePopoverMenu } from './usePopoverMenu'
 import { formatTokens } from '../utils/tokens'
 import { getSettingsCached, peekSettings, subscribeSettings } from '../api/settingsCache'
@@ -45,6 +46,9 @@ interface ContextIndicatorProps {
   error?: string
   usesExternalRuntime?: boolean
   externalAgentId?: string | null
+  sessionUsage?: readonly ProviderTokenUsage[]
+  usageMessages?: readonly ChatMessage[]
+  apiFormats?: Record<string, string>
   onRefresh?: () => void
   onCompress?: () => void
   onStopCompression?: () => void
@@ -88,6 +92,9 @@ export function ContextIndicator({
   error = '',
   usesExternalRuntime = false,
   externalAgentId,
+  sessionUsage,
+  usageMessages,
+  apiFormats,
   onRefresh,
   onCompress,
   onStopCompression,
@@ -136,8 +143,8 @@ export function ContextIndicator({
   const contextSource = valueFrom(contextState?.context_source, contextState?.contextSource, null)
   const isExternalContext =
     usesExternalRuntime || contextSource === 'external_cli'
-  const cliManagesContext = isExternalContext && (externalAgentId ??
-    contextState?.external_agent_id ?? contextState?.externalAgentId) === 'antigravity'
+  const agentId = externalAgentId ?? contextState?.external_agent_id ?? contextState?.externalAgentId
+  const cliManagesContext = isExternalContext && agentId === 'antigravity'
   const compressedMessageCount = valueFrom(
     contextState?.compressed_message_count,
     contextState?.compressedMessageCount,
@@ -164,9 +171,26 @@ export function ContextIndicator({
   const segments = contextBreakdown(contextState?.segments).map((segment) => ({
     ...segment, label: t[SEGMENT_LABELS[segment.id]],
   }))
-  const cacheRate = contextState?.cache_hit_rate ?? contextState?.cacheHitRate
-  const showCache = !isExternalContext && cacheRate != null && Number.isFinite(cacheRate)
-    && cacheRate >= 0.78 && cacheRate <= 1
+  const reportedCacheRate = contextState?.cache_hit_rate ?? contextState?.cacheHitRate
+  const hasReportedCacheRate = reportedCacheRate != null && Number.isFinite(reportedCacheRate)
+    && reportedCacheRate >= 0 && reportedCacheRate <= 1
+  const sessionCacheRate = useMemo(() => {
+    if (!open || hasReportedCacheRate) return null
+    let fresh = 0
+    let cached = 0
+    for (const usage of sessionUsage ?? sessionTokenUsage(usageMessages ?? [])) {
+      const id = usage.provider_id ?? providerId
+      const includesCache = isExternalContext
+        ? agentId === 'codex' || agentId === 'grok'
+        : (id ? apiFormats?.[id] : undefined) !== 'anthropic_messages'
+      const input = includesCache ? usage.input_less_cached : usage.input_plus_cache_write
+      if (input == null || usage.cached == null) continue
+      fresh += input
+      cached += usage.cached
+    }
+    return fresh + cached > 0 ? cached / (fresh + cached) : null
+  }, [agentId, apiFormats, hasReportedCacheRate, isExternalContext, open, providerId, sessionUsage, usageMessages])
+  const cacheRate = hasReportedCacheRate ? reportedCacheRate : sessionCacheRate
   const lastClearUntilId = (
     contextState?.clear_boundaries ?? contextState?.clearBoundaries ?? []
   ).at(-1)?.source_until_message_id
@@ -319,9 +343,9 @@ export function ContextIndicator({
                 </dl>
               </div>
             )}
-            {showCache && (
+            {cacheRate != null && (
               <div className="mt-1.5 flex items-center justify-between border-t border-[var(--theme-surface-border)] pt-1.5 text-[11px] text-neutral-500"
-                title={t.contextCacheHint}>
+                title={hasReportedCacheRate ? t.contextCacheHint : t.contextSessionCacheHint}>
                 <span>{t.contextCacheHitRate}</span>
                 <span className="tabular-nums">{percentFormat.format(cacheRate)}</span>
               </div>
