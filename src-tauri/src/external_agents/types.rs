@@ -73,6 +73,11 @@ pub enum UpdateStrategy {
         package: &'static str,
         brew_formula: &'static str,
     },
+    NpmPackageMigration {
+        previous_package: &'static str,
+        brew_formula: &'static str,
+        previous_brew_formula: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

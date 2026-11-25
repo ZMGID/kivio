@@ -1,17 +1,21 @@
 use super::{
-    environment_value, extract_semver, find_npm, npm_install_plan, proven_npm_prefix,
-    resource_path, BTreeMap, CommandPlan, Duration, OsString, Path, PathBuf,
+    antigravity_manifest_url, environment_value, extract_semver, find_npm, npm_install_plan,
+    proven_npm_prefix, resource_path, verify_cli_version_in, BTreeMap, CommandPlan, Duration,
+    InstallAction, OsString, Path, PathBuf, PreparedInstall, INSTALL_TIMEOUT_SECS,
 };
 use crate::external_agents::{
     spawn::{self, CliProcessOutput},
     types::{RuntimeAgentDef, UpdateStrategy},
     wsl,
 };
+use sha2::{Digest, Sha512};
+use tokio::io::AsyncWriteExt;
 
 type Environment = BTreeMap<OsString, OsString>;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ManagedSource {
+    Antigravity,
     Claude,
     GrokNpm {
         prefix: PathBuf,
@@ -27,7 +31,100 @@ pub(super) enum ManagedSource {
 
 pub(super) struct UpdateOffer {
     pub version: String,
-    pub command: CommandPlan,
+    pub action: InstallAction,
+}
+
+impl UpdateOffer {
+    fn command(version: String, command: CommandPlan) -> Self {
+        Self {
+            version,
+            action: InstallAction::Command(command),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct AntigravityAsset {
+    pub url: reqwest::Url,
+    sha512: String,
+}
+
+impl AntigravityAsset {
+    fn from_manifest(manifest: &serde_json::Value) -> Option<UpdateOffer> {
+        let version = normalized_version(manifest["version"].as_str()?)?;
+        let url = reqwest::Url::parse(manifest["url"].as_str()?).ok()?;
+        let hash = manifest["sha512"].as_str()?;
+        if !url
+            .as_str()
+            .starts_with("https://storage.googleapis.com/antigravity-public/antigravity-cli/")
+            || !url.path().ends_with(".exe")
+            || hash.len() != 128
+            || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        Some(UpdateOffer {
+            version,
+            action: InstallAction::Antigravity(Self {
+                url,
+                sha512: hash.to_ascii_lowercase(),
+            }),
+        })
+    }
+
+    pub(super) async fn install(
+        &self,
+        http: &reqwest::Client,
+        def: &RuntimeAgentDef,
+        plan: &PreparedInstall,
+        emit: &impl Fn(String),
+    ) -> Result<(), String> {
+        const MAX_BYTES: usize = 512 * 1024 * 1024;
+        let parent = plan.binary.parent().ok_or("Antigravity CLI 安装路径无效")?;
+        emit(format!("正在下载 Antigravity CLI {}", plan.version));
+        let mut response = http
+            .get(self.url.clone())
+            .timeout(Duration::from_secs(INSTALL_TIMEOUT_SECS))
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| format!("下载 Antigravity CLI 失败：{e}"))?;
+        let staged = tempfile::Builder::new()
+            .suffix(".exe")
+            .tempfile_in(parent)
+            .map_err(|e| format!("无法在 Antigravity CLI 安装目录暂存更新：{e}"))?;
+        let (file, staged) = staged.into_parts();
+        let mut file = tokio::fs::File::from_std(file);
+        let mut hasher = Sha512::new();
+        let mut bytes = 0;
+        while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+            bytes += chunk.len();
+            if bytes > MAX_BYTES {
+                return Err("Antigravity CLI 下载超过大小限制".into());
+            }
+            hasher.update(&chunk);
+            file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        }
+        if format!("{:x}", hasher.finalize()) != self.sha512 {
+            return Err("Antigravity CLI 下载未通过 SHA-512 校验".into());
+        }
+        file.sync_all().await.map_err(|e| e.to_string())?;
+        drop(file);
+        let version = verify_cli_version_in(
+            def,
+            &staged,
+            Duration::from_secs(20),
+            Some(&plan.target_environment),
+        )
+        .await?;
+        if version != plan.version || !plan.identity.still_current(def, &plan.binary) {
+            return Err("Antigravity CLI 的版本或安装路径已变更，请刷新安装计划".into());
+        }
+        staged
+            .persist(&plan.binary)
+            .map_err(|e| format!("无法替换 Antigravity CLI：{e}"))?;
+        Ok(())
+    }
 }
 
 impl ManagedSource {
@@ -36,8 +133,19 @@ impl ManagedSource {
         binary: &Path,
         environment: &Environment,
     ) -> Option<Self> {
-        if cfg!(windows) || wsl::is_wsl_target(binary) {
+        if wsl::is_wsl_target(binary) {
             return None;
+        }
+        if cfg!(windows) {
+            if def.id != "antigravity" {
+                return None;
+            }
+            let default = PathBuf::from(environment_value(environment, "LOCALAPPDATA")?)
+                .join("agy/bin/agy.exe");
+            return (binary.file_name()?.eq_ignore_ascii_case("agy.exe")
+                && binary.symlink_metadata().ok()?.file_type().is_file()
+                && resource_path(binary.parent()?) == resource_path(default.parent()?))
+            .then_some(Self::Antigravity);
         }
         let real = std::fs::canonicalize(binary).ok()?;
         for directory in real.ancestors().skip(3) {
@@ -54,6 +162,11 @@ impl ManagedSource {
             let provider_package = match def.install.update {
                 UpdateStrategy::ManagedPackage { brew_formula, .. }
                 | UpdateStrategy::KimiManaged { brew_formula, .. } => package == brew_formula,
+                UpdateStrategy::NpmPackageMigration {
+                    brew_formula,
+                    previous_brew_formula,
+                    ..
+                } => package == brew_formula || package == previous_brew_formula,
                 _ => match def.id {
                     "claude" => matches!(package, "claude-code" | "claude-code@latest"),
                     "grok" => package == "grok" && kind == "--cask",
@@ -113,6 +226,7 @@ impl ManagedSource {
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Antigravity => "Antigravity CLI 原生安装",
             Self::Claude => "Claude Code 原生安装",
             Self::GrokNpm { .. } => "Grok npm",
             Self::Homebrew { .. } => "Homebrew",
@@ -123,7 +237,7 @@ impl ManagedSource {
         match self {
             Self::Homebrew { prefix, .. } => Some(format!("brew:{}", resource_path(prefix))),
             Self::GrokNpm { prefix, .. } => Some(format!("prefix:{}", resource_path(prefix))),
-            Self::Claude => None,
+            Self::Antigravity | Self::Claude => None,
         }
     }
 
@@ -137,6 +251,22 @@ impl ManagedSource {
         self.configure_environment(&mut captured);
         let environment = &captured;
         match self {
+            Self::Antigravity => {
+                let url =
+                    antigravity_manifest_url().ok_or("此平台不支持 Antigravity CLI 自动更新")?;
+                let manifest = http
+                    .get(url)
+                    .timeout(Duration::from_secs(8))
+                    .send()
+                    .await
+                    .and_then(reqwest::Response::error_for_status)
+                    .map_err(|_| "查询 Antigravity CLI 发布版本失败")?
+                    .json()
+                    .await
+                    .map_err(|_| "读取 Antigravity CLI 发布清单失败")?;
+                AntigravityAsset::from_manifest(&manifest)
+                    .ok_or_else(|| "Antigravity CLI 发布清单缺少可校验的 Windows 安装包".into())
+            }
             Self::Claude => {
                 let doctor = probe(binary, &["doctor"], environment)
                     .await
@@ -174,7 +304,7 @@ impl ManagedSource {
                 let mut command =
                     CommandPlan::direct(binary.to_string_lossy(), &["install", &version]);
                 command.current_dir = Some(std::env::temp_dir());
-                Ok(UpdateOffer { version, command })
+                Ok(UpdateOffer::command(version, command))
             }
             Self::GrokNpm { prefix, .. } => {
                 let npm = find_npm(environment).ok_or("未找到管理此安装的 npm")?;
@@ -196,7 +326,7 @@ impl ManagedSource {
                     .and_then(normalized_version)
                     .ok_or("Grok 未提供可比较的版本号")?;
                 let command = npm_install_plan(&npm, prefix, "@xai-official/grok", &version, &[]);
-                Ok(UpdateOffer { version, command })
+                Ok(UpdateOffer::command(version, command))
             }
             Self::Homebrew {
                 prefix,
@@ -252,20 +382,17 @@ impl ManagedSource {
                     .and_then(|version| version.split(',').next())
                     .and_then(normalized_version)
                     .ok_or("Homebrew 未提供可比较的版本号")?;
-                Ok(UpdateOffer {
+                Ok(UpdateOffer::command(
                     version,
-                    command: CommandPlan::direct(
-                        brew.to_string_lossy(),
-                        &["upgrade", kind, package_ref],
-                    ),
-                })
+                    CommandPlan::direct(brew.to_string_lossy(), &["upgrade", kind, package_ref]),
+                ))
             }
         }
     }
 
     pub fn configure_environment(&self, environment: &mut Environment) {
         match self {
-            Self::Claude => {}
+            Self::Antigravity | Self::Claude => {}
             Self::Homebrew { .. } => {
                 environment.insert("HOMEBREW_NO_AUTO_UPDATE".into(), "1".into());
             }

@@ -168,6 +168,7 @@ impl AgentChild {
         // Keep the Child inside its owner for the whole capture. In particular,
         // a cancelled Windows probe kills the tree before dropping its leader.
         let (status, stdout, stderr) = tokio::try_join!(self.wait(), read(stdout), read_stderr)?;
+        self.reap().await?;
         Ok(std::process::Output {
             status,
             stdout,
@@ -202,26 +203,41 @@ impl AgentChild {
         }
         Ok(status)
     }
+
+    pub(super) async fn reap(mut self) -> std::io::Result<()> {
+        self.reap_in_background()
+            .ok_or_else(|| std::io::Error::other("CLI reaper unavailable"))?
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    fn reap_in_background(&mut self) -> Option<tokio::task::JoinHandle<std::io::Result<()>>> {
+        let mut child = self.child.take()?;
+        let resource = self._resource.take();
+        let maintenance = self._maintenance.take();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            // The reaper retains both leases even when the caller stops waiting.
+            Some(runtime.spawn(async move {
+                let result = child.wait().await.map(|_| ());
+                drop(child);
+                drop(resource);
+                drop(maintenance);
+                result
+            }))
+        } else {
+            // No runtime remains to reap. Keep exclusion until application exit.
+            drop(child);
+            std::mem::forget(resource);
+            std::mem::forget(maintenance);
+            None
+        }
+    }
 }
 impl Drop for AgentChild {
     fn drop(&mut self) {
-        let _ = self.start_kill();
-        if let Some(mut child) = self.child.take() {
-            let resource = self._resource.take();
-            let maintenance = self._maintenance.take();
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                runtime.spawn(async move {
-                    let _ = child.wait().await;
-                    drop(child);
-                    drop(resource);
-                    drop(maintenance);
-                });
-            } else {
-                // No runtime remains to reap. Keep exclusion until application exit.
-                drop(child);
-                std::mem::forget(resource);
-                std::mem::forget(maintenance);
-            }
+        if self.child.is_some() {
+            let _ = self.start_kill();
+            drop(self.reap_in_background());
         }
     }
 }
@@ -976,6 +992,30 @@ pub fn parse_json_line(line: &str) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn finished_probe_releases_the_maintenance_lease_before_returning() {
+        use crate::external_agents::session::live::{ResourceLease, MAINTENANCE_OWNER};
+
+        let keys = vec![format!("fixture:{}", uuid::Uuid::new_v4())];
+        let lease = ResourceLease::acquire(keys.clone(), true).unwrap();
+        let output = MAINTENANCE_OWNER
+            .scope(lease, async {
+                let mut command = if cfg!(windows) {
+                    let mut command = Command::new("cmd.exe");
+                    command.args(["/D", "/C", "exit", "/b", "0"]);
+                    command
+                } else {
+                    let mut command = Command::new("sh");
+                    command.args(["-c", "exit 0"]);
+                    command
+                };
+                command.group_output().await.unwrap()
+            })
+            .await;
+        assert!(output.status.success());
+        assert!(ResourceLease::acquire(keys, true).is_ok());
+    }
 
     #[tokio::test]
     async fn spawn_rejects_stale_command_revision_before_starting_process() {

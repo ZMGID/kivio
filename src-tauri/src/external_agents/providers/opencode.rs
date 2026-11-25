@@ -13,12 +13,16 @@ const OPENCODE_MODELS: &[(&str, &str)] = &[
 ];
 
 const OPENCODE_INSTALL: AgentInstallSpec = AgentInstallSpec {
-    npm_package: Some("opencode-ai"),
+    npm_package: Some("@opencode/cli"),
     npm_install_args: &[],
     pypi_package: None,
-    script_unix: Some("curl -fsSL https://opencode.ai/install | bash"),
+    script_unix: Some("curl -fsSL https://opencode.ai/v2/install | bash"),
     script_windows: None,
-    update: UpdateStrategy::Command(&["upgrade"]),
+    update: UpdateStrategy::NpmPackageMigration {
+        previous_package: "opencode-ai",
+        brew_formula: "opencode-v2",
+        previous_brew_formula: "opencode",
+    },
     latest_version: LatestVersionStrategy::Registry,
     docs: "https://opencode.ai/docs/",
     config_dir: Some(".config/opencode"),

@@ -14,7 +14,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncReadExt;
 
 use crate::external_agents::registry::get_agent_def;
-use crate::external_agents::types::{AgentInstallSpec, LatestVersionStrategy, PostInstallStrategy};
+use crate::external_agents::types::{
+    AgentInstallSpec, LatestVersionStrategy, PostInstallStrategy, RuntimeAgentDef, UpdateStrategy,
+};
 use crate::proc::NoConsoleWindow;
 
 use super::session::live::{
@@ -26,7 +28,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
 mod managed;
-use managed::ManagedSource;
+use managed::{AntigravityAsset, ManagedSource};
 
 enum InstallSource {
     NewNpm {
@@ -45,7 +47,7 @@ struct PreparedInstall {
     source: InstallSource,
     version: String,
     identity: super::overrides::LaunchIdentity,
-    command: CommandPlan,
+    action: InstallAction,
     environment: BTreeMap<OsString, OsString>,
     target_environment: BTreeMap<OsString, OsString>,
     created: Instant,
@@ -154,28 +156,82 @@ pub(crate) fn proven_npm_prefix(binary: &Path, package: &str) -> Option<PathBuf>
     None
 }
 
+pub(super) fn installed_npm_package(
+    def: &RuntimeAgentDef,
+    binary: &Path,
+) -> Option<(&'static str, PathBuf)> {
+    let previous = match def.install.update {
+        UpdateStrategy::NpmPackageMigration {
+            previous_package, ..
+        } => Some(previous_package),
+        _ => None,
+    };
+    def.install
+        .npm_package
+        .into_iter()
+        .chain(previous)
+        .find_map(|package| proven_npm_prefix(binary, package).map(|prefix| (package, prefix)))
+}
+
 fn npm_shim_matches(shim: &str, target: &str) -> bool {
-    let expected = format!(
-        r#"@echo off
+    if target
+        .strip_prefix("%dp0%/")
+        .is_none_or(|path| path.contains(['"', '%', '!', '\r', '\n']))
+    {
+        return false;
+    }
+    const PREAMBLE: &str = r#"@echo off
 goto start
 :find_dp0
 set dp0=%~dp0
 exit /b
 :start
 setlocal
-call :find_dp0
-if exist "%dp0%/node.exe" (
+call :find_dp0"#;
+    const NODE_SETUP: &str = r#"if exist "%dp0%/node.exe" (
 set "_prog=%dp0%/node.exe"
 ) else (
 set "_prog=node"
 set pathext=%pathext:;.js;=;%
-)
-endlocal & goto #_undefined_# 2>nul || title %comspec% & "%_prog%" "{target}" %*"#
-    );
-    shim.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .eq(expected.lines())
+)"#;
+    const NODE_COMMAND: &str =
+        r#"endlocal & goto #_undefined_# 2>nul || title %comspec% & "%_prog%""#;
+    let mut lines = shim.lines().map(str::trim).filter(|line| !line.is_empty());
+    if !lines
+        .by_ref()
+        .take(PREAMBLE.lines().count())
+        .eq(PREAMBLE.lines())
+    {
+        return false;
+    }
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    let command = if target.ends_with(".exe") {
+        first
+    } else {
+        if !std::iter::once(first)
+            .chain(lines.by_ref())
+            .take(NODE_SETUP.lines().count())
+            .eq(NODE_SETUP.lines())
+        {
+            return false;
+        }
+        let Some(args) = lines
+            .next()
+            .and_then(|line| line.strip_prefix(NODE_COMMAND))
+            .and_then(|args| args.strip_prefix([' ', '\t']))
+        else {
+            return false;
+        };
+        args.trim_start_matches([' ', '\t'])
+    };
+    let quoted_target = format!("\"{target}\"");
+    command
+        .strip_prefix(&quoted_target)
+        .and_then(|args| args.strip_prefix([' ', '\t']))
+        .is_some_and(|args| args.trim_start_matches([' ', '\t']) == "%*")
+        && lines.next().is_none()
 }
 
 fn consume_plan(id: &str, agent: &str) -> Result<PreparedInstall, String> {
@@ -234,6 +290,7 @@ async fn prepare_npm_install(
     http: &reqwest::Client,
     def: &super::types::RuntimeAgentDef,
     binary: Option<&Path>,
+    installed: Option<(&'static str, PathBuf)>,
     version: Option<&str>,
     environment: BTreeMap<OsString, OsString>,
 ) -> Result<PreparedInstall, String> {
@@ -246,16 +303,19 @@ async fn prepare_npm_install(
     if def.install.requires_pnpm && !pnpm_is_ready().await {
         return Err("请先按 https://pnpm.io/installation 安装 pnpm，再刷新安装计划".into());
     }
-    let package = def
-        .install
-        .npm_package
+    let package = installed
+        .as_ref()
+        .map(|(package, _)| *package)
+        .or(def.install.npm_package)
         .ok_or("此原生安装尚无可验证的固定版本命令，请按官方文档维护")?;
     let version = version
         .filter(|value| extract_semver(value).as_deref() == Some(*value))
         .ok_or("无法确定准确目标版本，请刷新后重试")?;
     let npm = find_npm(&environment).ok_or("请先按官方文档安装 Node.js/npm")?;
-    let prefix = if let Some(binary) = binary {
-        proven_npm_prefix(binary, package).ok_or("未识别此路径的安装方式，请用原安装方式更新")?
+    let prefix = if let Some((_, prefix)) = installed {
+        prefix
+    } else if binary.is_some() {
+        return Err("未识别此路径的安装方式，请用原安装方式更新".into());
     } else {
         let mut command = super::spawn::cli_command(&npm);
         command
@@ -324,7 +384,7 @@ async fn prepare_npm_install(
         target,
         source,
         version,
-        command,
+        InstallAction::Command(command),
         environment,
     ))
 }
@@ -334,7 +394,7 @@ fn prepare_install(
     target: PathBuf,
     source: InstallSource,
     version: &str,
-    command: CommandPlan,
+    action: InstallAction,
     environment: BTreeMap<OsString, OsString>,
 ) -> PreparedInstall {
     let target_command = super::spawn::agent_probe_command(def, &target);
@@ -346,7 +406,7 @@ fn prepare_install(
         binary: target,
         source,
         version: version.into(),
-        command,
+        action,
         environment,
         target_environment,
         created: Instant::now(),
@@ -370,6 +430,21 @@ struct CommandPlan {
     args: Vec<String>,
     display: String,
     current_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum InstallAction {
+    Command(CommandPlan),
+    Antigravity(AntigravityAsset),
+}
+
+impl InstallAction {
+    fn display(&self) -> &str {
+        match self {
+            Self::Command(command) => &command.display,
+            Self::Antigravity(asset) => asset.url.as_str(),
+        }
+    }
 }
 
 impl CommandPlan {
@@ -576,8 +651,8 @@ async fn stream_install_child(
     let mut out_buf = [0u8; 1024];
     let mut err_buf = [0u8; 1024];
 
-    let pump = async {
-        loop {
+    let pump = async move {
+        let status = loop {
             let out = async {
                 match stdout.as_mut() {
                     Some(reader) => Some(reader.read(&mut out_buf).await),
@@ -638,7 +713,9 @@ async fn stream_install_child(
                     }
                 },
             }
-        }
+        }?;
+        child.reap().await?;
+        Ok::<_, std::io::Error>(status)
     };
 
     match tokio::time::timeout(Duration::from_secs(timeout_secs), pump).await {
@@ -648,8 +725,6 @@ async fn stream_install_child(
             false
         }
         Err(_) => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
             emit(format!("安装超时（{timeout_secs}s），已放弃"));
             false
         }
@@ -748,8 +823,7 @@ async fn antigravity_latest_version(
     // agy's installer reads the release manifest for the target platform. A WSL
     // launcher can target a different userspace, so use the upstream release there.
     if !binary.is_some_and(super::wsl::is_wsl_target) {
-        if let Some(platform) = antigravity_manifest_platform() {
-            let url = format!("https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/{platform}.json");
+        if let Some(url) = antigravity_manifest_url() {
             if let Some(version) = release_version(http, &url, "version").await {
                 return Some(version);
             }
@@ -761,6 +835,11 @@ async fn antigravity_latest_version(
         "tag_name",
     )
     .await
+}
+
+fn antigravity_manifest_url() -> Option<String> {
+    let platform = antigravity_manifest_platform()?;
+    Some(format!("https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/{platform}.json"))
 }
 
 fn antigravity_manifest_platform() -> Option<&'static str> {
@@ -794,19 +873,36 @@ async fn release_version(http: &reqwest::Client, url: &str, field: &str) -> Opti
 }
 
 async fn hermes_latest_version(http: &reqwest::Client) -> Option<String> {
-    let value: serde_json::Value = http
+    let result = http
         .get("https://api.github.com/repos/NousResearch/hermes-agent/releases/latest")
         .header(reqwest::header::USER_AGENT, "Kivio")
         .timeout(Duration::from_secs(8))
         .send()
         .await
+        .and_then(reqwest::Response::error_for_status);
+    if let Ok(response) = result {
+        if let Ok(value) = response.json().await {
+            if let Some(version) = hermes_version_from_release(&value) {
+                return Some(version);
+            }
+        }
+    }
+    let response = http
+        .head("https://github.com/NousResearch/hermes-agent/releases/latest")
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
         .ok()?
         .error_for_status()
-        .ok()?
-        .json()
-        .await
         .ok()?;
-    hermes_version_from_release(&value)
+    hermes_version_from_redirect(response.url())
+}
+
+fn hermes_version_from_redirect(url: &reqwest::Url) -> Option<String> {
+    let base = "https://github.com/NousResearch/hermes-agent/releases/tag/v";
+    let version = url.as_str().strip_prefix(base)?;
+    let major = version.split('.').next()?.parse::<u32>().ok()?;
+    (!(2000..3000).contains(&major) && is_numeric_core(version)).then(|| version.to_owned())
 }
 
 fn hermes_version_from_release(value: &serde_json::Value) -> Option<String> {
@@ -1034,7 +1130,7 @@ pub async fn chat_external_cli_install_info(
                 plan.identity = identity;
             }
             let id = uuid::Uuid::new_v4().to_string();
-            let display = plan.command.display.clone();
+            let display = plan.action.display().to_string();
             let binary = plan.binary.to_string_lossy().into_owned();
             let source = match &plan.source {
                 InstallSource::NewNpm { prefix } | InstallSource::Npm { prefix, .. } => {
@@ -1109,7 +1205,7 @@ async fn maintenance_preview(
                 binary.to_owned(),
                 InstallSource::Managed(source),
                 &offer.version,
-                offer.command,
+                offer.action,
                 environment,
             ))
         } else {
@@ -1119,8 +1215,12 @@ async fn maintenance_preview(
     }
 
     let spec = &def.install;
+    let installed_npm = binary.and_then(|binary| installed_npm_package(def, binary));
     let latest = match spec.latest_version {
-        LatestVersionStrategy::Registry => latest_version(http, spec).await,
+        LatestVersionStrategy::Registry => match &installed_npm {
+            Some((package, _)) => npm_latest_version(http, package).await,
+            None => latest_version(http, spec).await,
+        },
         LatestVersionStrategy::AntigravityRelease => antigravity_latest_version(http, binary).await,
         LatestVersionStrategy::HermesRelease => hermes_latest_version(http).await,
     };
@@ -1130,7 +1230,15 @@ async fn maintenance_preview(
     {
         Err("已是当前更新渠道的最新版本".into())
     } else {
-        prepare_npm_install(http, def, binary, latest.as_deref(), environment).await
+        prepare_npm_install(
+            http,
+            def,
+            binary,
+            installed_npm,
+            latest.as_deref(),
+            environment,
+        )
+        .await
     };
     (latest, prepared)
 }
@@ -1342,7 +1450,7 @@ async fn execute_install_plan(
             }
             let offer = source.offer(http, &plan.binary, &plan.environment).await?;
             if offer.version != plan.version
-                || offer.command != plan.command
+                || offer.action != plan.action
                 || !plan.identity.still_current(def, &plan.binary)
             {
                 return Err(stale());
@@ -1352,18 +1460,25 @@ async fn execute_install_plan(
     }
     MAINTENANCE_OWNER
         .scope(lease, async {
-            let mut command = super::spawn::cli_command(&plan.command.program);
-            let mut environment = plan.environment.clone();
-            if let InstallSource::Managed(source) = &plan.source {
-                source.configure_environment(&mut environment);
-            }
-            command.env_clear().envs(&environment);
-            configure_install_command(&mut command, &plan.command);
-            emit(format!("$ {}", plan.command.display));
-            let child = super::spawn::AgentChild::spawn(&mut command)
-                .map_err(|e| format!("启动安装命令失败: {e}"))?;
-            if !stream_install_child(child, emit, INSTALL_TIMEOUT_SECS).await {
-                return Err("安装或更新失败；原路径仍保留，请按官方文档修复该安装".into());
+            match &plan.action {
+                InstallAction::Command(command_plan) => {
+                    let mut command = super::spawn::cli_command(&command_plan.program);
+                    let mut environment = plan.environment.clone();
+                    if let InstallSource::Managed(source) = &plan.source {
+                        source.configure_environment(&mut environment);
+                    }
+                    command.env_clear().envs(&environment);
+                    configure_install_command(&mut command, command_plan);
+                    emit(format!("$ {}", command_plan.display));
+                    let child = super::spawn::AgentChild::spawn(&mut command)
+                        .map_err(|e| format!("启动安装命令失败: {e}"))?;
+                    if !stream_install_child(child, emit, INSTALL_TIMEOUT_SECS).await {
+                        return Err("安装或更新失败；原路径仍保留，请按官方文档修复该安装".into());
+                    }
+                }
+                InstallAction::Antigravity(asset) => {
+                    asset.install(http, def, plan, emit).await?;
+                }
             }
             finish_cli_install(def, plan, emit).await
         })
@@ -1501,7 +1616,7 @@ esac
             },
             version: version.into(),
             identity: super::super::overrides::LaunchIdentity::capture(def, binary),
-            command: CommandPlan::direct("unused", &[]),
+            action: InstallAction::Command(CommandPlan::direct("unused", &[])),
             target_environment: environment.clone(),
             environment,
             created: Instant::now(),
@@ -1590,6 +1705,37 @@ esac
             "%dp0%/node_modules/fixture/bin.js"
         ));
     }
+
+    #[test]
+    fn npm_windows_shim_accepts_node_and_native_entrypoints() {
+        let preamble = "@echo off\ngoto start\n:find_dp0\nset dp0=%~dp0\nexit /b\n:start\nsetlocal\ncall :find_dp0\n";
+        let node_target = "%dp0%/node_modules/@openai/codex/bin/codex.js";
+        let node = format!(
+            "{preamble}\nif exist \"%dp0%/node.exe\" (\n  set \"_prog=%dp0%/node.exe\"\n) else (\n  set \"_prog=node\"\n  set pathext=%pathext:;.js;=;%\n)\n\nendlocal & goto #_undefined_# 2>nul || title %comspec% & \"%_prog%\"  \"{node_target}\" %*\n"
+        );
+        let exe_target = "%dp0%/node_modules/@opencode/cli/bin/opencode.exe";
+        let exe = format!("{preamble}\"{exe_target}\"   %*\n");
+        assert!(npm_shim_matches(&node, node_target));
+        assert!(npm_shim_matches(&exe, exe_target));
+        assert!(!npm_shim_matches(&node, exe_target));
+        assert!(!npm_shim_matches(
+            &format!("{exe}echo redirected\n"),
+            exe_target
+        ));
+        assert!(!npm_shim_matches(&exe.replace("   %*", "& %*"), exe_target));
+    }
+
+    #[test]
+    fn hermes_redirect_only_accepts_the_repositories_cli_version_tags() {
+        let base = "https://github.com/NousResearch/hermes-agent/releases/tag/";
+        let version = |tag: &str| {
+            hermes_version_from_redirect(&reqwest::Url::parse(&format!("{base}{tag}")).unwrap())
+        };
+        assert_eq!(version("v0.23.4").as_deref(), Some("0.23.4"));
+        assert!(version("v2026.9.14").is_none());
+        assert!(version("v0.23.4+canary.20261125").is_none());
+        assert!(version("v0.23.4-rc.1").is_none());
+    }
     #[test]
     fn npm_source_requires_real_manifest_global_layout_and_entry() {
         let root = tempfile::tempdir().unwrap();
@@ -1623,6 +1769,75 @@ esac
             std::fs::write(local.join("main.js"), b"fixture").unwrap();
             assert!(proven_npm_prefix(&local.join("main.js"), "fixture").is_none());
         }
+    }
+
+    #[test]
+    fn opencode_npm_maintenance_preserves_the_installed_major_channel() {
+        let root = tempfile::tempdir().unwrap();
+        let def = get_agent_def("opencode").unwrap();
+        for package in ["opencode-ai", "@opencode/cli"] {
+            let prefix = root
+                .path()
+                .join(if package == "opencode-ai" { "v1" } else { "v2" });
+            let modules = if cfg!(windows) {
+                "node_modules"
+            } else {
+                "lib/node_modules"
+            };
+            let package_dir = prefix.join(modules).join(package);
+            std::fs::create_dir_all(&package_dir).unwrap();
+            std::fs::write(
+                package_dir.join("package.json"),
+                serde_json::json!({"name":package,"bin":{"opencode":"bin.js"}}).to_string(),
+            )
+            .unwrap();
+            let entry = package_dir.join("bin.js");
+            std::fs::write(&entry, b"fixture").unwrap();
+            let (actual_package, actual_prefix) = installed_npm_package(def, &entry).unwrap();
+            assert_eq!(actual_package, package);
+            assert_eq!(resource_path(&actual_prefix), resource_path(&prefix));
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "downloads the official Windows release into a temporary installation"]
+    async fn antigravity_updates_a_copy_of_the_installed_windows_cli() {
+        let fixture = tempfile::tempdir().unwrap();
+        let original =
+            std::env::var_os("KIVIO_TEST_AGY").expect("set KIVIO_TEST_AGY to an older agy.exe");
+        let binary = fixture.path().join("agy/bin/agy.exe");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::copy(original, &binary).unwrap();
+        let def = get_agent_def("antigravity").unwrap();
+        let mut environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+        environment
+            .retain(|key, _| !environment_key_matches(key, std::ffi::OsStr::new("LOCALAPPDATA")));
+        environment.insert("LOCALAPPDATA".into(), fixture.path().as_os_str().into());
+        let installed = verify_cli_version(def, &binary, Duration::from_secs(20))
+            .await
+            .unwrap();
+        let http = reqwest::Client::new();
+        let (latest, plan) =
+            maintenance_preview(&http, def, Some(&binary), Some(&installed), environment).await;
+        let plan = plan.unwrap();
+        let expected = latest.unwrap();
+        assert!(version_is_newer(&installed, &expected));
+        execute_install_plan(
+            &http,
+            &LiveSessionRegistry::default(),
+            def,
+            &plan,
+            &|line| println!("{line}"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            verify_cli_version(def, &binary, Duration::from_secs(20))
+                .await
+                .unwrap(),
+            expected
+        );
     }
 
     #[cfg(windows)]

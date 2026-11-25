@@ -79,12 +79,10 @@ pub(crate) fn runtime_resources(agent: Option<&str>, binary: &std::path::Path) -
                     &crate::external_agents::overrides::agent_config(agent).unwrap_or_default(),
                 ),
             );
-            if let Some(package) = def.install.npm_package {
-                if let Some(prefix) =
-                    crate::external_agents::installer::proven_npm_prefix(binary, package)
-                {
-                    keys.push(format!("prefix:{}", resource_path(&prefix)));
-                }
+            if let Some((_, prefix)) =
+                crate::external_agents::installer::installed_npm_package(def, binary)
+            {
+                keys.push(format!("prefix:{}", resource_path(&prefix)));
             }
         }
     }
