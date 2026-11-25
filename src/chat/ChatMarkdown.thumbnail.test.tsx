@@ -27,6 +27,42 @@ beforeEach(() => {
 })
 
 describe('Markdown artifact thumbnail', () => {
+  it('shows a standalone row of local image links as labeled previews', async () => {
+    const preview = 'data:image/png;base64,AAAA'
+    loadAttachmentDataUrl.mockResolvedValue(preview)
+    const opened = vi.fn()
+    const unsubscribe = onChatImageViewerOpen(opened)
+    try {
+      render(<ChatMarkdown conversationId="comparison" content={
+        '[调整前](/C:/Work/Kivio/before.png) · [**调整后**](C:/Work/Kivio/after.png) · [深色窄窗](file:///tmp/dark.webp)'
+      } />)
+      for (const label of ['调整前', '调整后', '深色窄窗']) {
+        expect(await screen.findByRole('img', { name: label })).toHaveAttribute('src', preview)
+        expect(screen.getByText(label)).toBeVisible()
+      }
+      fireEvent.click(screen.getAllByRole('button', { name: '预览图片' })[1]!)
+      expect(opened).toHaveBeenCalledWith(expect.objectContaining({ path: 'C:/Work/Kivio/after.png' }))
+      expect(screen.queryByText('·')).not.toBeInTheDocument()
+    } finally {
+      unsubscribe()
+    }
+  })
+
+  it('keeps the link if the preview cannot be read, and leaves prose and web links clickable', async () => {
+    render(<ChatMarkdown conversationId="comparison" content={[
+      '[缺失截图](./output/missing.png)',
+      '详见[原图](./output/diagram.png)。',
+      '[外部截图](https://example.com/screenshot.png)',
+    ].join('\n\n')} />)
+    await waitFor(() => expect(loadWorkspaceImagePreview).toHaveBeenCalledWith('./output/missing.png', 'comparison'))
+    expect(loadWorkspaceImagePreview).toHaveBeenCalledTimes(1)
+    for (const label of ['缺失截图', '原图', '外部截图']) {
+      expect(screen.getByRole('link', { name: new RegExp(`${label}$`) })).toBeVisible()
+    }
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(loadAttachmentDataUrl).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['/C:/Work/Kivio/output/tool-call-screenshots/light.png', 'C:/Work/Kivio/output/tool-call-screenshots/light.png'],
     ['C:/Work/Kivio/output/screenshot.png', 'C:/Work/Kivio/output/screenshot.png'],

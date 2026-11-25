@@ -80,7 +80,7 @@ describe('ChatMarkdown 链接点击', () => {
   })
 
   it('opens a Windows file link written with a leading slash', () => {
-    const event = clickLink('[截图](/C:/Work/Kivio/output/chart.png)')
+    const event = clickLink('请查看[截图](/C:/Work/Kivio/output/chart.png)。')
     expect(event.defaultPrevented).toBe(true)
     expect(openLocalFile).toHaveBeenCalledWith('C:/Work/Kivio/output/chart.png', null)
   })

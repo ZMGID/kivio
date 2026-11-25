@@ -7,6 +7,7 @@ import { Block, defaultRehypePlugins, defaultRemarkPlugins, normalizeHtmlIndenta
 import remend, { type RemendOptions } from 'remend'
 import type { PluggableList, Plugin } from 'unified'
 import type { Root } from 'hast'
+import { toString as markdownText } from 'mdast-util-to-string'
 import { cjk } from '@streamdown/cjk'
 import remarkCjkFriendlyGfmStrikethrough from 'remark-cjk-friendly-gfm-strikethrough'
 import { code } from '@streamdown/code'
@@ -954,6 +955,21 @@ function RenderedMarkdownBlock({ source, children }: { source?: string; children
 }
 
 const renderedBlockTag = 'kivio-rendered-markdown'
+// A paragraph of image links reads as a gallery. Keep links embedded in prose intact.
+const markLocalImageLinks: Plugin<[], Root> = () => (tree) => {
+  for (const paragraph of tree.children) {
+    if (paragraph.type !== 'element' || paragraph.tagName !== 'p') continue
+    const content = paragraph.children.filter(node => node.type !== 'text' || !/^[\s·•、,，|]*$/u.test(node.value))
+    const links = content.filter(node => node.type === 'element' && node.tagName === 'a')
+    if (!links.length || !content.every(node => node.type === 'element' && (
+      node.tagName === 'br' || (node.tagName === 'a' && typeof node.properties.href === 'string'
+        && localMarkdownImageTarget(decodeKivioInternalUrl(node.properties.href)))
+    ))) continue
+    for (const link of links) link.data = { ...link.data, previewAsImage: true }
+    paragraph.children = content
+  }
+}
+
 const captureMarkdownBlock: Plugin<[], Root> = () => (tree, file) => {
   tree.children = [{
     type: 'element', tagName: renderedBlockTag,
@@ -961,7 +977,7 @@ const captureMarkdownBlock: Plugin<[], Root> = () => (tree, file) => {
     children: tree.children.filter(node => node.type !== 'doctype'),
   }]
 }
-const streamdownRehypePlugins: PluggableList = [...Object.values(defaultRehypePlugins), captureMarkdownBlock]
+const streamdownRehypePlugins: PluggableList = [...Object.values(defaultRehypePlugins), markLocalImageLinks, captureMarkdownBlock]
 
 // streamdown Components 的 pre 签名在版本间不完全一致；功能组件只消费 children。
 const markdownComponents = {
@@ -1262,6 +1278,12 @@ function isLocalImageReference(src: string): boolean {
   return /^(?:file:|[a-z]:[\\/]|\/(?!\/)|\\\\)/i.test(src)
 }
 
+function localMarkdownImageTarget(src: string) {
+  if (!src || src.startsWith('#') || isBrowserImageSrc(src)) return null
+  const target = localLinkTarget(src)
+  return target && isImageArtifact({ name: target.name, path: target.path }) ? target : null
+}
+
 const chatMarkdownUrlTransform: UrlTransform = (url) => {
   // LinkAnchor/MarkdownArtifactImage perform the app-level routing and artifact
   // lookup. Streamdown's default transform intentionally rejects file:/relative
@@ -1296,18 +1318,20 @@ function MarkdownArtifactImage({
   artifact,
   conversationId,
   onImageClick,
+  linkFallback,
 }: {
   rawSrc: string
   alt: string
   artifact?: ChatToolArtifact
   conversationId?: string | null
   onImageClick?: (src: string, alt: string, name?: string) => void
+  linkFallback?: ReactNode
 }) {
   const t = useT()
   const inline = artifact ? artifactDataUrl(artifact) : ''
   const absolute = isLocalImageReference(rawSrc)
-  const local = !artifact && !isBrowserImageSrc(rawSrc) && (absolute || conversationId) ? localLinkTarget(rawSrc) : null
-  const localPath = local && isImageArtifact({ name: local.name, path: local.path }) ? local.path : undefined
+  const local = !artifact && (absolute || conversationId) ? localMarkdownImageTarget(rawSrc) : null
+  const localPath = local?.path
   const path = artifact?.path ?? localPath
   const name = artifact?.name ?? local?.name ?? rawSrc
   const [retry, setRetry] = useState(0)
@@ -1337,6 +1361,7 @@ function MarkdownArtifactImage({
     }
   }, [absolute, artifact, conversationId, inline, localPath, name, path, retry])
 
+  if (!src && linkFallback) return <span className="mr-2 inline-block">{linkFallback}</span>
   if (!src) return localPath && loaded ? (
     <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
       <span role="status">{t.chatImagePreviewFailed}</span>
@@ -1354,7 +1379,9 @@ function MarkdownArtifactImage({
     }
   }
   return (
-    <span data-chat-md-image="" className="inline-block max-w-full align-top">
+    <span data-chat-md-image="" className={linkFallback
+      ? 'mb-2 mr-2 inline-flex max-w-full flex-col items-start gap-1 align-top'
+      : 'inline-block max-w-full align-top'}>
       <ChatInlineImage
         src={src}
         alt={alt}
@@ -1362,8 +1389,9 @@ function MarkdownArtifactImage({
         path={resolvedPath ?? artifact?.filePath ?? artifact?.localPath}
         conversationId={conversationId}
         onOpenViewer={openViewer}
-        className="mb-2 mr-2"
+        className={linkFallback ? undefined : 'mb-2 mr-2'}
       />
+      {linkFallback && <span className="text-xs text-muted-foreground">{alt}</span>}
     </span>
   )
 }
@@ -1395,7 +1423,7 @@ function MarkdownArtifactReference({ url, label, image }: { url: string; label: 
 // context without reparsing text or remounting their loaded DOM.
 const referencedMarkdownComponents: Components = {
   ...markdownComponents,
-  a: function MarkdownLink({ href, children }) {
+  a: function MarkdownLink({ href, children, node }) {
     const context = useContext(MarkdownReferencesContext)
     const url = decodeKivioInternalUrl(typeof href === 'string' ? href : '')
     if (url.startsWith('artifact:')) return <MarkdownArtifactReference url={url} label={codeChildrenToString(children)} image={false} />
@@ -1404,7 +1432,12 @@ const referencedMarkdownComponents: Components = {
       const hit = context.citations?.get(citationKey(cite[1]))
       return hit ? <CitationChip n={hit.n} hit={hit} /> : <>{children}</>
     }
-    return <LinkAnchor href={url} conversationId={context.conversationId}>{children}</LinkAnchor>
+    const link = <LinkAnchor href={url} conversationId={context.conversationId}>{children}</LinkAnchor>
+    if (node?.data && 'previewAsImage' in node.data && node.data.previewAsImage === true) {
+      return <MarkdownArtifactImage rawSrc={url} alt={markdownText(node)} conversationId={context.conversationId}
+        onImageClick={context.onImageClick} linkFallback={link} />
+    }
+    return link
   },
   img: function MarkdownImage({ src, alt }) {
     const context = useContext(MarkdownReferencesContext)
