@@ -7,7 +7,7 @@ import {
   type ComponentProps,
 } from 'react'
 import { flushSync } from 'react-dom'
-import { ChevronDown, CircleStop, GitFork, RotateCw } from 'lucide-react'
+import { ChevronDown, CircleStop, GitFork, RotateCcw } from 'lucide-react'
 import {
   observeElementRect as observeVirtualRect,
   useVirtualizer,
@@ -145,8 +145,6 @@ export interface MessageListProps {
   messageDeleteLabel?: string
   onSaveMessageToNote?: (messageId: string) => Promise<boolean>
   onExecuteAgentPlan?: (messageId: string) => Promise<void> | void
-  // 失败发送后线程末尾留下的孤儿用户消息：点「重试」用它的 id 重新生成。
-  onRetryLastUser?: (messageId: string) => void
   // 多模型一问多答（任务 06-30）：多答组「选中条」映射 + 点选回调。
   groupSelections?: Record<string, string>
   onSetGroupSelection?: (groupId: string, messageId: string) => void
@@ -388,7 +386,6 @@ function MessageListBase({
   messageDeleteLabel,
   onSaveMessageToNote,
   onExecuteAgentPlan,
-  onRetryLastUser,
   groupSelections,
   onSetGroupSelection,
   contextState = null,
@@ -1097,22 +1094,28 @@ function MessageListBase({
 
   const errorItem = useMemo<RenderItem | null>(() => {
     const last = tail.at(-1)
-    const retryMessageId = last?.role === 'user' ? last.id : null
-    if (error) {
-      const saved = last?.role === 'assistant' && last.stream_outcome === 'error' ? last.degraded : null
-      const degraded = saved && (saved.detail === error || saved.reason === error)
-        ? saved
-        : streamErrorDegraded(error, i18n[lang])
-      return { kind: 'error', key: 'error', degraded, retryMessageId }
-    }
-    // 只显示本轮最近的失败，下一条用户消息自然结束它的展示。
-    for (let i = tail.length - 1; i >= 0 && tail[i].role === 'assistant'; i--) {
-      const degraded = tail[i].degraded
-      if (degraded && degraded.kind !== 'collaboration_incomplete') {
-        return { kind: 'error', key: 'error', degraded, retryMessageId: null }
+    let index = tail.length - 1
+    let degraded: DegradedAnswer | undefined
+    let hasOtherReply = false
+    // 只检查当前轮。按原问题重试会替换此后的回复，所以要保留同轮其他有效回答。
+    for (; index >= 0 && tail[index].role === 'assistant'; index--) {
+      const message = tail[index]
+      if (message.degraded && message.degraded.kind !== 'collaboration_incomplete') {
+        degraded ??= message.degraded
+      } else if ((message.stream_outcome ?? message.streamOutcome) !== 'error'
+        && !message.id.startsWith('subagent-result-') && !(message.irc_message ?? message.ircMessage)) {
+        hasOtherReply = true
       }
     }
-    return null
+    if (error) {
+      const saved = last?.role === 'assistant' && (last.stream_outcome ?? last.streamOutcome) === 'error' ? last.degraded : null
+      degraded = saved && (saved.detail === error || saved.reason === error)
+        ? saved
+        : streamErrorDegraded(error, i18n[lang])
+    }
+    if (!degraded) return null
+    const retryMessageId = hasOtherReply ? null : tail[index]?.id ?? null
+    return { kind: 'error', key: 'error', degraded, retryMessageId }
   }, [error, lang, tail])
 
   const [multiAnswerViewMode] = useMultiAnswerViewMode()
@@ -3006,18 +3009,20 @@ function MessageListBase({
               animate={item.animate}
             />
           )
-        case 'error':
+        case 'error': {
+          const { degraded, retryMessageId } = item
           return (
             <div className="chat-motion-fade-up flex w-full min-w-0 flex-col items-start gap-2 py-3">
-              <DegradedAnswerCard degraded={item.degraded} />
-              {item.retryMessageId && onRetryLastUser && (
-                <Button size="sm" onClick={() => onRetryLastUser(item.retryMessageId!)}>
-                  <RotateCw size={13} strokeWidth={2} />
+              <DegradedAnswerCard degraded={degraded} />
+              {retryMessageId && onRegenerateMessage && (
+                <Button size="sm" disabled={streaming || streamFrozen} onClick={() => void onRegenerateMessage(retryMessageId)}>
+                  <RotateCcw size={13} strokeWidth={2} />
                   {i18n[lang].chatRetry}
                 </Button>
               )}
             </div>
           )
+        }
       }
     },
     [
@@ -3035,7 +3040,6 @@ function MessageListBase({
       messageDeleteLabel,
       onSaveMessageToNote,
       onExecuteAgentPlan,
-      onRetryLastUser,
       onOpenConversation,
       streaming,
       streamFrozen,

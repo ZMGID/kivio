@@ -409,6 +409,39 @@ test('shows project conversation marks through background completion, failure an
   await expect(mark).not.toHaveAttribute('data-mark')
 })
 
+test('retries a saved 429 failure from below its error card', async ({ page }) => {
+  const id = 'retry-saved-failure'
+  const question = '重试时用同一个问题'
+  const detail = '429 Too Many Requests (attempt 3/3)'
+  await page.addInitScript(({ id, question, detail }) => {
+    const key = 'kivio-chat-dev-conversations'
+    if (localStorage.getItem(key)) return
+    localStorage.setItem(key, JSON.stringify([{
+      id, title: '限流重试验收', revision: 1, created_at: 1, updated_at: 2,
+      provider_id: 'demo', model: 'dev-model', agent_runtime: { kind: 'builtin' },
+      messages: [
+        { id: 'question', role: 'user', content: question, timestamp: 1 },
+        { id: 'failed', role: 'assistant', content: '', timestamp: 2, stream_outcome: 'error',
+          degraded: { kind: 'rate_limited', reason: '模型服务限流', detail, text: '' } },
+      ],
+    }]))
+  }, { id, question, detail })
+  await page.goto('/#chat/' + id)
+
+  const errorRow = page.locator('[data-chat-message-list-item=error]')
+  const card = errorRow.getByRole('status')
+  const retry = errorRow.getByRole('button', { name: '重试', exact: true })
+  await expect(card).toContainText(detail)
+  await expect(retry).toBeVisible()
+  const cardBounds = await card.boundingBox()
+  expect((await retry.boundingBox()).y).toBeGreaterThanOrEqual(cardBounds.y + cardBounds.height)
+
+  await retry.click()
+  await expect(page.getByText(`（重新生成预览）${question}`, { exact: true })).toBeVisible()
+  await expect(page.getByText(question, { exact: true })).toHaveCount(1)
+  await expect(errorRow).toHaveCount(0)
+})
+
 test('switches agents in a populated conversation and keeps one handoff at its original position', async ({ page }) => {
   const id = 'conv_agent_handoff'
   await page.addInitScript(id => {

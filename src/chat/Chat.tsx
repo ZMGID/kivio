@@ -2881,7 +2881,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       onDeleteMessage: handleDeleteMessage,
       messageDeleteLabel: usesExternalRuntime ? i18n[uiLang].dialogDelete : i18n[uiLang].chatMessageRemoveFromBranch,
       onSaveMessageToNote: handleSaveMessageToNote,
-      onRetryLastUser: handleRegenerateMessage,
       onExecuteAgentPlan: handleExecuteAgentPlan,
       onSetGroupSelection: handleSetGroupSelection,
       compactionInProgress: contextCompressing,

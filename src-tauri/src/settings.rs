@@ -2168,9 +2168,10 @@ pub struct Settings {
     pub chat_behavior_migrated_from_lens: bool,
     #[serde(default = "default_settings_language")]
     pub settings_language: Option<String>,
+    /// Retained in the settings schema for compatibility and normalized to the built-in policy.
     #[serde(default = "default_retry_enabled")]
     pub retry_enabled: bool,
-    /// Total attempts, including the first request. UI shows this minus one.
+    /// Total attempts, including the first request. Normalized to the built-in policy.
     #[serde(default = "default_retry_attempts")]
     pub retry_attempts: u8,
     /// 一次性迁移标记：把 pre-green-light 安装（原生工具默认全关 + 旧 approval_policy）
@@ -3281,7 +3282,8 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     // 清理归档目录路径（去除首尾空白）
     settings.image_archive_path = settings.image_archive_path.trim().to_string();
 
-    settings.retry_attempts = clamp_retry_attempts(settings.retry_attempts);
+    settings.retry_enabled = default_retry_enabled();
+    settings.retry_attempts = default_retry_attempts();
 
     // 系统 OCR 依赖平台本地 OCR 能力（macOS Apple Vision / Windows.Media.Ocr）。其它平台
     // 同步来的旧配置必须关闭，否则截图翻译会误入不可用分支。
@@ -3989,15 +3991,11 @@ fn default_settings_language() -> Option<String> {
 }
 
 fn default_retry_attempts() -> u8 {
-    11 // First request + ten retries; persisted totals retain their original meaning.
+    11 // First request + ten retries.
 }
 
 fn default_retry_enabled() -> bool {
     true
-}
-
-fn clamp_retry_attempts(value: u8) -> u8 {
-    value.clamp(1, 11)
 }
 
 /**
@@ -4124,12 +4122,11 @@ mod tests {
     use crate::state::test_app_state;
 
     #[test]
-    fn screen_tool_effort_migration_preserves_choices_and_retry_settings() {
+    fn screen_tool_effort_migration_preserves_thinking_choices() {
         for enabled in [true, false] {
             let old: Settings = serde_json::from_value(serde_json::json!({
                 "lens": {"thinkingEnabled": enabled, "streamEnabled": false},
-                "screenshotTranslation": {"thinkingEnabled": enabled, "streamEnabled": false},
-                "retryEnabled": false, "retryAttempts": 2
+                "screenshotTranslation": {"thinkingEnabled": enabled, "streamEnabled": false}
             }))
             .unwrap();
             let mut migrated = sanitize_settings(old);
@@ -4141,8 +4138,6 @@ mod tests {
             );
             assert!(migrated.lens.stream_enabled);
             assert!(migrated.screenshot_translation.stream_enabled);
-            assert!(!migrated.retry_enabled);
-            assert_eq!(migrated.retry_attempts, 2);
             migrated.lens.thinking_level = Some("high".into());
             migrated.screenshot_translation.thinking_level = Some(String::new());
             let saved = serde_json::to_value(sanitize_settings(migrated)).unwrap();
@@ -4741,12 +4736,23 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_settings_clamps_retry_attempts() {
-        assert_eq!(Settings::default().retry_attempts, 11);
-        for (stored, expected) in [(0, 1), (5, 5), (11, 11), (99, 11)] {
-            let mut settings = Settings::default();
-            settings.retry_attempts = stored;
-            assert_eq!(sanitize_settings(settings).retry_attempts, expected);
+    fn hidden_retry_settings_use_the_fixed_budget_after_upgrade() {
+        use crate::api::effective_retry_attempts;
+
+        assert_eq!(effective_retry_attempts(&Settings::default()), 11);
+        for stored in [
+            serde_json::json!({"retryEnabled": true, "retryAttempts": 3}),
+            serde_json::json!({"retryEnabled": false, "retryAttempts": 6}),
+        ] {
+            let legacy = super::decode_stored_settings(stored).unwrap();
+            let loaded = sanitize_settings(legacy.clone());
+            assert_eq!(effective_retry_attempts(&loaded), 11);
+
+            let (canonical, persisted) = settings_for_persistence(&legacy);
+            assert_eq!(effective_retry_attempts(&canonical), 11);
+            let reopened =
+                super::decode_stored_settings(serde_json::to_value(persisted).unwrap()).unwrap();
+            assert_eq!(effective_retry_attempts(&reopened), 11);
         }
     }
 
@@ -5824,7 +5830,6 @@ mod tests {
         let mut raw = Settings::default();
         raw.theme = "sepia".to_string();
         raw.theme_color = "mint".to_string();
-        raw.retry_attempts = 0;
         raw.screenshot_translation.ocr_mode = Some(OcrMode::RapidOcr);
         raw.screenshot_translation.use_system_ocr = true;
 
@@ -5832,7 +5837,6 @@ mod tests {
 
         assert_eq!(canonical.theme, "system");
         assert_eq!(canonical.theme_color, "neutral");
-        assert_eq!(canonical.retry_attempts, 1);
         assert_eq!(
             canonical.screenshot_translation.ocr_mode,
             Some(OcrMode::RapidOcr)
@@ -6414,7 +6418,6 @@ mod custom_theme_tests {
             "themeColor": "cool",
             "translucentSidebar": true,
             "favoriteModels": ["prov:model"],
-            "retryAttempts": 6,
             "providers": [{
                 "id": "keep-me",
                 "name": "Keep",
@@ -6430,7 +6433,6 @@ mod custom_theme_tests {
         assert_eq!(settings.theme_color, "cool");
         assert!(settings.translucent_sidebar);
         assert_eq!(settings.favorite_models, vec!["prov:model".to_string()]);
-        assert_eq!(settings.retry_attempts, 6);
         assert_eq!(settings.providers.len(), 1);
         assert_eq!(settings.providers[0].id, "keep-me");
         assert_eq!(settings.providers[0].api_keys, vec!["sk-test".to_string()]);

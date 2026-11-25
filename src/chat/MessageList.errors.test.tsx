@@ -55,6 +55,16 @@ it('shows the saved provider failure when the send also reports it', () => {
   expect(screen.getAllByText(detail)).toHaveLength(1)
 })
 
+it('does not offer a whole-turn retry when another model answered successfully', () => {
+  render(<MessageList conversationId="group-failure" onRegenerateMessage={async () => {}} messages={[
+    { id: 'question', role: 'user', content: '问题', timestamp: 1, group_id: 'group' },
+    { id: 'answer', role: 'assistant', content: '另一个模型的回答', timestamp: 2, group_id: 'group' },
+    { ...failedReply, timestamp: 3, group_id: 'group' },
+  ]} />)
+  expect(screen.getByRole('status')).toHaveTextContent(failedReply.degraded.detail)
+  expect(screen.queryByRole('button', { name: '重试' })).toBeNull()
+})
+
 it('keeps the partial answer and removes its failure card on the next send', () => {
   const partial = { ...failedReply, content: '已经生成的回答', segments: [
     { id: 'partial', kind: 'text' as const, phase: 'partial_answer' as const, order: 0, text: '已经生成的回答' },
