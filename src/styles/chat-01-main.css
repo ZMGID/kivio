@@ -505,6 +505,23 @@
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   outline: none;
 }
+.chat-composer-attachment-label {
+  display: inline-block;
+  max-inline-size: calc(100% - 0.35em);
+  margin-inline-start: 0.35em;
+  padding-inline: 0.4em;
+  border: 1px solid var(--theme-surface-border);
+  border-radius: 0.5em;
+  background: var(--theme-surface-muted);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+}
 .chat-composer-editor .ProseMirror-separator { display: none; }
 
 .chat-composer-caret { display: none; }

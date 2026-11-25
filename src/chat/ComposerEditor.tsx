@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type AnimationEventHandler } from 'react'
 import { Schema, type Node as ProseNode } from '@milkdown/prose/model'
 import { EditorState, Plugin, TextSelection } from '@milkdown/prose/state'
-import { EditorView } from '@milkdown/prose/view'
+import { Decoration, DecorationSet, EditorView } from '@milkdown/prose/view'
 import { history, undo, redo, undoDepth, redoDepth, closeHistory } from '@milkdown/prose/history'
 import { keymap } from '@milkdown/prose/keymap'
 import { deleteSelection, selectAll } from '@milkdown/prose/commands'
@@ -90,6 +90,7 @@ type Props = {
   value: string
   scopeKey: string
   commands: readonly SlashCommandDefinition[]
+  attachmentLabels?: readonly { text: string; name: string }[]
   readOnly?: boolean
   busy?: boolean
   placeholder: string
@@ -193,6 +194,23 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       state: createState(current.current.value),
       editable: () => !current.current.readOnly,
       attributes: { role: 'textbox', 'aria-multiline': 'true', spellcheck: 'false' },
+      decorations(state) {
+        const labels = current.current.attachmentLabels
+        if (!labels?.length) return null
+        // The attachment strip owns these files. A widget keeps their labels out of the editable prompt.
+        return DecorationSet.create(state.doc, [Decoration.widget(state.doc.content.size, (view) => {
+          const document = view.dom.ownerDocument
+          const group = document.createElement('span')
+          for (const { text, name } of labels) {
+            const label = document.createElement('span')
+            label.className = 'chat-composer-attachment-label'
+            label.textContent = text
+            label.title = name
+            group.append(label)
+          }
+          return group
+        }, { side: 1, key: JSON.stringify(labels) })])
+      },
       clipboardTextSerializer: slice => slice.content.textBetween(0, slice.content.size),
       handlePaste(view, event) {
         if (current.current.readOnly) return true
@@ -287,7 +305,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
         view.updateState(view.state.apply(tr))
       }
     }
-    view.dom.dataset.empty = String(view.state.doc.content.size === 0)
+    view.dom.dataset.empty = String(view.state.doc.content.size === 0 && !props.attachmentLabels?.length)
   })
 
   // 输入框随行数长高 / 变矮时，外层平滑过渡到编辑器的自然高度，而不是逐行跳。

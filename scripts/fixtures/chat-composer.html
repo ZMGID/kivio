@@ -10,5 +10,7 @@ import '/src/styles/app.css';
 const previous = '这是上一条已经发出的提问。它和正在编辑的草稿一样长，会在输入框里自动折行。'.repeat(2);
 createRoot(document.getElementById('root')).render(
   React.createElement(LangContext.Provider, { value: 'zh' },
-    React.createElement(InputBar, { inputHistory: [previous], onSend() {} })));
+    React.createElement(InputBar, { inputHistory: [previous], onSend(content, attachments) {
+      window.chatComposerSent = { content, attachments };
+    } })));
 </script></body></html>

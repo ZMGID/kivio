@@ -5,6 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { ArrowUp, Check, ChevronDown, Layers, Square, TextQuote, WandSparkles, X } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
+import { imageAttachmentNumbers } from './attachmentPresentation'
 import { PastedTextEditorModal } from './PastedTextEditorModal'
 import { ComposerAddMenu } from './ComposerAddMenu'
 import { useComposerContextMenu, type ComposerPasteTarget } from './useComposerContextMenu'
@@ -437,6 +438,13 @@ export const InputBar = memo(function InputBar({
   }, [input])
   const [quotes, setQuotes] = useState<string[]>(() => getComposerDraft(draftKeyValue)?.quotes ?? [])
   const [attachments, setAttachments] = useState<PendingAttachment[]>(() => getComposerDraft(draftKeyValue)?.attachments ?? [])
+  const attachmentLabels = useMemo(() => {
+    const imageNumbers = imageAttachmentNumbers(attachments)
+    return attachments.map(({ id, name }) => {
+      const number = imageNumbers.get(id)
+      return { name, text: number === undefined ? name : t.chatComposerImageReference.replace('{n}', String(number)) }
+    })
+  }, [attachments, t.chatComposerImageReference])
   const [attachmentError, setAttachmentError] = useState(() => getComposerDraft(draftKeyValue)?.attachmentError ?? '')
   const [editingAttachment, setEditingAttachment] = useState<PendingAttachment | null>(null)
   const [dragActive, setDragActive] = useState(false)
@@ -1812,6 +1820,7 @@ export const InputBar = memo(function InputBar({
                 value={input}
                 scopeKey={draftKeyValue}
                 commands={allSlashCommands}
+                attachmentLabels={attachmentLabels}
                 readOnly={sendPending || optimizeBusy}
                 busy={sendPending || optimizeBusy}
                 onChange={handleInput}

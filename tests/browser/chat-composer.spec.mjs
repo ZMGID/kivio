@@ -1,5 +1,48 @@
 import { expect, test } from '@playwright/test'
 
+test('shows attachment labels in the draft and sends the original text with the remaining files', async ({ page }) => {
+  await page.addInitScript(() => {
+    const paths = ['C:/screenshots/first.png', 'C:/screenshots/second.png', 'C:/screenshots/notes.pdf']
+    const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII='
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: 'chat' }, currentWebview: { label: 'chat' } },
+      transformCallback: () => 1,
+      invoke(command) {
+        if (command === 'plugin:dialog|open') return Promise.resolve(paths)
+        if (command === 'chat_inspect_attachment_paths') return Promise.resolve(paths.map(path => ({
+          path, name: path.split('/').at(-1), type: path.endsWith('.png') ? 'image' : 'file',
+        })))
+        if (command === 'chat_read_attachment') return Promise.resolve({ success: true, data: image })
+        return Promise.resolve(1)
+      },
+    }
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} }
+  })
+  await page.goto('/scripts/fixtures/chat-composer.html')
+  const composer = page.getByRole('textbox')
+  await composer.fill('123')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await page.getByRole('button', { name: '添加附件', exact: true }).click()
+  await expect(page.getByRole('button', { name: '预览图片' })).toHaveCount(2)
+  await expect(composer.getByText('图片 #1')).toHaveAttribute('title', 'first.png')
+  await expect(composer.getByText('图片 #2')).toHaveAttribute('title', 'second.png')
+  await expect(composer.getByText('notes.pdf')).toBeVisible()
+  await expect(page.getByText('#2', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: '移除', exact: true }).first().click()
+  await expect(composer.getByText('图片 #1')).toHaveAttribute('title', 'second.png')
+  await expect(composer.getByText('图片 #2')).toHaveCount(0)
+
+  await composer.focus()
+  await page.keyboard.press('End')
+  await page.keyboard.insertText(' 看这张')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  const sent = await page.evaluate(() => window.chatComposerSent)
+  expect(sent.content).toBe('123 看这张')
+  expect(sent.attachments.map(attachment => attachment.name)).toEqual(['second.png', 'notes.pdf'])
+  await expect(composer.getByText('图片 #1')).toHaveCount(0)
+})
+
 test('arrow keys move through wrapped text before browsing prompt history', async ({ page }) => {
   await page.goto('/scripts/fixtures/chat-composer.html')
   const composer = page.getByRole('textbox')

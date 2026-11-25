@@ -9,7 +9,7 @@ import { openChatImageViewer } from './imageViewer'
 import { PastedTextEditorModal } from './PastedTextEditorModal'
 import { useT } from '../components/i18n'
 
-import { AttachmentPresentationContext } from './attachmentPresentation'
+import { AttachmentPresentationContext, imageAttachmentNumbers } from './attachmentPresentation'
 
 type ChatAttachmentsProps = {
   attachments: DisplayAttachment[]
@@ -207,6 +207,7 @@ export function ChatAttachments({
 
   if (attachments.length === 0) return null
 
+  const imageNumbers = variant === 'assistant' ? null : imageAttachmentNumbers(attachments)
   const wrapClass =
     variant === 'composer'
       ? 'flex flex-wrap gap-2'
@@ -218,6 +219,7 @@ export function ChatAttachments({
     <div className={wrapClass}>
       {attachments.map((attachment) => {
         const removing = removingIds.has(attachment.id)
+        const imageNumber = imageNumbers?.get(attachment.id)
         const motion = removing
           ? 'chat-motion-exit'
           : variant === 'composer'
@@ -250,6 +252,11 @@ export function ChatAttachments({
                 onEdit={onEditAttachment}
                 onViewText={(name, content) => setViewingText({ name, content })}
               />
+            )}
+            {imageNumber !== undefined && (
+              <span className="pointer-events-none absolute bottom-1 left-1 rounded bg-background/90 px-1 text-[10px] font-medium leading-4 text-foreground tabular-nums">
+                #{imageNumber}
+              </span>
             )}
             {beginRemove ? (
               <RemoveButton
