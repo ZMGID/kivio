@@ -160,20 +160,20 @@ html.windows body {
 
 /* 启动前兜底。主题运行时会把当前明/暗色板的全部语义 token 写到 html 上，覆盖这里。 */
 :root {
-  --theme-surface: #fdfcfa;
-  --theme-surface-soft: #f9f8f6;
-  --theme-surface-muted: #f4f3f1;
-  --theme-surface-hover: #eeedeb;
-  --theme-surface-active: #e7e6e4;
-  --theme-surface-titlebar: #eae9e7;
-  --theme-surface-border: #e2e1df;
-  --theme-surface-border-strong: #d2d1cf;
-  --text: #1d1d1f;
-  --text-muted: #6b6b73;
-  --text-faint: #9c9ca3;
-  --accent: #2f6ff0;
-  --accent-hover: #2960d8;
-  --accent-soft: #e6efff;
+  --theme-surface: #fdfefe;
+  --theme-surface-soft: #f5f6f7;
+  --theme-surface-muted: #eff1f3;
+  --theme-surface-hover: #ebeef1;
+  --theme-surface-active: #e3e7eb;
+  --theme-surface-titlebar: #f5f6f7;
+  --theme-surface-border: #e2e5e8;
+  --theme-surface-border-strong: #cdd2d8;
+  --text: #202328;
+  --text-muted: #575e69;
+  --text-faint: #626b77;
+  --accent: #2b60ce;
+  --accent-hover: #2353b8;
+  --accent-soft: #e7efff;
   --text-onaccent: #ffffff;
   --danger: #c4341c;
   --danger-soft: #fdecea;

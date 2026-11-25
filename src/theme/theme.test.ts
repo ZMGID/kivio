@@ -155,13 +155,14 @@ describe('additional theme readability', () => {
     return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
   }
 
-  it.each(['white', 'nord', 'solarized'])('%s keeps message and primary-button text readable in both modes', id => {
+  it.each(['neutral', 'white', 'nord', 'solarized'])('%s keeps message and primary-button text readable in both modes', id => {
     const theme = resolveTheme({ themeColor: id })
     for (const mode of ['light', 'dark'] as const) {
       const palette = theme[mode]
       for (const [foreground, background] of [
         [palette.text, palette.surface],
         [palette.text, palette.surfaceActive],
+        [palette.textMuted, palette.surfaceSoft],
         [palette.onAccent, palette.accent],
       ]) {
         const first = luminance(foreground)

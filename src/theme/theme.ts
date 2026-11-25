@@ -76,7 +76,7 @@ const COMPONENT_VARIABLES: Record<string, keyof ThemePalette> = {
   color: 'text',
 }
 
-/** Original light ink for Neutral, Warm, and Cool. */
+/** Shared light ink for the original presets. */
 const LIGHT_INK: PaletteInk = {
   text: '#1d1d1f',
   textMuted: '#737373',
@@ -141,25 +141,43 @@ const neutralTheme = defineTheme(
   'neutral',
   'Neutral',
   palette({
-    surface: '#fdfcfa',
-    surfaceSoft: '#f9f8f6',
-    surfaceMuted: '#f4f3f1',
-    surfaceHover: '#eeedeb',
-    surfaceActive: '#e7e6e4',
-    surfaceTitlebar: '#eae9e7',
-    border: '#e2e1df',
-    borderStrong: '#d2d1cf',
-  }, LIGHT_INK),
+    surface: '#fdfefe',
+    surfaceSoft: '#f5f6f7',
+    surfaceMuted: '#eff1f3',
+    surfaceHover: '#ebeef1',
+    surfaceActive: '#e3e7eb',
+    surfaceTitlebar: '#f5f6f7',
+    border: '#e2e5e8',
+    borderStrong: '#cdd2d8',
+  }, {
+    ...LIGHT_INK,
+    text: '#202328',
+    textMuted: '#575e69',
+    textFaint: '#626b77',
+    accent: '#2b60ce',
+    accentHover: '#2353b8',
+    accentSoft: '#e7efff',
+  }),
   palette({
-    surface: '#212121',
-    surfaceSoft: '#262629',
-    surfaceMuted: '#2a2a2d',
-    surfaceHover: '#2c2c30',
-    surfaceActive: '#36363c',
-    surfaceTitlebar: '#313136',
-    border: '#3a3a40',
-    borderStrong: '#4e4e56',
-  }, NEUTRAL_DARK_INK),
+    surface: '#151618',
+    surfaceSoft: '#1d1f22',
+    surfaceMuted: '#222428',
+    surfaceHover: '#26292d',
+    surfaceActive: '#2e3238',
+    surfaceTitlebar: '#1d1f22',
+    border: '#2d3035',
+    borderStrong: '#42474f',
+  }, {
+    ...NEUTRAL_DARK_INK,
+    text: '#eef0f2',
+    textMuted: '#aeb4bd',
+    textFaint: '#979faa',
+    accent: '#83aaff',
+    accentHover: '#95b7ff',
+    accentSoft: '#25344e',
+    onAccent: '#151618',
+    dangerSoft: '#332423',
+  }),
 )
 
 const warmTheme = defineTheme(

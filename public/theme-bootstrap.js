@@ -27,6 +27,6 @@
   // and other overlay windows must retain their transparent backgrounds.
   if (/^#chat(?:[/-]|$)/.test(window.location.hash)) {
     root.dataset.themeBooting = 'true'
-    root.style.backgroundColor = palette ? palette['--theme-surface'] : 'var(--theme-surface, #fdfcfa)'
+    root.style.backgroundColor = palette ? palette['--theme-surface'] : 'var(--theme-surface, #fdfefe)'
   }
 })()
