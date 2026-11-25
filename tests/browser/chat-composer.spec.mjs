@@ -1,5 +1,32 @@
 import { expect, test } from '@playwright/test'
 
+test('keeps the empty chat centered when the window gets shorter', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.addInitScript(() => {
+    localStorage.setItem('kivio.chat.lastAgentRuntime', JSON.stringify({ kind: 'builtin' }))
+    localStorage.setItem('kivio-chat-dock-open', '1')
+  })
+  await page.setViewportSize({ width: 1055, height: 600 })
+  await page.goto('/#chat')
+  const hero = page.locator('.chat-empty-hero')
+  const stack = hero.locator('.chat-empty-hero-stack')
+  const editor = hero.getByRole('textbox')
+  await expect(editor).toBeVisible()
+  await expect(page.getByRole('button', { name: '面板', exact: true })).toHaveAttribute('aria-expanded', 'true')
+  const centerOffset = () => stack.evaluate(element => {
+    const { top, height } = element.getBoundingClientRect()
+    const pane = element.parentElement.getBoundingClientRect()
+    return top + height / 2 - (pane.top + pane.height / 2)
+  })
+  const normalOffset = await centerOffset()
+
+  for (const height of [550, 480, 400, 600]) {
+    await page.setViewportSize({ width: 1055, height })
+    await expect.poll(async () => Math.abs(await centerOffset() - normalOffset)).toBeLessThanOrEqual(2)
+    await expect(editor).toBeInViewport({ ratio: 1 })
+  }
+})
+
 test('shows attachment labels in the draft and sends the original text with the remaining files', async ({ page }) => {
   await page.addInitScript(() => {
     const paths = ['C:/screenshots/first.png', 'C:/screenshots/second.png', 'C:/screenshots/notes.pdf']

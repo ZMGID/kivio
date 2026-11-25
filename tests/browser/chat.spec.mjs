@@ -119,6 +119,17 @@ test('turn navigation fits beside the text at the fractional container breakpoin
   }
 })
 
+test('the workspace button has breathing room beside the open dock divider', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.goto('/scripts/fixtures/chat-titlebar.html')
+  const workspace = page.getByRole('button', { name: '工作区' })
+  const divider = page.locator('.chat-titlebar-panel-bg--dock')
+  await expect(divider).toBeVisible()
+  await expect(workspace).toBeVisible()
+  const button = await workspace.boundingBox()
+  expect((await divider.boundingBox()).x - (button.x + button.width)).toBe(8)
+})
+
 test('sidebar and dock backgrounds fade closed at their open widths, and settings covers the sidebar immediately', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' })
   await page.goto('/scripts/fixtures/chat-titlebar.html')

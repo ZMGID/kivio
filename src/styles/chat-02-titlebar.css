@@ -96,6 +96,10 @@
   padding-left: 8px;
 }
 
+.chat-titlebar-strip:has(> .chat-titlebar-strip-dock) > .chat-titlebar-strip-content {
+  padding-right: 8px;
+}
+
 .chat-titlebar-strip-end {
   display: flex;
   flex-shrink: 0;

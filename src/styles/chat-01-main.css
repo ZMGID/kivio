@@ -1257,12 +1257,6 @@ button.chat-composer-status-item:hover {
 
 /* —— 主内容区：高度（矮窗） —— */
 @container chat-main (max-height: 520px) {
-  .chat-empty-hero {
-    justify-content: flex-start;
-    padding-top: 1.25rem;
-    padding-bottom: 1rem;
-  }
-
   .chat-empty-hero-stack {
     gap: 1rem !important;
   }
@@ -1273,11 +1267,6 @@ button.chat-composer-status-item:hover {
 }
 
 @container chat-main (max-height: 440px) {
-  .chat-empty-hero {
-    padding-top: 0.75rem;
-    padding-bottom: 0.75rem;
-  }
-
   .chat-empty-hero-stack {
     gap: 0.75rem !important;
   }
@@ -1317,7 +1306,7 @@ button.chat-composer-status-item:hover {
 /* 空对话页 */
 .chat-empty-hero {
   position: relative;
-  overflow: hidden;
+  overflow-y: auto;
   background-color: var(--theme-surface);
 }
 
@@ -1333,8 +1322,10 @@ button.chat-composer-status-item:hover {
 
 .chat-empty-hero-stack {
   display: flex;
+  flex: none;
   flex-direction: column;
   gap: 1.25rem;
+  margin-block: auto;
 }
 
 .chat-empty-hero-heading {

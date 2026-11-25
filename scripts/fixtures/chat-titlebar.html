@@ -4,6 +4,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { ChatTitlebar } from '/src/chat/ChatTitlebar.tsx';
+import { WorkspaceActionsMenu } from '/src/chat/dock/WorkspaceActionsMenu.tsx';
 import { LangContext } from '/src/components/i18n.ts';
 import '/src/styles/app.css';
 
@@ -16,7 +17,10 @@ function Fixture() {
       sidebarExpanded: sidebar, sidebarVisible: sidebar, dockVisible: dock, dockWidth: 420,
       settingsMode: settings, onNewConversation() {},
       onToggleSidebar: () => setSidebar(!sidebar), onToggleDock: () => setDock(!dock),
-    }),
+    }, !settings && React.createElement(React.Fragment, null,
+      React.createElement('div', {className: 'flex-1'}),
+      React.createElement(WorkspaceActionsMenu, {workdir: '', projectName: null, conversationId: null, dockOpen: dock, lang: 'zh'}),
+    )),
     React.createElement('button', {onClick: () => setSettings(!settings)}, '设置'));
 }
 createRoot(document.getElementById('root')).render(React.createElement(Fixture));
