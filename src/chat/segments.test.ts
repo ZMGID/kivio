@@ -5,7 +5,6 @@ import {
   compareTimelineSegments,
   formatWorkDuration,
   groupTimelineSegments,
-  groupWorkDurationMs,
   imageReadCount,
   isImageReadToolCall,
   isUserFollowUpToolCall,
@@ -490,35 +489,13 @@ describe('summarizeToolGroup', () => {
   })
 })
 
-describe('groupWorkDurationMs', () => {
-  it('uses unix-second tool timestamps as wall-clock span', () => {
-    const segments = [toolSegment('t1', 1, 'c1'), toolSegment('t2', 2, 'c2')]
-    const ms = groupWorkDurationMs(segments, [
-      tool({ id: 'c1', name: 'read', started_at: 1_700_000_000, completed_at: 1_700_000_003 }),
-      tool({ id: 'c2', name: 'read', started_at: 1_700_000_004, completed_at: 1_700_000_012 }),
-    ])
-    expect(ms).toBe(12_000)
-    expect(formatWorkDuration(ms!)).toBe('12s')
-  })
-
-  it('treats millisecond timestamps as milliseconds', () => {
-    const segments = [toolSegment('t1', 1, 'c1')]
-    expect(groupWorkDurationMs(segments, [
-      tool({
-        id: 'c1',
-        name: 'read',
-        started_at: 1_700_000_000_000,
-        completed_at: 1_700_000_090_000,
-      }),
-    ])).toBe(90_000)
-    expect(formatWorkDuration(90_000)).toBe('1m 30s')
-  })
-
-  it('falls back to reasoning duration when tools have no timestamps', () => {
-    const segments = [toolSegment('t1', 1, 'c1')]
-    expect(groupWorkDurationMs(segments, [tool({ id: 'c1', name: 'read' })], undefined, 4500)).toBe(4500)
-    expect(groupWorkDurationMs(segments, [tool({ id: 'c1', name: 'read' })])).toBeNull()
-  })
+it('formats reply durations from milliseconds through hours', () => {
+  expect(formatWorkDuration(450)).toBe('450ms')
+  expect(formatWorkDuration(2450)).toBe('2.5s')
+  expect(formatWorkDuration(12_000)).toBe('12s')
+  expect(formatWorkDuration(59_500)).toBe('1m 0s')
+  expect(formatWorkDuration(90_000)).toBe('1m 30s')
+  expect(formatWorkDuration(3_630_000)).toBe('1h 30s')
 })
 
 describe('image reads', () => {

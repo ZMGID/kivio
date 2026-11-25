@@ -111,6 +111,7 @@ pub(super) async fn complete_direct_image_generation_reply(
                 title_from_first_user,
                 Some(agent_run_entry_label(entry)),
                 Some("completed"),
+                started.elapsed().as_millis() as u64,
                 None,
                 None,
                 None,

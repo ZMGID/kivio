@@ -236,6 +236,7 @@ pub(super) fn build_assistant_message(
         anchor_usage,
         cache_pair_input: None,
         cache_pair_read: None,
+        run_duration_ms: None,
         group_id,
         provider_id,
         model,
@@ -289,6 +290,7 @@ pub(crate) async fn push_assistant_message(
     title_from_first_user: Option<&str>,
     run_entry: Option<&str>,
     stream_outcome: Option<&str>,
+    run_duration_ms: u64,
     usage: Option<crate::chat::model::ModelUsage>,
     anchor_usage: Option<crate::chat::model::ModelUsage>,
     agent_plan: Option<AgentPlanState>,
@@ -297,7 +299,7 @@ pub(crate) async fn push_assistant_message(
     history_attempt: Option<&crate::external_agents::session::HistoryAttempt>,
     history_commit: Option<ReplyHistoryCommit>,
 ) -> Result<(), String> {
-    let message = build_assistant_message(
+    let mut message = build_assistant_message(
         message_id,
         content.clone(),
         reasoning,
@@ -314,7 +316,7 @@ pub(crate) async fn push_assistant_message(
         // 单模型落盘路径不带 group 信息（行为不变）。
         None,
     );
-    let mut message = message;
+    message.run_duration_ms = Some(run_duration_ms);
     message.provider_id = Some(conversation.provider_id.clone());
     message.model = Some(conversation.model.clone());
     message.degraded = degraded;
@@ -580,6 +582,7 @@ pub(super) fn build_partial_assistant_snapshot(
         anchor_usage: None,
         cache_pair_input: None,
         cache_pair_read: None,
+        run_duration_ms: None,
         group_id: None,
         provider_id: None,
         model: None,

@@ -200,7 +200,7 @@ const OPEN_SETTLE_QUIET_MS = 80
 // 屏外的气泡连同其 KaTeX host / Markdown / 图片 DOM 真正从 DOM 卸载。
 type HistoryRenderItem =
   | { kind: 'spacer'; key: 'padding-top' | 'padding-bottom'; size: number }
-  | { kind: 'message'; key: string; message: ChatMessage; sentModels?: GroupModelLabel[] }
+  | { kind: 'message'; key: string; message: ChatMessage; sentModels?: GroupModelLabel[]; estimatedWorkDurationMs?: number }
   | { kind: 'group'; key: string; groupId: string; messages: ChatMessage[] }
   | { kind: 'agent-handoff'; key: string; handoff: NonNullable<Conversation['agent_handoffs']>[number]; pending: boolean }
   | { kind: 'fork-origin'; key: string; sourceId: string; title: string }
@@ -1066,10 +1066,21 @@ function MessageListBase({
         const message = item.message
         const groupId = message.role === 'user' ? (message.group_id ?? message.groupId ?? null) : null
         const sentModels = groupId ? sentModelsByGroup.get(groupId) : undefined
-        list.push({ kind: 'message', key: liveRowModel.resolveMessageKey(message.id), message, sentModels })
+        const index = messageIndexById.get(message.id)
+        const previous = index != null ? messages[index - 1] : undefined
+        let estimatedWorkDurationMs: number | undefined
+        if (message.role === 'assistant' && message.run_duration_ms == null
+          && (message.run_entry ?? message.runEntry) === 'send'
+          && (message.stream_outcome ?? message.streamOutcome) === 'completed'
+          && previous?.role === 'user' && previous.timestamp > 0
+          && !(previous.group_id ?? previous.groupId) && !(previous.irc_message ?? previous.ircMessage)
+          && beforeGap?.has(previous.id) === beforeGap?.has(message.id)) {
+          const elapsed = (message.timestamp - previous.timestamp) * 1000
+          if (Number.isFinite(elapsed) && elapsed > 0) estimatedWorkDurationMs = elapsed
+        }
+        list.push({ kind: 'message', key: liveRowModel.resolveMessageKey(message.id), message, sentModels, estimatedWorkDurationMs })
         appendInterruption(message)
         if (forkRow && message.id === forkAnchor) list.push(forkRow)
-        const index = messageIndexById.get(message.id)
         if (index != null) appendBoundaries(index)
       }
     }
@@ -2873,6 +2884,7 @@ function MessageListBase({
               conversationId={conversationId}
               conversationArtifactsById={conversationArtifactsById}
               tokensPerSec={assistantStats?.tokensPerSec}
+              estimatedWorkDurationMs={item.estimatedWorkDurationMs}
               reasoningDurationMs={assistantStats?.reasoningDurationMs}
               reasoningDurationMsBySegmentId={assistantStats?.reasoningDurationMsBySegmentId}
               sentModels={item.sentModels}

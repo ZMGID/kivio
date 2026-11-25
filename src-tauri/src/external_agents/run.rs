@@ -257,6 +257,7 @@ async fn run_external_cli_reply_owned(
     lease: &Arc<SessionLease>,
     finalizes_reply: &std::sync::atomic::AtomicBool,
 ) -> Result<ExternalCliTurnOutcome, String> {
+    let reply_started_at = Instant::now();
     let settings = state.settings_read().clone();
     let agent_id = conversation
         .agent_runtime
@@ -1105,6 +1106,7 @@ async fn run_external_cli_reply_owned(
         },
     )
     .await;
+    let run_duration_ms = reply_started_at.elapsed().as_millis() as u64;
     if read_result.as_ref().err().map(String::as_str)
         == Some(crate::external_agents::session::live::CANCELLED_SESSION_LOST)
     {
@@ -1313,6 +1315,7 @@ async fn run_external_cli_reply_owned(
             AgentRunEntry::Regenerate => "regenerate",
         }),
         Some(&stream_outcome),
+        run_duration_ms,
         usage,
         None,
         None,

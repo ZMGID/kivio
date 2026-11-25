@@ -164,6 +164,7 @@ struct PreparedReplySession<'a> {
 }
 
 struct ReplyCompletion<'a> {
+    started_at: Instant,
     settings: std::sync::Arc<crate::settings::Settings>,
     run_id: String,
     assistant_message_id: String,
@@ -325,6 +326,7 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             });
         }
 
+        let started_at = Instant::now();
         if conversation.builtin_history.is_none()
             || crate::chat::session_history::needs_report_admission(conversation)
         {
@@ -1094,6 +1096,7 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             events,
             handle,
             completion: Box::new(ReplyCompletion {
+                started_at,
                 settings,
                 run_id,
                 assistant_message_id,
@@ -1161,6 +1164,7 @@ fn finish_prepared_reply<'a, 'state: 'a>(
             ..
         } = request;
         let ReplyCompletion {
+            started_at,
             settings,
             run_id,
             assistant_message_id,
@@ -1174,6 +1178,7 @@ fn finish_prepared_reply<'a, 'state: 'a>(
             mut protocol_guard,
             _reply_guard,
         } = *completion;
+        let run_duration_ms = started_at.elapsed().as_millis() as u64;
         let (mut result, run_error) = match result {
             Ok(result) => (result, None),
             Err(crate::chat::session_policy::ApplicationRunError::Failed { cause, partial }) => {
@@ -1260,7 +1265,7 @@ fn finish_prepared_reply<'a, 'state: 'a>(
         };
         if let Some(arm) = arm {
             // 多模型臂：构造 assistant 消息但**不落盘**，交协调者统一合并 + 一次性 save。
-            let message = build_assistant_message(
+            let mut message = build_assistant_message(
                 assistant_message_id,
                 result.content,
                 result.reasoning,
@@ -1281,7 +1286,7 @@ fn finish_prepared_reply<'a, 'state: 'a>(
                 )),
             );
             // 降级兜底的结构化描述挂到消息上，前端渲染成独立错误卡片（正文不再混故障文案）。
-            let mut message = message;
+            message.run_duration_ms = Some(run_duration_ms);
             message.cache_pair_input = result.cache_pairs.map(|pair| pair.0);
             message.cache_pair_read = result.cache_pairs.map(|pair| pair.1);
             message.degraded = result.degraded;
@@ -1361,6 +1366,7 @@ fn finish_prepared_reply<'a, 'state: 'a>(
             title_from_first_user,
             Some(run_entry),
             Some(crate::chat::agent_presentation::run_status(&result.status)),
+            run_duration_ms,
             result.usage,
             result.last_step_usage,
             message_plan,

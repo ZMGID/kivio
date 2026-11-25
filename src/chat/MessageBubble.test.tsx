@@ -879,11 +879,15 @@ describe('MessageBubble timeline grouping', () => {
     expect(screen.getByText('answer')).toBeInTheDocument()
   })
 
-  it('uses a Worked-for duration title when tool timestamps are present', () => {
+  it.each([
+    { duration: 93_000, title: 'Worked for 1m 33s' },
+    { duration: undefined, title: 'Worked' },
+  ])('shows $title with the recorded reply duration $duration', ({ duration, title }) => {
     const message: ChatMessage = {
       id: 'msg-worked',
       role: 'assistant',
       content: 'answer',
+      run_duration_ms: duration,
       segments: [
         { id: 'seg-t', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'tool-1' },
         { id: 'seg-text', kind: 'text', phase: 'synthesis', order: 2, text: 'answer' },
@@ -901,8 +905,11 @@ describe('MessageBubble timeline grouping', () => {
       timestamp: 1,
     }
 
-    render(<MessageBubble message={message} />)
-    expect(screen.getByRole('button', { name: /Worked for 12s/ })).toHaveAttribute('aria-expanded', 'false')
+    const { rerender } = render(<MessageBubble message={message} messageStreaming />)
+    expect(screen.getByText('Working')).toBeInTheDocument()
+    rerender(<MessageBubble message={message} reasoningDurationMs={4000} />)
+    expect(screen.getByText(title, { exact: true })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByText('answer')).toBeInTheDocument()
   })
 

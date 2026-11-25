@@ -79,6 +79,7 @@ async fn save_answer(
         None,
         Some("send"),
         Some(outcome),
+        93_000,
         None,
         None,
         None,
@@ -581,10 +582,12 @@ fn external_history_publication_and_recovery_on_real_files() {
         .await
         .unwrap();
         conversation = repository(app).get(app, branch_id).await.unwrap();
-        assert!(conversation
+        let cancelled = conversation
             .messages
             .iter()
-            .any(|message| message.id == "answer_cancelled"));
+            .find(|message| message.id == "answer_cancelled")
+            .unwrap();
+        assert_eq!(cancelled.run_duration_ms, Some(93_000));
         assert!(conversation.external_history.is_some());
         repository(app)
             .append_message(app, branch_id, message("user_c", "user", "continue C"))
@@ -677,6 +680,12 @@ fn external_history_publication_and_recovery_on_real_files() {
         .await
         .unwrap();
         conversation = repository(app).get(app, branch_id).await.unwrap();
+        let answer = conversation
+            .messages
+            .iter()
+            .find(|message| message.id == "answer_success")
+            .unwrap();
+        assert_eq!(answer.run_duration_ms, Some(93_000));
         assert!(conversation.external_history.is_none());
         dispatch(
             app,

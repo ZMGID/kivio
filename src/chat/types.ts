@@ -223,6 +223,7 @@ export interface ChatMessage {
   activeSkillId?: string | null
   run_entry?: 'send' | 'regenerate' | string | null
   runEntry?: 'send' | 'regenerate' | string | null
+  run_duration_ms?: number | null
   stream_outcome?: 'completed' | 'cancelled' | 'error' | 'interrupted' | string | null
   streamOutcome?: 'completed' | 'cancelled' | 'error' | 'interrupted' | string | null
   /**

@@ -51,7 +51,6 @@ import {
   clusterToolCallsForDisplay,
   formatWorkDuration,
   groupTimelineSegments,
-  groupWorkDurationMs,
   lifecycleSubagentProvider,
   isImageReadToolCall,
   isNativeTaskToolCall,
@@ -97,6 +96,7 @@ interface MessageBubbleProps {
   conversationId?: string | null
   conversationArtifactsById?: ReadonlyMap<string, ChatToolArtifact>
   tokensPerSec?: number
+  estimatedWorkDurationMs?: number
   reasoningDurationMs?: number | null
   reasoningDurationMsBySegmentId?: Record<string, number>
   /** 思维链正在流式写入 */
@@ -703,9 +703,12 @@ function TimelineSpinner({ size = 16, className }: { size?: number; className?: 
   )
 }
 
-function workingGroupTitle(generating: boolean, durationMs: number | null): string {
+function workingGroupTitle(generating: boolean, durationMs?: number | null, estimateMs?: number): string {
   if (generating) return 'Working'
-  if (durationMs != null && durationMs > 0) return `Worked for ${formatWorkDuration(durationMs)}`
+  if (durationMs != null && Number.isFinite(durationMs) && durationMs >= 0) {
+    return `Worked for ${formatWorkDuration(durationMs)}`
+  }
+  if (estimateMs != null) return `Worked for ≈${formatWorkDuration(estimateMs)}`
   return 'Worked'
 }
 
@@ -890,7 +893,7 @@ function TimelineWorkHeader({ generating, open, title, onToggle, children }: {
 function TurnWorkHeader({ work }: { work: TurnWorkDisclosure | undefined }) {
   if (!work?.showHeader) return null
   return <TimelineWorkHeader generating={work.active} open={work.open}
-    title={workingGroupTitle(work.active, null)} onToggle={() => work.onOpenChange(!work.open)} />
+    title={workingGroupTitle(work.active)} onToggle={() => work.onOpenChange(!work.open)} />
 }
 
 function TimelineGroupBlock({
@@ -909,6 +912,7 @@ function TimelineGroupBlock({
   citations,
   conversationId,
   messageStreaming,
+  workTitle,
   reasoningStreaming,
   reasoningDurationMs,
   reasoningDurationMsBySegmentId,
@@ -929,6 +933,7 @@ function TimelineGroupBlock({
   citations?: Map<CitationKey, CitationView>
   conversationId?: string | null
   messageStreaming: boolean
+  workTitle: string
   reasoningStreaming: boolean
   reasoningDurationMs?: number | null
   reasoningDurationMsBySegmentId?: Record<string, number>
@@ -940,11 +945,6 @@ function TimelineGroupBlock({
     () => showHeader ? summarizeToolGroup(allProcessSegments, toolCalls, toolCallById, messageStreaming) : null,
     [showHeader, allProcessSegments, toolCalls, toolCallById, messageStreaming],
   )
-  const durationMs = useMemo(
-    () => showHeader ? groupWorkDurationMs(allProcessSegments, toolCalls, toolCallById, reasoningDurationMs) : null,
-    [showHeader, allProcessSegments, toolCalls, toolCallById, reasoningDurationMs],
-  )
-  const title = workingGroupTitle(generating, durationMs)
   const renderDetails = userOpen ?? defaultOpen
 
   if (!showHeader && (!renderDetails || segments.length === 0)) return null
@@ -952,7 +952,7 @@ function TimelineGroupBlock({
   return (
     <section aria-label={segments.length ? t.chatMsgWorkGroups : undefined} className="not-prose"
       data-chat-process-group={segments.length > 0 || undefined}>
-      {summary && <TimelineWorkHeader generating={generating} open={renderDetails} title={title} onToggle={allProcessSegments.length ? onToggle : undefined}>
+      {summary && <TimelineWorkHeader generating={generating} open={renderDetails} title={workTitle} onToggle={allProcessSegments.length ? onToggle : undefined}>
           {summary.diffStats && (
             <span className="shrink-0 font-mono text-[13px] tabular-nums">
               <span className="text-success">+{summary.diffStats.additions}</span>
@@ -1018,6 +1018,7 @@ function TimelineSegments({
   artifacts,
   conversationId,
   messageStreaming,
+  workTitle = workingGroupTitle(messageStreaming),
   completed,
   cancelled,
   reasoningStreaming,
@@ -1035,6 +1036,7 @@ function TimelineSegments({
   artifacts: ChatToolArtifact[]
   conversationId?: string | null
   messageStreaming: boolean
+  workTitle?: string
   completed: boolean
   cancelled: boolean
   reasoningStreaming: boolean
@@ -1195,6 +1197,7 @@ function TimelineSegments({
         citations={citations}
         conversationId={conversationId}
         messageStreaming={messageStreaming}
+        workTitle={workTitle}
         reasoningStreaming={reasoningStreaming && segments === lastWork?.segments}
         reasoningDurationMs={reasoningDurationMs}
         reasoningDurationMsBySegmentId={reasoningDurationMsBySegmentId}
@@ -1301,6 +1304,7 @@ function MessageBubbleComponent({
   conversationId,
   conversationArtifactsById,
   tokensPerSec,
+  estimatedWorkDurationMs,
   reasoningDurationMs,
   reasoningDurationMsBySegmentId,
   reasoningStreaming = false,
@@ -1625,7 +1629,7 @@ function MessageBubbleComponent({
       <div className="w-full min-w-0">
         <TurnWorkHeader work={turnWork} />
         {!turnWork && messageStreaming && !hasTimelineSegments && (
-          <TimelineWorkHeader generating open title={workingGroupTitle(true, null)} />
+          <TimelineWorkHeader generating open title={workingGroupTitle(true)} />
         )}
         {toolCalls.length > 0 && !hasTimelineSegments && (
           <section
@@ -1688,6 +1692,7 @@ function MessageBubbleComponent({
               artifacts={renderArtifacts}
               conversationId={conversationId}
               messageStreaming={messageStreaming}
+              workTitle={workingGroupTitle(messageStreaming, message.run_duration_ms, estimatedWorkDurationMs)}
               completed={completed}
               cancelled={cancelled}
               reasoningStreaming={reasoningStreaming}

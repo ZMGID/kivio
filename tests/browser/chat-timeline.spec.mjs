@@ -118,6 +118,8 @@ for (const transition of ['completion', 'stop and resume']) {
       await page.evaluate(() => { chatTimeline.finish(); chatTimeline.persist() })
       await expect(page.locator('[data-message-id=active-assistant]')).toHaveAttribute('data-chat-message-list-item', 'message')
       await expectRestored()
+      const worked = live.getByRole('button', { name: /^Worked/ })
+      await expect(worked).toContainText('Worked for 2.5s')
     } else {
       await page.evaluate(() => chatTimeline.freeze())
       await expectRestored()
@@ -164,8 +166,8 @@ test('keeps an answer in flight across chat switches and permits retry after fai
 })
 
 for (const history of [
-  { label: 'Single', conversation: 'alpha', other: 'beta', message: 'alpha-answer-13' },
-  { label: 'Grouped', conversation: 'beta', other: 'alpha', message: 'group-answer-a' },
+  { label: 'Single', conversation: 'alpha', other: 'beta', message: 'alpha-answer-13', workTitle: 'Worked for ≈1s' },
+  { label: 'Grouped', conversation: 'beta', other: 'alpha', message: 'group-answer-a', workTitle: 'Worked' },
 ]) {
   test(`keeps manually opened Work and tool details in ${history.label.toLowerCase()} history`, async ({ page }) => {
     await page.goto(`${fixture}?history-work`)
@@ -177,6 +179,7 @@ for (const history of [
       await expect(page.locator(viewport)).not.toHaveClass(/is-navigator-locking/)
     }
     const worked = row.getByRole('button', { name: /^Worked/ })
+    await expect(worked.getByText(history.workTitle, { exact: true })).toBeVisible()
     await expect(worked).toHaveAttribute('aria-expanded', 'false')
     await worked.click()
     await row.locator('[data-tool-call-cluster] button[data-chat-disclosure]').first().click()

@@ -47,6 +47,25 @@ async function mount() {
 }
 
 describe('MessageList disclosure scroll anchoring', () => {
+  it.each([
+    { entry: 'send', title: 'Worked for ≈1m 33s' },
+    { entry: 'send', recorded: 2450, title: 'Worked for 2.5s' },
+    { entry: 'regenerate', title: 'Worked' },
+    { entry: 'send', gap: { start: 1, end: 3 }, title: 'Worked' },
+  ])('shows $title for a saved $entry reply', async ({ entry, recorded, gap, title }) => {
+    const messages: ChatMessage[] = [
+      { id: 'prompt', role: 'user', content: 'Question', timestamp: 10 },
+      {
+        id: 'reply', role: 'assistant', content: 'Answer', timestamp: 103,
+        run_entry: entry, stream_outcome: 'completed', run_duration_ms: recorded,
+        reasoning: 'Process details',
+      },
+    ]
+    render(<MessageList conversationId="saved-duration" messages={messages} historyGap={gap} />)
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByText(title, { exact: true })).toBeVisible()
+  })
+
   it('keeps a cancelled answer expanded without a stop notice after persistence and reopening', async () => {
     const message: ChatMessage = {
       id: 'cancelled-answer', role: 'assistant', content: '', timestamp: 1,

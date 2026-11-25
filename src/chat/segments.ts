@@ -591,11 +591,6 @@ export function groupTimelineSegments(
   return body
 }
 
-/** 后端 `started_at` 是 unix 秒；个别路径会写毫秒。 */
-function timestampToMs(value: number): number {
-  return value < 1e12 ? value * 1000 : value
-}
-
 function matchedGroupTools(
   segments: ChatMessageSegment[],
   toolCalls: ToolCallRecord[],
@@ -613,42 +608,19 @@ function matchedGroupTools(
   return matched
 }
 
-/**
- * 一组过程的墙钟耗时（Codex「Worked for Xs」）。
- * 取组内工具最早 start → 最晚 complete；没有时间戳时回退思考耗时。
- */
-export function groupWorkDurationMs(
-  segments: ChatMessageSegment[],
-  toolCalls: ToolCallRecord[],
-  toolCallById?: ReadonlyMap<string, ToolCallRecord>,
-  reasoningDurationMs?: number | null,
-): number | null {
-  let minStart: number | null = null
-  let maxEnd: number | null = null
-  for (const tool of matchedGroupTools(segments, toolCalls, toolCallById)) {
-    const start = tool.started_at ?? tool.startedAt
-    const end = tool.completed_at ?? tool.completedAt
-    if (typeof start === 'number') {
-      minStart = minStart == null ? start : Math.min(minStart, start)
-    }
-    if (typeof end === 'number') {
-      maxEnd = maxEnd == null ? end : Math.max(maxEnd, end)
-    }
-  }
-  if (minStart != null && maxEnd != null && maxEnd >= minStart) {
-    const delta = timestampToMs(maxEnd) - timestampToMs(minStart)
-    if (delta > 0) return delta
-  }
-  if (reasoningDurationMs != null && reasoningDurationMs > 0) return reasoningDurationMs
-  return null
-}
-
 export function formatWorkDuration(ms: number): string {
-  const totalSeconds = Math.max(1, Math.round(ms / 1000))
+  if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`
+  if (ms < 10_000) return `${Math.round(ms / 100) / 10}s`
+  const totalSeconds = Math.round(ms / 1000)
   if (totalSeconds < 60) return `${totalSeconds}s`
-  const minutes = Math.floor(totalSeconds / 60)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor(totalSeconds / 60) % 60
   const seconds = totalSeconds % 60
-  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
+  const parts = []
+  if (hours > 0) parts.push(`${hours}h`)
+  if (minutes > 0) parts.push(`${minutes}m`)
+  if (seconds > 0 || minutes > 0) parts.push(`${seconds}s`)
+  return parts.join(' ')
 }
 
 export type ToolGroupCategory =

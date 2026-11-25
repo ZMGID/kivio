@@ -270,6 +270,7 @@ mod tests {
             anchor_usage: None,
             cache_pair_input: None,
             cache_pair_read: None,
+            run_duration_ms: None,
             group_id: None,
             provider_id: None,
             model: None,

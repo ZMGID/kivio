@@ -29,6 +29,8 @@ if (new URLSearchParams(location.search).has('history-work')) {
     [alpha, 'alpha-answer-13', 'Single'], [beta, 'group-answer-a', 'Grouped'],
   ]) {
     const message = conversation.messages.find(value => value.id === messageId);
+    message.run_entry = 'send';
+    message.stream_outcome = 'completed';
     const ids = ['first', 'second'];
     message.tool_calls = ids.map((id, index) => ({
       id, name: 'read_file', source: 'native', status: 'completed',
@@ -130,7 +132,7 @@ function Harness() {
       for (const part of parts) {
         owner.receive({type:'text_delta', conversationId:'alpha', runId:'r', messageId:'active-assistant', delta:part.text, segment:part});
       }
-      settled = {id:'active-assistant', role:'assistant', timestamp:2, content,
+      settled = {id:'active-assistant', role:'assistant', timestamp:2, content, run_duration_ms:2450,
         stream_outcome:'completed', segments:parts};
       owner.activate('alpha');
     },
