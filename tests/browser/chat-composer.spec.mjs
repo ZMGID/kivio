@@ -1,5 +1,16 @@
 import { expect, test } from '@playwright/test'
 
+function expectTextCaret(editor, offset) {
+  return expect.poll(() => editor.evaluate(element => {
+    const selection = getSelection()
+    if (!selection?.isCollapsed || !element.contains(selection.focusNode)) return null
+    const before = document.createRange()
+    before.selectNodeContents(element)
+    before.setEnd(selection.focusNode, selection.focusOffset)
+    return before.toString().length
+  })).toBe(offset)
+}
+
 test('keeps the empty chat centered when the window gets shorter', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.addInitScript(() => {
@@ -34,9 +45,12 @@ test('shows attachment labels in the draft and sends the original text with the 
     window.__TAURI_INTERNALS__ = {
       metadata: { currentWindow: { label: 'chat' }, currentWebview: { label: 'chat' } },
       transformCallback: () => 1,
-      invoke(command) {
+      invoke(command, args) {
         if (command === 'plugin:dialog|open') return Promise.resolve(paths)
-        if (command === 'chat_inspect_attachment_paths') return Promise.resolve(paths.map(path => ({
+        if (command === 'chat_read_clipboard_files') return Promise.resolve({
+          success: true, files: [{ path: paths[2] }],
+        })
+        if (command === 'chat_inspect_attachment_paths') return Promise.resolve(args.paths.map(path => ({
           path, name: path.split('/').at(-1), type: path.endsWith('.png') ? 'image' : 'file',
         })))
         if (command === 'chat_read_attachment') return Promise.resolve({ success: true, data: image })
@@ -68,6 +82,18 @@ test('shows attachment labels in the draft and sends the original text with the 
   expect(sent.content).toBe('123 看这张')
   expect(sent.attachments.map(attachment => attachment.name)).toEqual(['second.png', 'notes.pdf'])
   await expect(composer.getByText('图片 #1')).toHaveCount(0)
+
+  await composer.click()
+  await composer.fill('甲乙')
+  await expectTextCaret(composer, 2)
+  await page.keyboard.press('ArrowLeft')
+  await expectTextCaret(composer, 1)
+  await composer.evaluate(editor => {
+    const clipboardData = new DataTransfer()
+    clipboardData.setData('text/plain', 'C:/screenshots/notes.pdf')
+    editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+  })
+  await expect(composer).toHaveText('甲notes.pdf乙')
 })
 
 test('arrow keys move through wrapped text before browsing prompt history', async ({ page }) => {
@@ -107,4 +133,72 @@ test('arrow keys move through wrapped text before browsing prompt history', asyn
   await clickCaret((await composer.textContent()).length - 1, 'right')
   await page.keyboard.press('ArrowDown')
   await expect(composer).toHaveText(draft)
+})
+
+test('pastes a selectable attachment at the caret and supports editing on both sides', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: 'chat' }, currentWebview: { label: 'chat' } },
+      transformCallback: () => 1,
+      invoke(command) {
+        if (command === 'chat_read_clipboard_files') return Promise.resolve({ success: true, files: [] })
+        if (command === 'chat_save_pasted_image') return new Promise(resolve => {
+          window.finishImagePaste = () => resolve({ success: true, path: 'C:/screenshots/pasted.png', name: 'pasted.png' })
+        })
+        return Promise.resolve(1)
+      },
+    }
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} }
+  })
+  await page.goto('/scripts/fixtures/chat-composer.html')
+  const composer = page.getByRole('textbox')
+  await composer.click()
+  await composer.fill('前后')
+  await expectTextCaret(composer, 2)
+  await page.keyboard.press('ArrowLeft')
+  await expectTextCaret(composer, 1)
+  await composer.evaluate(editor => {
+    const clipboardData = new DataTransfer()
+    clipboardData.items.add(new File(['image'], 'pasted.png', { type: 'image/png' }))
+    editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+  })
+  await expect.poll(() => page.evaluate(() => typeof window.finishImagePaste)).toBe('function')
+  await page.keyboard.press('Home')
+  await expectTextCaret(composer, 0)
+  await page.keyboard.insertText('新')
+  await page.keyboard.press('End')
+  await expectTextCaret(composer, 3)
+  await page.keyboard.insertText('续')
+  await page.evaluate(() => window.finishImagePaste())
+  const chip = composer.getByText('图片 #1')
+  await expect(composer).toHaveText('新前图片 #1后续')
+
+  await page.keyboard.press('Home')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await expectTextCaret(composer, 2)
+  await page.keyboard.insertText('左')
+  await expect(composer).toHaveText('新前左图片 #1后续')
+  await chip.click()
+  await expect(chip).toHaveClass(/ProseMirror-selectednode/)
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.insertText('右')
+  await expect(composer).toHaveText('新前左图片 #1右后续')
+
+  await page.keyboard.press('ArrowLeft')
+  await page.keyboard.press('Shift+ArrowLeft')
+  await expect(chip).toHaveClass(/is-selected/)
+  await page.keyboard.press('ArrowRight')
+  await chip.click()
+  await expect(chip).toHaveClass(/ProseMirror-selectednode/)
+  await page.keyboard.press('Delete')
+  await expect(chip).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '预览图片' })).toHaveCount(0)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect(composer).toHaveText('新前左图片 #1右后续')
+
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  const sent = await page.evaluate(() => window.chatComposerSent)
+  expect(sent.content).toBe('新前左右后续')
+  expect(sent.attachments.map(attachment => attachment.name)).toEqual(['pasted.png'])
 })

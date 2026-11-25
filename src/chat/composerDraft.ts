@@ -1,5 +1,7 @@
 import type { PendingAttachment } from './types'
 
+export type ComposerAttachment = PendingAttachment & { offset?: number }
+
 /**
  * 输入框草稿的内存暂存：切换对话/页面导致 InputBar 卸载重挂时，保住已打的字、引用与附件。
  * 按会话 id 存（新建对话用 NEW_CHAT_KEY）。仅进程内存活——app 关窗销毁即清，符合"本次使用期间"语义。
@@ -8,7 +10,7 @@ import type { PendingAttachment } from './types'
 export interface ComposerDraft {
   input: string
   quotes: string[]
-  attachments: PendingAttachment[]
+  attachments: ComposerAttachment[]
   attachmentError?: string
 }
 

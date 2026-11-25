@@ -20,7 +20,7 @@ export function useComposerContextMenu({ editorRef, scopeKey, readOnly, onPaste,
   const current = useRef({ scopeKey, readOnly })
   current.current = { scopeKey, readOnly }
   const [menu, setMenu] = useState<{
-    left: number; top: number; start: number; end: number; value: string; scopeKey: string
+    left: number; top: number; start: number; end: number; value: string; selectedText: string; scopeKey: string
     canUndo: boolean; canRedo: boolean
   } | null>(null)
   useEffect(() => { setMenu(null) }, [scopeKey])
@@ -35,7 +35,7 @@ export function useComposerContextMenu({ editorRef, scopeKey, readOnly, onPaste,
     const el = editorRef.current
     if (!el || !menu || menu.scopeKey !== current.current.scopeKey) return null
     el.focus({ preventScroll: true })
-    el.setSelectionRange(menu.start, menu.end)
+    if (el.selectionStart !== menu.start || el.selectionEnd !== menu.end) el.setSelectionRange(menu.start, menu.end)
     return el
   }
   const insertText = (text: string) => {
@@ -46,7 +46,7 @@ export function useComposerContextMenu({ editorRef, scopeKey, readOnly, onPaste,
   }
   const copy = async (cut: boolean) => {
     if (!menu || menu.scopeKey !== current.current.scopeKey) return
-    const selected = menu.value.slice(menu.start, menu.end)
+    const selected = menu.selectedText
     if (!selected) return
     try {
       if (isTauriRuntime()) await api.chatWriteClipboardText(selected)
@@ -67,12 +67,12 @@ export function useComposerContextMenu({ editorRef, scopeKey, readOnly, onPaste,
     if (!el) return
     el.focus({ preventScroll: true })
     setMenu({ left: event.clientX, top: event.clientY, start: el.selectionStart, end: el.selectionEnd,
-      value: el.value, scopeKey, canUndo: el.canUndo, canRedo: el.canRedo })
+      value: el.value, selectedText: el.selectedText, scopeKey, canUndo: el.canUndo, canRedo: el.canRedo })
   }
   return {
     onContextMenu,
     menu: menu && menu.scopeKey === scopeKey ? <TextEditContextMenu
-      anchor={menu} hasSelection={menu.end > menu.start} readOnly={readOnly}
+      anchor={menu} hasSelection={!!menu.selectedText} readOnly={readOnly}
       canUndo={menu.canUndo} canRedo={menu.canRedo}
       onUndo={() => history('undo')} onRedo={() => history('redo')}
       onCopy={() => { void copy(false) }} onCut={() => { void copy(true) }}

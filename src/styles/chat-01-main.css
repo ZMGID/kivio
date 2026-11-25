@@ -585,7 +585,7 @@
 .chat-composer-attachment-label {
   display: inline-block;
   max-inline-size: calc(100% - 0.35em);
-  margin-inline-start: 0.35em;
+  margin-inline: 0.2em;
   padding-inline: 0.4em;
   border: 1px solid var(--theme-surface-border);
   border-radius: 0.5em;
@@ -598,6 +598,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: none;
+}
+.chat-composer-attachment-label.ProseMirror-selectednode,
+.chat-composer-attachment-label.is-selected {
+  outline: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--theme-surface-muted));
 }
 .chat-composer-editor .ProseMirror-separator { display: none; }
 

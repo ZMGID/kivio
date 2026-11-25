@@ -8,6 +8,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComponentProps<ty
   useImperativeHandle(ref, () => ({
     get dom() { return input.current! },
     get value() { return input.current!.value },
+    get attachments() { return undefined },
+    get selectedText() { const el = input.current!; return el.value.slice(el.selectionStart, el.selectionEnd) },
     get selectionStart() { return input.current!.selectionStart },
     get selectionEnd() { return input.current!.selectionEnd },
     set selectionStart(value) { input.current!.selectionStart = value },
@@ -18,8 +20,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComponentProps<ty
     replaceText(start, end, text) {
       const el = input.current!
       el.setRangeText(text, start, end, 'end')
-      props.onChange(el.value, el.selectionStart)
+      props.onChange(el.value, el.selectionStart, [...(props.attachments ?? [])])
     },
+    captureAttachmentInsertion() { return undefined },
     undo() { document.execCommand?.('undo') }, redo() { document.execCommand?.('redo') },
     get canUndo() { return document.queryCommandEnabled?.('undo') ?? false },
     get canRedo() { return document.queryCommandEnabled?.('redo') ?? false },
@@ -32,7 +35,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComponentProps<ty
   }))
   return <textarea ref={input} value={props.value} placeholder={props.placeholder}
     readOnly={props.readOnly} aria-busy={props.busy} className={props.className}
-    onChange={event => props.onChange(event.target.value, event.target.selectionStart)}
+    onChange={event => props.onChange(event.target.value, event.target.selectionStart, [...(props.attachments ?? [])])}
     onSelect={props.onSelect} onKeyDown={event => props.onKeyDown(event.nativeEvent)}
     onPaste={event => props.onPaste(event.nativeEvent)}
     onContextMenu={event => props.onContextMenu(event.nativeEvent)} />

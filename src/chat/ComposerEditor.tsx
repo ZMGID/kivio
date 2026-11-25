@@ -1,12 +1,15 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type AnimationEventHandler } from 'react'
 import { Schema, type Node as ProseNode } from '@milkdown/prose/model'
-import { EditorState, Plugin, TextSelection } from '@milkdown/prose/state'
+import { EditorState, NodeSelection, Plugin, TextSelection, type Transaction } from '@milkdown/prose/state'
 import { Decoration, DecorationSet, EditorView } from '@milkdown/prose/view'
 import { history, undo, redo, undoDepth, redoDepth, closeHistory } from '@milkdown/prose/history'
 import { keymap } from '@milkdown/prose/keymap'
 import { deleteSelection, selectAll } from '@milkdown/prose/commands'
 import { composerCaret } from './composerCaret'
 import { findComposerCommands, type SlashCommandDefinition } from './slashCommands'
+import { imageAttachmentNumbers } from './attachmentPresentation'
+import type { ComposerAttachment } from './composerDraft'
+import type { PendingAttachment } from './types'
 
 const schema = new Schema({ nodes: {
   doc: { content: 'inline*', whitespace: 'pre' },
@@ -17,48 +20,105 @@ const schema = new Schema({ nodes: {
     leafText: node => node.attrs.token,
     toDOM: node => ['span', { 'data-command': node.attrs.id }, node.attrs.token],
   },
+  attachment: {
+    inline: true, group: 'inline', atom: true, selectable: true, draggable: false,
+    attrs: { attachment: {} },
+    leafText: node => node.attrs.attachment.name,
+    toDOM: node => ['span', node.attrs.attachment.name],
+  },
 } })
 
-function plainText(doc: ProseNode): string { return doc.textContent }
+function attachmentIn(node: ProseNode): PendingAttachment | undefined {
+  return node.type === schema.nodes.attachment ? node.attrs.attachment : undefined
+}
 
-function documentFromText(value: string, commands: readonly SlashCommandDefinition[], editingAt?: number, existing?: ProseNode) {
+function plainText(doc: ProseNode): string {
+  return doc.textBetween(0, doc.content.size, '', node => attachmentIn(node) ? '' : node.attrs.token)
+}
+
+function textLength(node: ProseNode, countAttachments: boolean): number {
+  if (node.isText) return node.nodeSize
+  if (node.type === schema.nodes.attachment) return countAttachments ? 1 : 0
+  return node.attrs.token.length
+}
+
+function documentAttachments(doc: ProseNode): ComposerAttachment[] {
+  const attachments: ComposerAttachment[] = []
+  let offset = 0
+  doc.forEach(node => {
+    const attachment = attachmentIn(node)
+    if (attachment) attachments.push({ ...attachment, offset })
+    offset += textLength(node, false)
+  })
+  return attachments
+}
+
+function documentFromText(
+  value: string, commands: readonly SlashCommandDefinition[],
+  attachments: readonly ComposerAttachment[] = [], editingAt?: number, existing?: ProseNode,
+) {
   const nodes: ProseNode[] = []
+  const placements = attachments.map(({ offset, ...attachment }) => ({
+    offset: Math.min(offset ?? value.length, value.length), attachment,
+  })).sort((a, b) => a.offset - b.offset)
+  // A space at each chip boundary keeps a command from spanning an attachment.
+  let source = ''
   let from = 0
+  const slots = placements.map(({ offset, attachment }) => {
+    source += value.slice(from, offset) + ' '
+    from = offset
+    return { start: source.length - 1, node: schema.nodes.attachment.create({ attachment }) }
+  })
+  source += value.slice(from)
+  from = 0
   const existingEnds = new Set<number>()
   if (existing) {
     let offset = 0
     existing.forEach(node => {
-      offset += node.isText ? node.nodeSize : node.attrs.token.length
-      if (!node.isText) existingEnds.add(offset)
+      offset += textLength(node, true)
+      if (node.type === schema.nodes.command) existingEnds.add(offset)
     })
   }
-  for (const match of findComposerCommands(value, commands)) {
+  for (const match of findComposerCommands(source, commands)) {
     // Keep an unfinished query editable, even if it already equals a short command.
     if (match.end === editingAt && !existingEnds.has(match.end)) continue
-    if (match.start > from) nodes.push(schema.text(value.slice(from, match.start)))
-    nodes.push(schema.nodes.command.create({ id: match.command.id, token: value.slice(match.start, match.end) }))
-    from = match.end
+    slots.push({ start: match.start, node: schema.nodes.command.create({
+      id: match.command.id, token: source.slice(match.start, match.end),
+    }) })
   }
-  if (from < value.length) nodes.push(schema.text(value.slice(from)))
+  for (const { start, node } of slots.sort((a, b) => a.start - b.start)) {
+    if (start > from) nodes.push(schema.text(source.slice(from, start)))
+    nodes.push(node)
+    from = start + textLength(node, true)
+  }
+  if (from < source.length) nodes.push(schema.text(source.slice(from)))
   return schema.nodes.doc.create(null, nodes)
 }
 
-function textOffset(doc: ProseNode, position: number): number {
+function textOffset(doc: ProseNode, position: number, countAttachments = false): number {
   let offset = 0
   doc.forEach((node, pos) => {
     if (pos >= position) return
-    offset += node.isText ? Math.min(node.nodeSize, position - pos) : node.attrs.token.length
+    offset += node.isText ? Math.min(node.nodeSize, position - pos) : textLength(node, countAttachments)
   })
   return offset
 }
 
-function documentPosition(doc: ProseNode, offset: number, bias = 1): number {
+function documentPosition(
+  doc: ProseNode, offset: number,
+  options: { bias?: -1 | 1; countAttachments?: boolean; attachmentBias?: -1 | 1 } = {},
+): number {
+  const { bias = 1, countAttachments = false, attachmentBias = bias } = options
   let textPos = 0
   let result = doc.content.size
   let found = false
   doc.forEach((node, pos) => {
     if (found) return
-    const length = node.isText ? node.nodeSize : node.attrs.token.length
+    const length = textLength(node, countAttachments)
+    if (offset === textPos + length && attachmentBias > 0) {
+      textPos += length
+      return
+    }
     if (offset <= textPos + length) {
       result = node.isText ? pos + Math.max(0, offset - textPos)
         : offset <= textPos ? pos : offset >= textPos + length || bias > 0 ? pos + 1 : pos
@@ -69,15 +129,31 @@ function documentPosition(doc: ProseNode, offset: number, bias = 1): number {
   return result
 }
 
+function updateDocument(tr: Transaction, doc: ProseNode) {
+  const start = tr.doc.content.findDiffStart(doc.content)
+  const end = tr.doc.content.findDiffEnd(doc.content)
+  if (start === null || end === null) return null
+  const overlap = Math.max(0, start - Math.min(end.a, end.b))
+  return tr.replaceWith(start, end.a + overlap, doc.slice(start, end.b + overlap).content)
+}
+
+export type AttachmentInsertion = {
+  insert: (attachments: readonly PendingAttachment[]) => boolean
+  release: () => void
+}
+
 export interface ComposerEditorHandle {
   readonly dom: HTMLElement
   readonly value: string
+  readonly attachments: ComposerAttachment[] | undefined
+  readonly selectedText: string
   selectionStart: number
   selectionEnd: number
   focus: (options?: FocusOptions) => void
   setSelectionRange: (start: number, end: number) => void
   select: () => void
   replaceText: (start: number, end: number, text: string) => void
+  captureAttachmentInsertion: () => AttachmentInsertion | undefined
   undo: () => void
   redo: () => void
   readonly canUndo: boolean
@@ -90,12 +166,13 @@ type Props = {
   value: string
   scopeKey: string
   commands: readonly SlashCommandDefinition[]
-  attachmentLabels?: readonly { text: string; name: string }[]
+  attachments?: readonly ComposerAttachment[]
+  imageReferenceLabel?: string
   readOnly?: boolean
   busy?: boolean
   placeholder: string
   className?: string
-  onChange: (value: string, cursor: number) => void
+  onChange: (value: string, cursor: number, attachments: ComposerAttachment[]) => void
   onSelect: () => void
   onKeyDown: (event: KeyboardEvent) => void
   onPaste: (event: ClipboardEvent) => void
@@ -110,19 +187,25 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
   const current = useRef(props)
   current.current = props
   const scope = useRef(props.scopeKey)
+  const pendingInsertions = useRef(new Set<{ position: number }>())
   const [, finishComposition] = useState(0)
 
   useImperativeHandle(ref, () => {
     const selection = (start: number, end: number) => {
       const view = viewRef.current
       if (!view) return
-      const from = documentPosition(view.state.doc, start, start === end ? 1 : -1)
+      const from = documentPosition(view.state.doc, start, { bias: start === end ? 1 : -1 })
       const to = documentPosition(view.state.doc, end)
       view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)))
     }
     return {
       get dom() { return viewRef.current!.dom },
       get value() { return viewRef.current ? plainText(viewRef.current.state.doc) : current.current.value },
+      get attachments() { const v = viewRef.current; return v ? documentAttachments(v.state.doc) : undefined },
+      get selectedText() {
+        const v = viewRef.current
+        return v ? v.state.doc.textBetween(v.state.selection.from, v.state.selection.to) : ''
+      },
       get selectionStart() { const v = viewRef.current; return v ? textOffset(v.state.doc, v.state.selection.from) : 0 },
       get selectionEnd() { const v = viewRef.current; return v ? textOffset(v.state.doc, v.state.selection.to) : 0 },
       set selectionStart(start: number) { selection(start, Math.max(start, this.selectionEnd)) },
@@ -133,13 +216,37 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       replaceText(start, end, text) {
         const view = viewRef.current
         if (!view || current.current.readOnly) return
-        const from = documentPosition(view.state.doc, start, -1)
-        const to = documentPosition(view.state.doc, end)
+        const { doc, selection } = view.state
+        const matchesSelection = start === textOffset(doc, selection.from) && end === textOffset(doc, selection.to)
+        const from = matchesSelection ? selection.from : documentPosition(doc, start, { bias: -1, attachmentBias: 1 })
+        const to = matchesSelection ? selection.to : start === end ? from : documentPosition(doc, end, { attachmentBias: -1 })
         const content = documentFromText(text, current.current.commands).content
         const tr = view.state.tr.replaceWith(from, to, content)
         tr.setSelection(TextSelection.create(tr.doc, from + content.size))
         view.dispatch(closeHistory(tr).scrollIntoView())
         view.dispatch(closeHistory(view.state.tr))
+      },
+      captureAttachmentInsertion() {
+        const view = viewRef.current
+        if (!view) return
+        const pending = pendingInsertions.current
+        const domSelection = view.dom.ownerDocument.getSelection()
+        const focus = domSelection?.focusNode
+        // A paste can follow a native caret move before ProseMirror observes it.
+        const position = view.hasFocus() && domSelection && focus && view.dom.contains(focus)
+          ? view.posAtDOM(focus, domSelection.focusOffset)
+          : view.state.selection.head
+        const anchor = { position }
+        pending.add(anchor)
+        return {
+          insert(attachments) {
+            if (!pending.has(anchor) || view.isDestroyed || !view.editable || scope.current !== current.current.scopeKey) return false
+            const nodes = attachments.map(attachment => schema.nodes.attachment.create({ attachment }))
+            view.dispatch(view.state.tr.insert(anchor.position, nodes))
+            return true
+          },
+          release() { pending.delete(anchor) },
+        }
       },
       undo() { const v = viewRef.current; if (v && !current.current.readOnly) undo(v.state, v.dispatch) },
       redo() { const v = viewRef.current; if (v && !current.current.readOnly) redo(v.state, v.dispatch) },
@@ -147,7 +254,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       get canRedo() { return !!viewRef.current && redoDepth(viewRef.current.state) > 0 },
       get atCommand() {
         const v = viewRef.current
-        return !!v && (v.state.selection.$from.nodeBefore?.type === schema.nodes.command || !v.state.selection.empty)
+        const before = v?.state.selection.$from.nodeBefore
+        return !!v && ((!!before && !before.isText) || !v.state.selection.empty)
       },
       atVerticalBoundary(direction) {
         const view = viewRef.current
@@ -170,19 +278,24 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
     if (!mount.current) return
     let compositionJustEnded = false
     let compositionTimer: ReturnType<typeof setTimeout> | undefined
+    const mapInsertions = (tr: Transaction) => {
+      for (const anchor of pendingInsertions.current) anchor.position = tr.mapping.map(anchor.position)
+    }
     const normalize = new Plugin({
       appendTransaction(transactions, _old, state) {
         if (viewRef.current?.composing || !transactions.some(tr => tr.docChanged || tr.getMeta('normalize'))) return null
-        const start = textOffset(state.doc, state.selection.from)
-        const end = textOffset(state.doc, state.selection.to)
-        const doc = documentFromText(plainText(state.doc), current.current.commands, end, state.doc)
-        if (doc.eq(state.doc)) return null
-        const tr = state.tr.replaceWith(0, state.doc.content.size, doc.content)
-        return tr.setSelection(TextSelection.create(tr.doc, documentPosition(tr.doc, start), documentPosition(tr.doc, end)))
+        const anchor = textOffset(state.doc, state.selection.anchor, true)
+        const head = textOffset(state.doc, state.selection.head, true)
+        const doc = documentFromText(plainText(state.doc), current.current.commands, documentAttachments(state.doc), head, state.doc)
+        const tr = updateDocument(state.tr, doc)
+        if (!tr) return null
+        const from = documentPosition(tr.doc, anchor, { countAttachments: true })
+        const to = documentPosition(tr.doc, head, { countAttachments: true })
+        return tr.setSelection(TextSelection.create(tr.doc, from, to))
       },
     })
     const createState = (value: string) => EditorState.create({
-      doc: documentFromText(value, current.current.commands),
+      doc: documentFromText(value, current.current.commands, current.current.attachments),
       plugins: [history(), normalize, composerCaret, keymap({
         'Mod-z': undo, 'Mod-Shift-z': redo, 'Mod-y': redo, 'Mod-a': selectAll,
         // AllSelection cannot use the browser's native deletion fallback.
@@ -195,21 +308,18 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       editable: () => !current.current.readOnly,
       attributes: { role: 'textbox', 'aria-multiline': 'true', spellcheck: 'false' },
       decorations(state) {
-        const labels = current.current.attachmentLabels
-        if (!labels?.length) return null
-        // The attachment strip owns these files. A widget keeps their labels out of the editable prompt.
-        return DecorationSet.create(state.doc, [Decoration.widget(state.doc.content.size, (view) => {
-          const document = view.dom.ownerDocument
-          const group = document.createElement('span')
-          for (const { text, name } of labels) {
-            const label = document.createElement('span')
-            label.className = 'chat-composer-attachment-label'
-            label.textContent = text
-            label.title = name
-            group.append(label)
-          }
-          return group
-        }, { side: 1, key: JSON.stringify(labels) })])
+        const numbers = imageAttachmentNumbers(documentAttachments(state.doc))
+        const labels: Decoration[] = []
+        state.doc.forEach((node, pos) => {
+          const attachment = attachmentIn(node)
+          if (!attachment) return
+          const number = numbers.get(attachment.id)
+          const label = number === undefined
+            ? attachment.name : current.current.imageReferenceLabel?.replace('{n}', String(number)) ?? attachment.name
+          const selected = state.selection.from <= pos && state.selection.to >= pos + node.nodeSize
+          labels.push(Decoration.node(pos, pos + node.nodeSize, selected ? { class: 'is-selected' } : {}, { label }))
+        })
+        return DecorationSet.create(state.doc, labels)
       },
       clipboardTextSerializer: slice => slice.content.textBetween(0, slice.content.size),
       handlePaste(view, event) {
@@ -224,6 +334,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       handleKeyDown(_view, event) {
         current.current.onKeyDown(event)
         return event.defaultPrevented
+      },
+      handleDoubleClickOn(view, _pos, node, nodePos) {
+        if (node.type !== schema.nodes.attachment) return false
+        view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, nodePos)))
+        return true
       },
       handleDOMEvents: {
         keydown(view, event) {
@@ -255,6 +370,20 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
         },
       },
       nodeViews: {
+        attachment(node, _view, _getPos, decorations) {
+          const dom = document.createElement('span')
+          dom.className = 'chat-composer-attachment-label'
+          dom.contentEditable = 'false'
+          const update = (next: ProseNode, labels: readonly Decoration[]) => {
+            const attachment = attachmentIn(next)
+            if (!attachment) return false
+            dom.title = attachment.name
+            dom.textContent = labels[0]?.spec.label ?? attachment.name
+            return true
+          }
+          update(node, decorations)
+          return { dom, update }
+        },
         command(node) {
           const dom = document.createElement('span')
           dom.className = 'chat-composer-command'
@@ -268,14 +397,23 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       },
       dispatchTransaction(tr) {
         const old = view.state
-        const next = old.applyTransaction(tr).state
-        view.updateState(next)
-        if (!next.doc.eq(old.doc)) current.current.onChange(plainText(next.doc), textOffset(next.doc, next.selection.from))
-        else if (!next.selection.eq(old.selection)) current.current.onSelect()
+        const attachments = tr.docChanged ? documentAttachments(tr.doc) : undefined
+        const previous = attachments ? documentAttachments(old.doc) : []
+        const attachmentChanged = !!attachments && (attachments.length !== previous.length
+          || attachments.some((attachment, index) => attachment.id !== previous[index]?.id))
+        if (attachmentChanged) closeHistory(tr)
+        const { state: next, transactions } = old.applyTransaction(tr)
+        transactions.forEach(mapInsertions)
+        view.updateState(attachmentChanged ? next.apply(closeHistory(next.tr)) : next)
+        if (!next.doc.eq(old.doc)) {
+          current.current.onChange(plainText(next.doc), textOffset(next.doc, next.selection.from),
+            attachments ?? documentAttachments(next.doc))
+        } else if (!next.selection.eq(old.selection)) current.current.onSelect()
       },
     })
     viewRef.current = view
-    return () => { clearTimeout(compositionTimer); viewRef.current = null; view.destroy() }
+    const pending = pendingInsertions.current
+    return () => { clearTimeout(compositionTimer); pending.clear(); viewRef.current = null; view.destroy() }
   }, [])
 
   useLayoutEffect(() => {
@@ -289,23 +427,29 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
     } })
     if (scope.current !== props.scopeKey) {
       scope.current = props.scopeKey
-      view.updateState(EditorState.create({ doc: documentFromText(props.value, props.commands), plugins: view.state.plugins }))
-    } else if (props.value !== plainText(view.state.doc)) {
-      const doc = documentFromText(props.value, props.commands)
+      pendingInsertions.current.clear()
+      view.updateState(EditorState.create({
+        doc: documentFromText(props.value, props.commands, props.attachments), plugins: view.state.plugins,
+      }))
+    } else if (props.value !== plainText(view.state.doc)
+      || (!props.value && !props.attachments?.length && view.state.doc.content.size > 0)) {
+      pendingInsertions.current.clear()
+      const doc = documentFromText(props.value, props.commands, props.attachments)
       // Programmatic draft replacement (send, navigation, history recall) starts
       // a fresh undo scope, so undo cannot resurrect a sent/other-chat message.
       view.updateState(EditorState.create({ doc, plugins: view.state.plugins,
         selection: TextSelection.create(doc, doc.content.size) }))
     } else if (!view.composing) {
-      const end = textOffset(view.state.doc, view.state.selection.to)
-      const doc = documentFromText(props.value, props.commands, end, view.state.doc)
-      if (!doc.eq(view.state.doc)) {
-        const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content).setMeta('addToHistory', false)
-        tr.setSelection(TextSelection.create(tr.doc, documentPosition(tr.doc, end)))
+      const end = textOffset(view.state.doc, view.state.selection.to, true)
+      const doc = documentFromText(props.value, props.commands, props.attachments, end, view.state.doc)
+      const tr = updateDocument(view.state.tr, doc)
+      if (tr) {
+        tr.setMeta('addToHistory', false)
+        for (const anchor of pendingInsertions.current) anchor.position = tr.mapping.map(anchor.position)
         view.updateState(view.state.apply(tr))
       }
     }
-    view.dom.dataset.empty = String(view.state.doc.content.size === 0 && !props.attachmentLabels?.length)
+    view.dom.dataset.empty = String(view.state.doc.content.size === 0)
   })
 
   // 输入框随行数长高 / 变矮时，外层平滑过渡到编辑器的自然高度，而不是逐行跳。

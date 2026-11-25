@@ -5,14 +5,13 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { ArrowUp, Check, ChevronDown, Layers, Square, TextQuote, WandSparkles, X } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
-import { imageAttachmentNumbers } from './attachmentPresentation'
 import { PastedTextEditorModal } from './PastedTextEditorModal'
 import { ComposerAddMenu } from './ComposerAddMenu'
 import { useComposerContextMenu, type ComposerPasteTarget } from './useComposerContextMenu'
 import { SourcesButton } from './SourcesButton'
 import { onComposerInsert, onComposerTextInsert } from './composerInsert'
-import { beginComposerAttachmentOperation, beginComposerDraftOperation, invalidateComposerAttachmentPath, draftKey, getComposerDraft, registerComposerDraftScope, setComposerDraft, subscribeComposerDraft, updateComposerDraft } from './composerDraft'
-import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor'
+import { beginComposerAttachmentOperation, beginComposerDraftOperation, invalidateComposerAttachmentPath, draftKey, getComposerDraft, registerComposerDraftScope, setComposerDraft, subscribeComposerDraft, updateComposerDraft, type ComposerAttachment } from './composerDraft'
+import { ComposerEditor, type AttachmentInsertion, type ComposerEditorHandle } from './ComposerEditor'
 import { canOptimizeComposerText } from './promptOptimize'
 import { AssistantPicker } from './AssistantPicker'
 import { MultiModelSelector } from './MultiModelSelector'
@@ -61,7 +60,6 @@ function undoAccidentalFilenamePaste(
   clipText: string,
   selectionStart: number,
   selectionEnd: number,
-  setValue: (value: string) => void,
 ) {
   if (!clipText.trim()) return
 
@@ -69,12 +67,8 @@ function undoAccidentalFilenamePaste(
   const expectedAfterPaste = `${valueBeforePaste.slice(0, selectionStart)}${clipText}${valueBeforePaste.slice(selectionEnd)}`
   if (currentValue !== expectedAfterPaste) return
 
-  const cleaned = `${valueBeforePaste.slice(0, selectionStart)}${valueBeforePaste.slice(selectionEnd)}`
-  setValue(cleaned)
-  requestAnimationFrame(() => {
-    textarea.selectionStart = selectionStart
-    textarea.selectionEnd = selectionStart
-  })
+  const replacedText = valueBeforePaste.slice(selectionStart, selectionEnd)
+  if (replacedText !== clipText) textarea.replaceText(selectionStart, selectionStart + clipText.length, replacedText)
 }
 
 function shouldComposerAutoFocus(activeElement: Element | null): boolean {
@@ -437,14 +431,7 @@ export const InputBar = memo(function InputBar({
     historyCaretRef.current = null
   }, [input])
   const [quotes, setQuotes] = useState<string[]>(() => getComposerDraft(draftKeyValue)?.quotes ?? [])
-  const [attachments, setAttachments] = useState<PendingAttachment[]>(() => getComposerDraft(draftKeyValue)?.attachments ?? [])
-  const attachmentLabels = useMemo(() => {
-    const imageNumbers = imageAttachmentNumbers(attachments)
-    return attachments.map(({ id, name }) => {
-      const number = imageNumbers.get(id)
-      return { name, text: number === undefined ? name : t.chatComposerImageReference.replace('{n}', String(number)) }
-    })
-  }, [attachments, t.chatComposerImageReference])
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => getComposerDraft(draftKeyValue)?.attachments ?? [])
   const [attachmentError, setAttachmentError] = useState(() => getComposerDraft(draftKeyValue)?.attachmentError ?? '')
   const [editingAttachment, setEditingAttachment] = useState<PendingAttachment | null>(null)
   const [dragActive, setDragActive] = useState(false)
@@ -748,38 +735,45 @@ export const InputBar = memo(function InputBar({
   }, [])
 
   const addAttachments = useCallback(
-    (next: PendingAttachment[], options?: { imagesOnly?: boolean }, scope?: AttachmentOperationScope) => {
-      const addable = scope ? next.filter((attachment) => !scope.removedPaths.has(attachment.path)) : next
+    (next: PendingAttachment[], scope: AttachmentOperationScope, insertion?: AttachmentInsertion) => {
+      const addable = next.filter((attachment) => !scope.removedPaths.has(attachment.path))
       if (addable.length === 0 && next.length > 0) return
-      const filtered = options?.imagesOnly
-        ? addable.filter((attachment) => attachment.type === 'image')
-        : addable.filter((attachment) => attachment.name.trim() !== '')
+      const filtered = addable.filter((attachment) => attachment.name.trim() !== '')
       if (filtered.length === 0) {
-        setScopedAttachmentError(options?.imagesOnly ? t.chatDropImagesOnly : t.chatNoAddableFiles, scope)
+        setScopedAttachmentError(t.chatNoAddableFiles, scope)
         return
       }
 
-      const append = (prev: PendingAttachment[]) => {
+      const unique = (prev: readonly PendingAttachment[]) => {
         const existing = new Set(prev.map((attachment) => attachment.path))
-        const dedupedNext = filtered.filter((attachment) => {
+        return filtered.filter((attachment) => {
           if (existing.has(attachment.path)) return false
           existing.add(attachment.path)
           return true
         })
-        if (dedupedNext.length === 0) {
-          return { attachments: prev, error: t.chatAttachmentAdded }
-        }
-        return { attachments: [...prev, ...dedupedNext], error: '' }
       }
-      if (scope && (!mountedRef.current || scope.key !== draftScopeRef.current.key)) {
+      const append = (prev: ComposerAttachment[]) => {
+        const added = unique(prev)
+        return added.length ? { attachments: [...prev, ...added], attachmentError: '' }
+          : { attachments: prev, attachmentError: t.chatAttachmentAdded }
+      }
+      if (!mountedRef.current || scope.key !== draftScopeRef.current.key) {
         updateComposerDraft(scope.key, (draft) => {
-          const result = append(draft.attachments)
-          return { ...draft, attachments: result.attachments, attachmentError: result.error }
+          return { ...draft, ...append(draft.attachments) }
         })
       } else {
+        const editor = editorRef.current
+        const visible = editor?.attachments
+        if (insertion && visible) {
+          const added = unique(visible)
+          if (!added.length || insertion.insert(added)) {
+            setAttachmentError(added.length ? '' : t.chatAttachmentAdded)
+            return
+          }
+        }
         setAttachments((prev) => {
           const result = append(prev)
-          setAttachmentError(result.error)
+          setAttachmentError(result.attachmentError)
           return result.attachments
         })
         editorRef.current?.focus()
@@ -852,6 +846,7 @@ export const InputBar = memo(function InputBar({
   const openAttachmentPicker = useCallback(async () => {
     if (composerLocked) return
     const scope = beginComposerAttachmentOperation(draftScopeRef.current.key)
+    const insertion = editorRef.current?.captureAttachmentInsertion()
     setToolPanelOpen(false)
     setSuggestionsOpen(false)
     setScopedAttachmentError('', scope)
@@ -863,7 +858,8 @@ export const InputBar = memo(function InputBar({
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : []
       if (paths.length === 0) return
 
-      addAttachments(await pendingFromPaths(paths), undefined, scope)
+      addAttachments(await pendingFromPaths(paths), scope, insertion)
+      if (mountedRef.current && scope.key === draftScopeRef.current.key) editorRef.current?.focus()
     } catch (err) {
       console.error('Failed to add chat attachment:', err)
       setScopedAttachmentError(
@@ -871,16 +867,22 @@ export const InputBar = memo(function InputBar({
         scope,
       )
     } finally {
+      insertion?.release()
       scope.release()
     }
   }, [addAttachments, composerLocked, pendingFromPaths, setScopedAttachmentError, t])
 
   const executeSlashAction = async (command: SlashCommandDefinition, start: number, end: number) => {
     if (disabled) return
-    editorRef.current?.replaceText(start, end, '')
+    const editor = editorRef.current
+    editor?.replaceText(start, end, '')
     // A mode action may create a conversation and migrate/remount its composer
     // before React commits. Persist the consumed command before starting it.
-    updateComposerDraft(draftScopeRef.current.key, draft => ({ ...draft, input: `${input.slice(0, start)}${input.slice(end)}` }))
+    updateComposerDraft(draftScopeRef.current.key, draft => ({
+      ...draft,
+      input: `${input.slice(0, start)}${input.slice(end)}`,
+      attachments: editor?.attachments ?? draft.attachments,
+    }))
     setSuggestionsOpen(false)
 
     switch (command.id) {
@@ -1035,8 +1037,13 @@ export const InputBar = memo(function InputBar({
     const content = quotedBlock
       ? (trimmed ? `${quotedBlock}\n\n${trimmed}` : quotedBlock)
       : trimmed
+    const files = attachments.map(attachment => {
+      const file = { ...attachment }
+      delete file.offset
+      return file
+    })
     if (disabled && onSendWhileRunning) {
-      onSendWhileRunning(content, attachments)
+      onSendWhileRunning(content, files)
       clearSentDraft(draftScopeRef.current.key)
     } else {
       const sendingScope = beginComposerDraftOperation(draftScopeRef.current.key)
@@ -1059,7 +1066,8 @@ export const InputBar = memo(function InputBar({
       }
       const restoreRejectedDraft = () => {
         if (!acceptedNotified || !clearedDraftKey) return
-        const typedAfterAccept = (editorRef.current?.value ?? '').trim().length > 0
+        const editor = editorRef.current
+        const typedAfterAccept = Boolean(editor?.value.trim() || editor?.attachments?.length)
         if (draftScopeRef.current.key !== clearedDraftKey || typedAfterAccept) return
         setComposerDraft(clearedDraftKey, sentSnapshot)
         setInput(sentSnapshot.input)
@@ -1067,7 +1075,7 @@ export const InputBar = memo(function InputBar({
         setAttachments(sentSnapshot.attachments)
       }
       try {
-        const accepted = await onSend(content, attachments, { onAccepted: notifyAccepted })
+        const accepted = await onSend(content, files, { onAccepted: notifyAccepted })
         if (accepted === false) {
           restoreRejectedDraft()
           return
@@ -1212,10 +1220,15 @@ export const InputBar = memo(function InputBar({
     void handleSend()
   }
 
-  const handleInput = (nextValue: string, cursor: number) => {
+  const handleInput = (nextValue: string, cursor: number, nextAttachments: ComposerAttachment[]) => {
     historyRef.current = null
     historyReadRef.current = null
     setInput(nextValue)
+    const retained = new Set(nextAttachments.map(attachment => attachment.id))
+    for (const attachment of attachments) {
+      if (!retained.has(attachment.id)) invalidateComposerAttachmentPath(draftScopeRef.current.key, attachment.path)
+    }
+    if (attachments.length || nextAttachments.length) setAttachments(nextAttachments)
     setCommandError('')
     setCommandStatus('')
     syncActiveToken(nextValue, cursor)
@@ -1231,8 +1244,12 @@ export const InputBar = memo(function InputBar({
     menuTarget?: ComposerPasteTarget,
     knownNativePaths?: string[],
     operationScope?: AttachmentOperationScope,
+    insertion = editorRef.current?.captureAttachmentInsertion(),
   ) => {
-    if (composerLocked || optimizeBusy || (!isTauriRuntime() && !menuTarget)) return
+    if (composerLocked || optimizeBusy || (!isTauriRuntime() && !menuTarget)) {
+      insertion?.release()
+      return
+    }
 
     const scope = operationScope ?? beginComposerAttachmentOperation(draftScopeRef.current.key)
     try {
@@ -1248,9 +1265,8 @@ export const InputBar = memo(function InputBar({
       // （转虚拟附件，阻止正文插入）。必须在任何 await 之前调用 preventDefault——
       // 事件处理是 async 的，等读取完系统文件路径再调，浏览器默认粘贴早已把文本
       // 插入输入框（事后清空又会误删用户已写内容）。
-      if (attachableClipboardFiles.length > 0 || clipText.length > PASTE_TEXT_ATTACHMENT_THRESHOLD) {
-        e.preventDefault()
-      }
+      const preventTextPaste = attachableClipboardFiles.length > 0 || clipText.length > PASTE_TEXT_ATTACHMENT_THRESHOLD
+      if (preventTextPaste) e.preventDefault()
 
       const nativePaths: string[] = knownNativePaths ?? []
       try {
@@ -1280,24 +1296,22 @@ export const InputBar = memo(function InputBar({
               path: `memory://${crypto.randomUUID()}`,
               content: clipText,
             },
-          ], undefined, scope)
+          ], scope, insertion)
         } else if (clipText) menuTarget?.insertText(clipText)
         return
       }
 
-      if (hasNativeFiles && textarea && !menuTarget) {
-        // 等浏览器默认粘贴与 React onChange 完成后，只在内容完全等于“插入了文件名”时撤销。
-        window.setTimeout(() => {
-          if (draftScopeRef.current.key !== scope.key) return
+      if (hasNativeFiles && textarea && !menuTarget && !preventTextPaste) {
+        // The native clipboard result arrives after the editor handles the browser paste.
+        if (draftScopeRef.current.key === scope.key) {
           undoAccidentalFilenamePaste(
             textarea,
             valueBeforePaste,
             clipText,
             selectionStart,
             selectionEnd,
-            setInput,
           )
-        }, 0)
+        }
       }
 
       setScopedAttachmentError('', scope)
@@ -1354,7 +1368,7 @@ export const InputBar = memo(function InputBar({
           return
         }
 
-        addAttachments(pastedAttachments, undefined, scope)
+        addAttachments(pastedAttachments, scope, insertion)
       } catch (err) {
         console.error('Failed to paste chat attachment:', err)
         setScopedAttachmentError(
@@ -1363,6 +1377,7 @@ export const InputBar = memo(function InputBar({
         )
       }
     } finally {
+      insertion?.release()
       scope.release()
     }
   }
@@ -1372,6 +1387,7 @@ export const InputBar = memo(function InputBar({
     onError: setAttachmentError,
     onPaste: async (target) => {
       const scope = beginComposerAttachmentOperation(draftScopeRef.current.key)
+      const insertion = editorRef.current?.captureAttachmentInsertion()
       try {
         // 桌面端全部走系统剪贴板；WebView 的 read/readText 会弹出网站权限请求。
         let nativePaths: string[] = []
@@ -1390,7 +1406,7 @@ export const InputBar = memo(function InputBar({
               clipboard.items.add(new File([bytes], 'pasted-image.png', { type: 'image/png' }))
             }
           }
-          await handlePaste({ clipboardData: clipboard, preventDefault: () => {} }, target, nativePaths, scope)
+          await handlePaste({ clipboardData: clipboard, preventDefault: () => {} }, target, nativePaths, scope, insertion)
           return
         }
         if (!nativePaths.length) {
@@ -1411,11 +1427,12 @@ export const InputBar = memo(function InputBar({
             throw new Error('Clipboard is unavailable')
           }
         }
-        await handlePaste({ clipboardData: clipboard, preventDefault: () => {} }, target, nativePaths, scope)
+        await handlePaste({ clipboardData: clipboard, preventDefault: () => {} }, target, nativePaths, scope, insertion)
       } catch (err) {
         console.error('Failed to read clipboard:', err)
         setScopedAttachmentError('无法读取剪贴板，请重试或使用 Ctrl+V。', scope)
       } finally {
+        insertion?.release()
         scope.release()
       }
     },
@@ -1555,7 +1572,7 @@ export const InputBar = memo(function InputBar({
         setDragActive(false)
         const scope = beginComposerAttachmentOperation(draftScopeRef.current.key)
         void pendingFromPaths(event.payload.paths)
-          .then((attachments) => addAttachments(attachments, undefined, scope))
+          .then((attachments) => addAttachments(attachments, scope))
           .finally(() => { scope.release() })
       }
     }).then((handler) => {
@@ -1820,7 +1837,8 @@ export const InputBar = memo(function InputBar({
                 value={input}
                 scopeKey={draftKeyValue}
                 commands={allSlashCommands}
-                attachmentLabels={attachmentLabels}
+                attachments={attachments}
+                imageReferenceLabel={t.chatComposerImageReference}
                 readOnly={sendPending || optimizeBusy}
                 busy={sendPending || optimizeBusy}
                 onChange={handleInput}
