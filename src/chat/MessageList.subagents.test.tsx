@@ -146,10 +146,15 @@ describe('sub-agent result receipts in the parent timeline', () => {
     ]
     const { rerender } = render(<MessageList conversationId="subagent-whole-turn"
       messages={messages.slice(0, 2)} waitingForBackgroundTasks />)
-    expect(screen.getByRole('button', { name: 'Working' })).toHaveAttribute('aria-expanded', 'true')
+    const working = screen.getByRole('button', { name: 'Working' })
+    expect(working).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(working)
+    expect(working).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(working)
     expect(screen.getByText('Audit handed off.')).toBeVisible()
     rerender(<MessageList conversationId="subagent-whole-turn" messages={messages} />)
     const [first, second] = screen.getAllByRole('button', { name: /^Worked/ })
+    expect(first).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getAllByRole('button', { name: /^Worked/ })).toHaveLength(2)
     expect(screen.getByText('Final audit result.')).toBeVisible()
     expect(screen.getByText('Second result.')).toBeVisible()

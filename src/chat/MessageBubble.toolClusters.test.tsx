@@ -20,7 +20,7 @@ function activityButton(container: HTMLElement, index = 0): HTMLButtonElement {
 }
 
 describe('tool activity in the message timeline', () => {
-  it('keeps the active call in view and preserves inspected output through completion', () => {
+  it('shows the active call and lets readers reopen its output after completion', () => {
     const pending = message([command, read])
     const { container, rerender } = render(<MessageBubble message={pending} messageStreaming />)
     const row = activityButton(container)
@@ -33,10 +33,13 @@ describe('tool activity in the message timeline', () => {
       tool_calls: [{ ...command, status: 'completed', result_preview: 'Tests passed' }, read],
       segments: [...pending.segments!, { id: 'final', kind: 'text', phase: 'synthesis', order: 2, text: 'Done' }],
     }} />)
-    expect(activityButton(container)).toBe(row)
-    expect(row).toHaveAttribute('aria-expanded', 'true')
+    const work = screen.getByRole('button', { name: /^Worked/ })
+    expect(work).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Tests passed')).not.toBeInTheDocument()
+    fireEvent.click(work)
+    fireEvent.click(activityButton(container))
+    fireEvent.click(screen.getByRole('button', { name: 'Run npm test' }))
     expect(screen.getByText('Tests passed')).toBeVisible()
-    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText('Done').closest('[aria-label="过程分组"]')).toBeNull()
   })
 

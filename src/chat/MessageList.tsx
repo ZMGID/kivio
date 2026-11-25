@@ -517,6 +517,9 @@ function MessageListBase({
     : null, [historyGap, historyStart, storedMessages])
   const [turnWorkOverrides, setTurnWorkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map())
   const [temporaryTurnWork, setTemporaryTurnWork] = useState<{ conversationId: typeof conversationId; key: string } | null>(null)
+  const [liveTransitionReading, setLiveTransitionReading] = useState<{
+    conversationId: typeof conversationId; position: ChatReadingPosition | null
+  } | null>(null)
   const liveHasSubagentWork = liveRowActive && !liveGroupId && liveEdges.hasSubagentWork
   const { workByMessageId, liveTurnWork } = useMemo(() => {
     const visible = new Set(historyMessages.map(message => message.id))
@@ -534,11 +537,12 @@ function MessageListBase({
         || (!hasSubagentWork && !(includeLive && liveHasSubagentWork))) return
       const key = JSON.stringify([conversationId, userId])
       const active = current && ((streaming && !streamFrozen) || waitingForBackgroundTasks)
-      const open = temporaryTurnWork?.key === key || (turnWorkOverrides.get(key) ?? (active || rows.some(message =>
+      const choiceKey = includeLive || active ? `${key}:live` : key
+      const open = temporaryTurnWork?.key === key || (turnWorkOverrides.get(choiceKey) ?? (active || rows.some(message =>
         (message.stream_outcome ?? message.streamOutcome) === 'cancelled')))
       const onOpenChange = (value: boolean) => {
         setTemporaryTurnWork(current => current?.key === key ? null : current)
-        setTurnWorkOverrides(previous => new Map(previous).set(key, value))
+        setTurnWorkOverrides(previous => new Map(previous).set(choiceKey, value))
       }
       const reveal = () => setTemporaryTurnWork({ conversationId, key })
       rows.forEach((message, index) => {
@@ -2256,6 +2260,8 @@ function MessageListBase({
    * scrollHeight 会在落地后猛涨，贴底 pin 连跳几次就是抽一下。
    */
   const handleJumpToBottom = useCallback(() => {
+    setLiveTransitionReading({ conversationId, position: null })
+    setTemporaryTurnWork(null)
     pageAnchorRef.current = null
     cancelHistoryNavigation()
     cancelNavigatorSettle()
@@ -2283,6 +2289,7 @@ function MessageListBase({
   }, [
     cancelHistoryNavigation,
     cancelNavigatorSettle,
+    conversationId,
     followHandle,
     historyItems.length,
     setNavigationLock,
@@ -2707,9 +2714,6 @@ function MessageListBase({
 
   // After the row ref measures the handoff, keep following while heavy content hydrates.
   const liveScrollHandoffRef = useRef({ conversationId, live: liveRowActive, frozen: streamFrozen })
-  const [liveTransitionReading, setLiveTransitionReading] = useState<{
-    conversationId: typeof conversationId; position: ChatReadingPosition | null
-  } | null>(null)
   // WebKit can reset scrollTop when the live row leaves normal flow, before
   // layout effects run. Snapshot the detached reader before that DOM commit.
   const liveDisplayChanged = liveScrollHandoffRef.current.live

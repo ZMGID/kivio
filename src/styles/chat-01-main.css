@@ -188,6 +188,83 @@
 }
 
 
+/* 聊天正文的段距统一由渲染根管理，标题前留出额外间距。 */
+.chat-message-list .chat-markdown-flow {
+  line-height: 1.6;
+}
+
+.chat-message-list .chat-markdown-flow > * {
+  margin-block: 0;
+}
+
+.chat-message-list .chat-markdown-flow > :not([hidden]) ~ :not([hidden]) {
+  margin-block-start: 0.625rem;
+}
+
+.chat-message-list .chat-markdown-flow > :not([hidden]) ~ :is(h1, h2, h3, h4, h5, h6) {
+  margin-block-start: 0.875rem;
+}
+
+.chat-message-list .chat-markdown-flow > :is(h1, h2, h3, h4, h5, h6) + :not([hidden]) {
+  margin-block-start: 0.375rem;
+}
+
+.chat-message-list .chat-markdown-flow :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 1em;
+  line-height: 1.4;
+}
+
+.chat-message-list .chat-markdown-flow h1 { font-size: 1.25em; }
+.chat-message-list .chat-markdown-flow h2 { font-size: 1.15em; }
+.chat-message-list .chat-markdown-flow h3 { font-size: 1.05em; }
+
+.chat-message-list .chat-markdown-flow :is(ul, ol) {
+  list-style-position: outside;
+  padding-inline: 1.45em 0;
+}
+
+.chat-message-list .chat-markdown-flow ol {
+  padding-inline-start: 2em;
+}
+
+.chat-message-list .chat-markdown-flow li {
+  padding-block: 0;
+}
+
+.chat-message-list .chat-markdown-flow li > p {
+  display: block;
+}
+
+.chat-message-list .chat-markdown-flow :is(li + li, li > :is(ul, ol), li > p + p) {
+  margin-block-start: 0.1875rem;
+}
+
+.chat-message-list .chat-markdown-flow li.task-list-item {
+  list-style-type: none;
+}
+
+.chat-message-list .chat-markdown-flow [data-streamdown='blockquote'] {
+  border-inline-width: 2px 0;
+  padding-inline: 0.75em 0;
+  font-style: normal;
+}
+
+.chat-markdown [data-streamdown='inline-code'] {
+  display: inline-block;
+  max-inline-size: 100%;
+  padding: 0 0.3em;
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  border-radius: 0.35em;
+  background-color: color-mix(in srgb, var(--text) 6%, transparent);
+  overflow-wrap: anywhere;
+  text-decoration: inherit;
+}
+
+.chat-message-list .chat-markdown-flow [data-streamdown='inline-code'] {
+  font-size: 0.875em;
+  line-height: inherit;
+}
+
 /* Markdown 纯图片段落拆掉 <p> 盒，磁贴在正文流里并排换行。 */
 .chat-markdown p:has(> [data-chat-md-image]):not(:has(> :not([data-chat-md-image]):not(br))) {
   display: contents;
@@ -2533,10 +2610,10 @@ button.chat-composer-status-item:hover {
 
 /* 按钮焦点环见 shared-surfaces.css（与模态框共用，并只在键盘操作时出现）。 */
 
-/* Embedded reading workspaces keep the shared message renderer with a denser reading rhythm. */
+/* 阅读区的聊天与笔记共用字号，笔记保留独立的排版。 */
 [data-chat-density='compact'] .chat-markdown { font-size: 14px; line-height: 1.7; }
-[data-chat-density='compact'] .chat-markdown :is(h1, h2, h3) { font-size: 1.12em; line-height: 1.5; margin-block: 1.2em .6em; }
-[data-chat-density='compact'] .chat-markdown :is(p, ul, ol) { margin-block: .65em; }
+[data-chat-density='compact']:not(.chat-message-list) .chat-markdown :is(h1, h2, h3) { font-size: 1.12em; line-height: 1.5; margin-block: 1.2em .6em; }
+[data-chat-density='compact']:not(.chat-message-list) .chat-markdown :is(p, ul, ol) { margin-block: .65em; }
 [data-chat-density='compact'] .chat-message-list-inner { padding-inline: 20px; }
 [data-chat-density='compact'] .chat-markdown table { min-width: 0; }
 [data-chat-density='compact'] .chat-markdown :is(th, td) { padding-inline: 8px; }

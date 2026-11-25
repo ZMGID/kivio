@@ -81,8 +81,7 @@ export type ChatMarkdownOutlineSource = {
 }
 
 
-// 排版只走 Streamdown 默认样式；变体只改外壳字号/颜色。
-// 代码块 / 表格 / 本地链接 / artifact 图仍用 components 做应用能力，不改正文排版。
+// 变体只改外壳字号和颜色，聊天时间线的段落与列表排版由 chat-01-main.css 管理。
 function markdownShellClass(variant: ChatMarkdownProps['variant']): string {
   switch (variant) {
     case 'reasoning':
@@ -913,8 +912,7 @@ function MarkdownPre({ children }: { children?: ReactNode }) {
   // 流式与落库走**同一个** DeferredCodeBlock 外壳：流式下它 eager（`eager={streaming}`，
   // useState 初始化就 hydrated，没有 fallback 112px → 真身的高度跳变），但 island 的
   // 包装 div 与历史气泡一致。之前流式直接渲染裸 <figure>，settle 后 twin 多一层 div，
-  // figure 的 my-3 与根 space-y-4 的外边距折叠结果不同（下边 12px vs 16px），每个代码块
-  // 差 4px，长回答在生成结束那一刻整篇往下挪。
+  // figure 的外边距与 Markdown 块间距折叠后会改变代码块高度，长回答结束时会整篇往下挪。
   const streaming = useContext(MarkdownStreamingContext)
   const child = Array.isArray(children) ? children[0] : children
   if (isValidElement<{ className?: string; children?: unknown }>(child)) {
@@ -1640,6 +1638,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
   return (
     <Streamdown
       mode="streaming"
+      className="chat-markdown-flow"
       BlockComponent={ChatMarkdownBlock}
       // The outer shell owns dir="auto". Streamdown's dir wrappers use
       // display:contents, which breaks the block spacing selectors.

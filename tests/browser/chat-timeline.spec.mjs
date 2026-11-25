@@ -8,6 +8,50 @@ async function open(page) {
   await page.waitForFunction(() => window.chatTimeline)
 }
 
+test('keeps the running tool name readable beside a long argument preview', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 })
+  await open(page)
+  await page.evaluate(() => chatTimeline.beginTool({
+    name: 'Check dependencies', argumentsPreview: `{"path":"${'directory/'.repeat(80)}"}`,
+  }))
+  const header = page.locator('[data-tool-call-cluster] > button')
+  const name = header.getByText('Check dependencies', { exact: true })
+  await expect(name).toBeInViewport()
+  expect(await name.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0)
+  await header.click()
+  await expect(header).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByText('Check dependencies', { exact: true })).toBeVisible()
+})
+
+test('shows the full command in details when the live JSON preview is truncated', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 })
+  await open(page)
+  const command = `"C:\\Users\\Test\\pwsh.exe" -Command "Get-Content ${'directory/'.repeat(100)}last-file.txt\nGet-Date"`
+  await page.evaluate(command => chatTimeline.beginTool({
+    name: 'Bash', argumentsPreview: JSON.stringify({ command }).slice(0, 800) + '…', structuredContent: { command },
+  }), command)
+  const header = page.getByRole('button', { name: /^Run/ })
+  await expect(header.getByText(/^Get-Content directory\//)).toBeInViewport()
+  await header.click()
+  const details = page.locator('[data-work-scroll]').getByText(/last-file\.txt\s+Get-Date/)
+  await expect(details).toBeVisible()
+  expect(await details.textContent()).toBe(command)
+})
+
+test('keeps an expanded group row in bounds with a long MCP tool name', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 })
+  await open(page)
+  const name = 'mcp__browser_automation__take_accessibility_snapshot'
+  const argumentsPreview = JSON.stringify({ url: 'https://example.test/report' })
+  await page.evaluate(tool => chatTimeline.beginTool(tool), { name, argumentsPreview })
+  await page.locator('[data-tool-call-cluster] > button').click()
+  const group = page.locator('[data-work-scroll]')
+  const row = group.getByRole('button', { name: new RegExp(`^${name}`) })
+  await expect(row).toBeInViewport()
+  expect(await row.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1)
+  await expect(group.getByText(argumentsPreview, { exact: true }).last()).toBeVisible()
+})
+
 async function readingPosition(page) {
   return page.locator(viewport).evaluate(view => {
     const bounds = view.getBoundingClientRect()
@@ -120,6 +164,9 @@ for (const transition of ['completion', 'stop and resume']) {
       await expectRestored()
       const worked = live.getByRole('button', { name: /^Worked/ })
       await expect(worked).toContainText('Worked for 2.5s')
+      await expect(worked).toHaveAttribute('aria-expanded', 'true')
+      await page.getByRole('button', { name: '回到底部' }).click()
+      await expect(worked).toHaveAttribute('aria-expanded', 'false')
     } else {
       await page.evaluate(() => chatTimeline.freeze())
       await expectRestored()

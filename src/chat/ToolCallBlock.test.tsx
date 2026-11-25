@@ -32,7 +32,7 @@ import type { ChatMessageSegment, ToolCallRecord } from './types'
 import { i18n, LangContext } from '../components/i18n'
 import { ReasoningPreviewContext } from './reasoningPreview'
 import { mergeSubagentProgress } from './streamApply'
-import { onDockDiffPreviewRequest } from './dock/dockPreview'
+import { onDockDiffPreviewRequest, onDockPreviewRequest } from './dock/dockPreview'
 
 function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
   return {
@@ -229,7 +229,7 @@ describe('ToolCallBlock', () => {
     expect(old).not.toHaveBeenCalled()
   })
 
-  it('opens a historical edit patch from the collapsed filename and shows the same changes when expanded', async () => {
+  it('opens a historical edit patch with the keyboard or by clicking the diff counts', async () => {
     const user = userEvent.setup()
     const preview = vi.fn()
     const unsubscribe = onDockDiffPreviewRequest(preview)
@@ -239,11 +239,15 @@ describe('ToolCallBlock', () => {
           file_path: 'src/main.ts', old_string: 'before', new_string: 'after',
         },
       })} />)
-      const button = screen.getByRole('button')
-      await user.click(within(button).getByText('main.ts'))
-      expect(preview).toHaveBeenCalledWith({
-        title: 'Edit main.ts', patch: '--- a/src/main.ts\n+++ b/src/main.ts\n@@ @@\n- before\n+ after',
-      })
+      const button = screen.getByRole('button', { name: /^Edit\b/ })
+      await user.tab()
+      expect(button).toHaveFocus()
+      await user.tab()
+      expect(screen.getByRole('button', { name: /main\.ts/ })).toHaveFocus()
+      await user.keyboard('{Enter}')
+      await user.click(screen.getByText('+1', { exact: true }))
+      const patch = { title: 'Edit main.ts', patch: '--- a/src/main.ts\n+++ b/src/main.ts\n@@ @@\n- before\n+ after' }
+      expect(preview.mock.calls).toEqual([[patch], [patch]])
       expect(button).toHaveAttribute('aria-expanded', 'false')
       await user.click(button)
       expect(screen.getByText('- before')).toBeVisible()
@@ -353,17 +357,27 @@ describe('ToolCallBlock', () => {
     expect(screen.getByRole('button', { name: /已查看 3 张图像/ })).toBeInTheDocument()
   })
 
-  it('renders a capitalized verb + basename target, dropping status/source/duration', () => {
-    render(<ToolCallBlock toolCall={buildToolCall({ arguments: { path: 'src/a/README.md' } })} />)
-    const button = screen.getByRole('button', { name: /Read/ })
-    // Cursor-style row: 大写动词 + 目标（文件名 basename）
-    expect(within(button).getByText('Read')).toBeInTheDocument()
-    expect(within(button).getByText('README.md')).toBeInTheDocument()
-    // 已删除的后缀 / 全路径不再出现在折叠行
-    expect(within(button).queryByText(/已完成/)).not.toBeInTheDocument()
-    expect(within(button).queryByText(/Kivio/)).not.toBeInTheDocument()
-    expect(within(button).queryByText(/file contents loaded/)).not.toBeInTheDocument()
-    expect(within(button).queryByText(/src\/a/)).not.toBeInTheDocument()
+  it('shows the basename and opens a file preview using the keyboard or filename', async () => {
+    const user = userEvent.setup()
+    const preview = vi.fn(() => true)
+    const unsubscribe = onDockPreviewRequest(preview)
+    try {
+      render(<ToolCallBlock toolCall={buildToolCall({ arguments: { path: 'src/a/README.md' } })} />)
+      const disclosure = screen.getByRole('button', { name: /^Read\b/ })
+      const file = screen.getByRole('button', { name: /README\.md/ })
+      expect(file).toHaveTextContent(/^README\.md$/)
+      await user.tab()
+      expect(disclosure).toHaveFocus()
+      await user.tab()
+      expect(file).toHaveFocus()
+      await user.keyboard(' ')
+      await user.click(file)
+      expect(preview.mock.calls).toEqual([['src/a/README.md', undefined], ['src/a/README.md', undefined]])
+      expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.queryByText(/file contents loaded/)).not.toBeInTheDocument()
+    } finally {
+      unsubscribe()
+    }
   })
 
   it('shows the real read line range from structured content', () => {
@@ -376,8 +390,7 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    const button = screen.getByRole('button', { name: /Read/ })
-    expect(within(button).getByText('Lens.tsx L1880-1939')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Lens\.tsx L1880-1939/ })).toBeInTheDocument()
   })
 
   it('keeps line breaks and the trailing continuation notice in the expanded read result', async () => {
@@ -820,11 +833,10 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    const button = screen.getByRole('button')
-    expect(within(button).getByText('Read')).toBeInTheDocument()
-    expect(within(button).getByText('Chat.tsx')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Read' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Chat\.tsx/ })).toHaveTextContent('Chat.tsx')
     // 修复前的症状：整个参数 JSON 落在折叠行上。
-    expect(within(button).queryByText(/file_path/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/file_path/)).not.toBeInTheDocument()
   })
 
   it('shows live dsh subagent steps instead of a frozen 运行中', () => {
@@ -934,10 +946,9 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    let button = screen.getByRole('button')
-    expect(within(button).getByText('Edit')).toBeInTheDocument()
-    expect(within(button).getByText('segments.ts')).toBeInTheDocument()
-    expect(within(button).queryByText(/str_replace_editor/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /segments\.ts/ })).toHaveTextContent('segments.ts')
+    expect(screen.queryByText(/str_replace_editor/)).not.toBeInTheDocument()
     unmount()
 
     render(
@@ -949,7 +960,7 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    button = screen.getByRole('button')
+    const button = screen.getByRole('button')
     expect(within(button).getByText('Run')).toBeInTheDocument()
     expect(within(button).getByText('job_12')).toBeInTheDocument()
   })
@@ -1080,9 +1091,8 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    const button = screen.getByRole('button')
-    expect(within(button).getByText('Edit')).toBeInTheDocument()
-    expect(within(button).getByText('run.rs')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /run\.rs/ })).toHaveTextContent('run.rs')
   })
 
   // claude 的问用户走的是它自己的工具名。认不出来 = 渲染成普通工具卡（一坨 JSON），

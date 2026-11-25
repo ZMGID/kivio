@@ -64,15 +64,17 @@ describe('assistant body visibility', () => {
         ...(answer ? [{ id: 'answer', kind: 'text' as const, phase: 'synthesis' as const, order: count, text: answer }] : []),
       ],
     })
-    const { container, rerender } = render(<MessageBubble message={make(30)} messageStreaming />)
+    const { container, rerender } = render(<MessageBubble message={make(30)} conversationId="growing-process" messageStreaming />)
     openActivity(container)
     expect(screen.getByText('live_step_0')).toBeVisible()
     expect(screen.getByText('live_step_29')).toBeVisible()
     expect(screen.queryByRole('button', { name: /显示更早的过程/ })).not.toBeInTheDocument()
-    rerender(<MessageBubble message={make(30, 'Settled answer')} />)
-    // 用户展开过活动，结束后仍按用户意图保持展开。
-    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
+    rerender(<MessageBubble message={make(30, 'Settled answer')} conversationId="growing-process" />)
+    const worked = screen.getByRole('button', { name: /^Worked/ })
+    expect(worked).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByText('Settled answer')).toBeVisible()
+    fireEvent.click(worked)
+    expect(screen.getByText('live_step_0')).toBeVisible()
   })
 
   it('keeps a pending question, permission prompt, and live thought visible in a long process', () => {
@@ -738,7 +740,7 @@ describe('MessageBubble timeline orphan tools', () => {
 })
 
 describe('MessageBubble timeline grouping', () => {
-  it.each(['segments', 'legacy-records', 'manual-open'])('folds a seen live thought and tool process on completion (%s), unless explicitly opened', (mode) => {
+  it.each(['segments', 'legacy-records', 'manual-open'])('folds a seen live thought and tool process on completion (%s)', (mode) => {
     const message: ChatMessage = { id: 'thought-then-tools', role: 'assistant', timestamp: 1, content: '', segments: [
       { id: 'thought', kind: 'reasoning', phase: 'tool_loop', order: 0, text: 'Plan before running tools' },
     ] }
@@ -762,13 +764,11 @@ describe('MessageBubble timeline grouping', () => {
     expect(work).toHaveAttribute('aria-expanded', 'true')
     rerender(<MessageBubble message={answered} />)
     expect(screen.getByRole('button', { name: /^Worked/ })).toBe(work)
-    expect(work).toHaveAttribute('aria-expanded', mode === 'manual-open' ? 'true' : 'false')
+    expect(work).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByText('The final answer')).toBeVisible()
-    if (mode !== 'manual-open') {
-      expect(screen.queryByText('Reading the source file')).not.toBeInTheDocument()
-      expect(screen.queryByLabelText('Thinking')).not.toBeInTheDocument()
-      fireEvent.click(work)
-    }
+    expect(screen.queryByText('Reading the source file')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Thinking')).not.toBeInTheDocument()
+    fireEvent.click(work)
     expect(screen.getByText('Reading the source file')).toBeVisible()
   })
 
@@ -791,39 +791,35 @@ describe('MessageBubble timeline grouping', () => {
     expect(screen.getByRole('button', { name: /^Thought/ })).toBeVisible()
   })
 
-  it.each([true, false])('preserves the reader\'s explicit work expansion (%s) when a thinking-only turn completes', (keepOpen) => {
+  it.each([true, false])('folds a thinking-only turn whether live Work was reopened (%s)', (reopened) => {
     const message: ChatMessage = { id: 'manual-thinking', role: 'assistant', timestamp: 1, content: '', segments: [
       { id: 'thought', kind: 'reasoning', phase: 'plain', order: 0, text: 'Thinking details' },
     ] }
     const { rerender } = render(<MessageBubble message={message} messageStreaming reasoningStreaming />)
     const work = screen.getByRole('button', { name: /^Working/ })
     fireEvent.click(work)
-    if (keepOpen) fireEvent.click(work)
+    if (reopened) fireEvent.click(work)
     rerender(<MessageBubble message={{ ...message, content: 'Final answer', stream_outcome: 'completed', segments: [
       ...message.segments!, { id: 'answer', kind: 'text', phase: 'synthesis', order: 1, text: 'Final answer' },
     ] }} />)
-    expect(work).toHaveAttribute('aria-expanded', String(keepOpen))
+    expect(work).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByText('Final answer')).toBeVisible()
-    if (keepOpen) expect(screen.getByRole('button', { name: /^Thought/ })).toBeVisible()
-    else expect(screen.queryByLabelText('Thinking')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Thinking')).not.toBeInTheDocument()
   })
 
-  it.each([false, true])('keeps manually opened reasoning unless the outer Work is closed (%s)', (closeWork) => {
+  it('folds Work on completion after the reader opens live reasoning details', () => {
     const message: ChatMessage = { id: 'reading-thinking', role: 'assistant', timestamp: 1, content: '', segments: [
       { id: 'thought', kind: 'reasoning', phase: 'plain', order: 0, text: 'Full thinking details' },
     ] }
     const { rerender } = render(<MessageBubble message={message} messageStreaming reasoningStreaming />)
     fireEvent.click(screen.getByRole('button', { name: /^Thinking/ }))
-    const thought = screen.getByTestId('reasoning-text')
-    expect(thought).toBeVisible()
-    if (closeWork) fireEvent.click(screen.getByRole('button', { name: /^Working/ }))
+    expect(screen.getByTestId('reasoning-text')).toBeVisible()
     rerender(<MessageBubble message={{ ...message, stream_outcome: 'completed' }} />)
-    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', String(!closeWork))
-    if (closeWork) expect(screen.queryByTestId('reasoning-text')).not.toBeInTheDocument()
-    else {
-      expect(screen.getByTestId('reasoning-text')).toBe(thought)
-      expect(thought).toBeVisible()
-    }
+    const worked = screen.getByRole('button', { name: /^Worked/ })
+    expect(worked).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('reasoning-text')).not.toBeInTheDocument()
+    fireEvent.click(worked)
+    expect(screen.getByRole('button', { name: /^Thought/ })).toBeVisible()
   })
 
   it('restores the live thought preview when a failed cancellation resumes the answer', () => {

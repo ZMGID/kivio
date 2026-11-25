@@ -3,6 +3,7 @@ import { type ComponentType, type ReactNode, memo, useContext, useEffect, useLay
 import { useWorkDisclosure } from './workDisclosure'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { FileIcon } from '../components/FileIcon'
+import { Button } from '../components/Button'
 import { ExternalSubagentEvents, SubagentTimelineEvents } from './SubagentTimelineEvents'
 import { AlertCircle, Bot, Brain, CheckCircle2, ChevronDown, CircleSlash, Clock, Copy, Download, ExternalLink, Eye, Film, FileSearch, FolderInput, FolderPlus, ImageOff, ImagePlus, ListChecks, Loader2, MessageCircleQuestion, Plug, Save, ScrollText, Search, SquareTerminal, Trash2, Workflow, Wrench, XCircle } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -1089,30 +1090,9 @@ function argEditDiff(edits: ReturnType<typeof argEditPairs>): string {
   return diff.length > 4000 ? `${diff.slice(0, 4000)}…` : diff
 }
 
-/** 折叠行行尾的 `+N -N` 徽标：加绿减红，与分组头总计一致。可点时跳 dock 侧栏 diff 预览。 */
-function InlineDiffStats({
-  additions,
-  removals,
-  onClick,
-}: {
-  additions: number
-  removals: number
-  onClick?: () => void
-}) {
+function InlineDiffStats({ additions, removals }: { additions: number; removals: number }) {
   return (
-    <span
-      className={`shrink-0 font-mono text-[11px] tabular-nums${
-        onClick ? ' cursor-pointer rounded px-0.5 hover:bg-neutral-500/10 dark:hover:bg-neutral-400/10' : ''
-      }`}
-      onClick={
-        onClick
-          ? (e) => {
-              e.stopPropagation()
-              onClick()
-            }
-          : undefined
-      }
-    >
+    <span className="shrink-0 font-mono text-[11px] tabular-nums">
       <span className="text-success">+{additions}</span>
       <span className="ml-1 text-red-500/80 dark:text-red-400/80">-{removals}</span>
     </span>
@@ -1345,6 +1325,13 @@ function unwrapShellCommand(command: string): string {
   return /^(["'])[\s\S]*\1$/.test(inner) ? inner.slice(1, -1).replace(/\\(["\\])/g, '$1') : inner
 }
 
+function shellToolArguments(toolCall: ToolCallRecord, args: Record<string, unknown> | null) {
+  // The live preview may end mid-JSON. External shell calls also carry the original input.
+  return args ?? (toolCall.source === 'external_cli' && !toolCall.sensitive
+    ? objectValue(toolCall.structured_content ?? toolCall.structuredContent)
+    : null)
+}
+
 /** 只取路径最后一段（Cursor 行内用文件名而非全路径）：`src/a/Lens.tsx` → `Lens.tsx`。 */
 function basename(path: string): string {
   const trimmed = path.trim().replace(/[\\/]+$/, '')
@@ -1434,8 +1421,15 @@ function getToolTarget(t: I18n, toolCall: ToolCallRecord): string {
         return target.includes('/') || target.includes('\\') ? basename(target) : target
       }
       case 'bash':
-      case 'run_command':
-        return compactText(firstString(args?.description, unwrapShellCommand(firstString(args?.command)), args?.job_id, args?.jobId), 160)
+      case 'run_command': {
+        const commandArgs = shellToolArguments(toolCall, args)
+        return compactText(firstString(
+          commandArgs?.description,
+          unwrapShellCommand(firstString(commandArgs?.command)),
+          commandArgs?.job_id,
+          commandArgs?.jobId,
+        ), 160)
+      }
       case 'grep':
       case 'search_files':
         return compactText(firstString(args?.query, args?.pattern), 140)
@@ -1524,6 +1518,13 @@ function getArgumentPreview(t: I18n, toolCall: ToolCallRecord): string {
   if (isKivioToolDraft(toolCall)) return ''
   const rawName = toolRawName(toolCall)
   const args = parsedArguments(toolCall)
+  if (!toolCall.sensitive && (rawName === 'bash' || rawName === 'run_command')) {
+    const commandArgs = shellToolArguments(toolCall, args)
+    if (typeof commandArgs?.command === 'string' && commandArgs.command.trim()) {
+      const { command, ...options } = commandArgs
+      return Object.keys(options).length ? `${command}\n\n${previewValue(options, 800)}` : command
+    }
+  }
   if (rawName === 'todo_write') {
     const todos = normalizeTodoItems(args?.todos)
     const counts = formatTodoCounts(todos)
@@ -1776,7 +1777,7 @@ export function ToolCallCluster({
       >
         {showReasoning ? <Brain size={14} className="shrink-0 text-neutral-400 dark:text-neutral-500" /> :
           currentTool && displayStatus ? <ToolTypeIcon toolCall={currentTool} status={displayStatus} /> : <Wrench size={14} className="shrink-0" />}
-        <span className={`min-w-0 truncate${activeTool && currentStatus === 'running' ? ' chat-motion-tool-shimmer' : ''}`}>
+        <span className={`min-w-0 truncate${target || reasoningPreview ? ' max-w-[60%] shrink-0' : ''}${activeTool && currentStatus === 'running' ? ' chat-motion-tool-shimmer' : ''}`}>
           {open ? t.chatToolActivitiesCount.replace('{n}', String(activityCount ?? segments.length)) :
             showReasoning ? (messageStreaming && latestReasoning?.streaming ? 'Thinking…' : 'Thought') :
               messageStreaming && currentTool ? (imageRead
@@ -1858,63 +1859,43 @@ function DefaultToolCallBlock({
     [otherDetails, t, toolCall],
   )
   const hasDetails = otherDetails || Boolean(soleArgumentPreview)
+  const canPreview = Boolean((previewPath && target) || (hasDiff && (target || inlineStats)))
+  const stats = inlineStats && <InlineDiffStats {...inlineStats} />
 
   return (
-    <div className="not-prose mb-1 text-[12px] leading-5 text-neutral-500">
-      <button
-        type="button"
-        onClick={() => {
-          if (hasDetails) setOpen(!open)
-        }}
-        aria-expanded={hasDetails ? open : undefined}
-        data-chat-disclosure={hasDetails || undefined}
-        className={`max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[15px] leading-6 transition-colors ${
-          hasDetails
-            ? 'hover:text-neutral-700'
-            : 'cursor-default'
-        }`}
-      >
-        <ToolTypeIcon toolCall={toolCall} status={status} />
-        <span
-          className={`shrink-0 font-medium text-neutral-700${
-            status === 'running' ? ' chat-motion-tool-shimmer' : ''
-          }`}
+    <div className="not-prose mb-1 min-w-0 text-[12px] leading-5 text-neutral-500">
+      <div className="inline-flex max-w-full min-w-0 items-center gap-1.5">
+        <button
+          type="button"
+          disabled={!hasDetails}
+          onClick={() => setOpen(!open)}
+          aria-expanded={hasDetails ? open : undefined}
+          data-chat-disclosure={hasDetails || undefined}
+          className="inline-flex min-w-0 items-center gap-1.5 rounded-md text-left text-[15px] leading-6 transition-colors enabled:hover:text-neutral-700 disabled:cursor-default"
         >
-          {toolName || t.toolCardFallbackName}
-        </span>
-        {target && (
-          <span
-            className={`min-w-0 truncate ${
-              previewPath || hasDiff
-                ? 'cursor-pointer text-neutral-400 underline-offset-2 hover:text-neutral-700 hover:underline dark:text-neutral-500'
-                : 'text-neutral-400 dark:text-neutral-500'
-            }`}
-            onClick={
-              previewPath || hasDiff
-                ? (e) => {
-                    e.stopPropagation()
-                    // Write/Edit 有 diff 就直接看 diff（Claude Code 行为：整行绿加红删）；
-                    // Read / 没有 diff 的才开纯文件查看器。
-                    if (hasDiff) {
-                      openDiff()
-                    } else {
-                      requestDockPreview(previewPath)
-                    }
-                  }
-                : undefined
-            }
-          >
-            {target}
+          <ToolTypeIcon toolCall={toolCall} status={status} />
+          <span className="min-w-0 truncate">
+            <span className={`font-medium text-neutral-700${status === 'running' ? ' chat-motion-tool-shimmer' : ''}`}>
+              {toolName || t.toolCardFallbackName}
+            </span>
+            {target && !canPreview && <span className="ms-1.5 text-neutral-400 dark:text-neutral-500">{' '}{target}</span>}
           </span>
-        )}
-        {inlineStats && (
-          <InlineDiffStats
-            additions={inlineStats.additions}
-            removals={inlineStats.removals}
-            onClick={hasDiff ? openDiff : undefined}
-          />
-        )}
-      </button>
+          {hasDetails && <ChevronDown aria-hidden size={12} className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} />}
+        </button>
+        {canPreview ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="min-w-0"
+            aria-label={`${hasDiff ? t.toolCardOpenDiff : t.chatMsgOpenFile} ${target}`.trim()}
+            title={previewPath || target || t.toolCardOpenDiff}
+            onClick={hasDiff ? openDiff : () => requestDockPreview(previewPath)}
+          >
+            {target && <span className="min-w-0 truncate">{target}</span>}
+            {stats}
+          </Button>
+        ) : stats}
+      </div>
 
       {hasDetails && (
         <ChatDisclosureBody open={open}>

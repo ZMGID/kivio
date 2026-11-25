@@ -287,7 +287,7 @@ describe('MessageList ← streamingStore 集成', () => {
     expect(screen.queryByText('Answer from first')).not.toBeInTheDocument()
   })
 
-  it.each([false, true])('keeps the live row, markdown and expanded process through freeze and commit (recovered: %s)', async (recovered) => {
+  it.each([false, true])('folds inspected live Work without remounting the reply on commit (recovered: %s)', async (recovered) => {
     const user: ChatMessage = { id: 'continuous-user', role: 'user', content: 'question', timestamp: 1 }
     const content = '## Answer\n\nA **stable** answer.\n\n```ts\nconst answer = 42\n```'
     const segments = [
@@ -306,7 +306,7 @@ describe('MessageList ← streamingStore 集成', () => {
     const code = row?.querySelector('figure pre code')
     const process = screen.getByRole('region', { name: '过程分组' })
     const toggle = process.querySelector('button')!
-    // Make this an explicit user choice, which must survive the handoff.
+    // Inspect the live process before the row is committed to history.
     if (toggle.getAttribute('aria-expanded') === 'true') fireEvent.click(toggle)
     fireEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
@@ -328,7 +328,7 @@ describe('MessageList ← streamingStore 集成', () => {
     expect(committed?.querySelector('.chat-markdown')).toBe(markdown)
     expect(committed?.querySelector('figure pre code')).toBe(code)
     expect(toggle).toBeInTheDocument()
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(container.querySelectorAll(`[data-message-id="${assistant.id}"]`)).toHaveLength(1)
   })
 

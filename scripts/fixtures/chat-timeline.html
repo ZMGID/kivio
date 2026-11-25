@@ -120,6 +120,14 @@ function Harness() {
       }});
     },
     resize: () => flushSync(() => setNarrow(value => !value)),
+    beginTool: tool => {
+      owner.activate('alpha');
+      owner.begin('alpha', 100);
+      owner.projectDisplay({kind:'tool', payload:{
+        id:'tool-1', toolCallId:'tool-1', conversationId:'alpha', runId:'r', messageId:'active-assistant',
+        source:'external_cli', status:'running', round:1, sensitive:false, artifacts:[], ...tool,
+      }});
+    },
     beginLong: (process = false) => {
       owner.activate('alpha');
       owner.begin('alpha', 100);

@@ -71,7 +71,7 @@ describe('live message Markdown render boundary', () => {
     expect(reasoningRender.mock.calls[0][0].durationMs).toBe(3000)
   })
 
-  it('ends the active thought when a new segment arrives and preserves an expanded thought through completion', () => {
+  it('keeps the inspected thought visible as new segments arrive and folds Work on completion', () => {
     const thought = { id: 'thought', kind: 'reasoning' as const, order: 0, phase: 'tool_loop' as const, text: 'First line\nLatest thought' }
     const message: ChatMessage = { id: 'thinking', role: 'assistant', timestamp: 1, content: '', segments: [thought] }
     const { rerender } = render(<MessageBubble message={message} messageStreaming reasoningStreaming />)
@@ -85,9 +85,11 @@ describe('live message Markdown render boundary', () => {
     rerender(<MessageBubble message={next} messageStreaming reasoningStreaming />)
     expect(screen.queryByText('Thinking…')).toBeNull()
     expect(screen.getByText('Thought')).toBeVisible()
-    rerender(<MessageBubble message={next} />)
     expect(screen.getByTestId('reasoning-text')).toBe(fullThought)
     expect(fullThought).toBeVisible()
+    rerender(<MessageBubble message={next} />)
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(fullThought).not.toBeInTheDocument()
   })
 
   it('replaces missing tool records and updates the same tool ID without closing its details', () => {

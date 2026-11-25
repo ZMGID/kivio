@@ -257,9 +257,6 @@ function Translator({
  * 应用根组件
  * 根据 URL hash 切换不同视图模式（翻译器、设置、lens）
  */
-// 与 index.css 的 --font-sans 默认栈保持一致（跨 mac/Win 含 CJK 覆盖）。
-const UI_FONT_FALLBACK_STACK =
-  'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif'
 const UI_MONO_FALLBACK_STACK =
   'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace'
 
@@ -287,6 +284,12 @@ function App() {
   const [translateSource, setTranslateSource] = useState<string>('')
   const [lang, setLang] = useState<Lang>('zh')
   const [targetLang, setTargetLang] = useState<string | null>(null)
+
+  useLayoutEffect(() => {
+    const root = document.documentElement
+    root.toggleAttribute('data-chat-window', mode === 'chat' || mode === 'chat-popout')
+    return () => root.removeAttribute('data-chat-window')
+  }, [mode])
 
   useLayoutEffect(() => {
     const root = document.documentElement
@@ -335,12 +338,9 @@ function App() {
       // 聊天消息列表 virtualizer 虚拟滚动的 scrollTop/scrollHeight 几何量，导致流式生成时跟随钉底失效。
       if (isTauriRuntime()) void getCurrentWebview().setZoom(scale).catch(() => {})
       const family = (settings.uiFontFamily ?? '').trim()
-      // 默认字体栈与 index.css 的 --font-sans 保持一致；自定义字体拼到最前，缺失时回退系统字体。
       root.style.setProperty(
-        '--font-sans',
-        family
-          ? `"${family}", ${UI_FONT_FALLBACK_STACK}`
-          : UI_FONT_FALLBACK_STACK,
+        '--chat-font-sans-custom',
+        family ? `"${family}", var(--chat-font-sans-default)` : '',
       )
       const mono = (settings.uiFontMono ?? '').trim()
       root.style.setProperty(

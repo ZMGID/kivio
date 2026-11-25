@@ -1050,7 +1050,10 @@ function TimelineSegments({
   revealReasoning?: number
 }) {
   const t = useT()
-  const [manualOpen, setManualOpen] = useWorkDisclosureChoice('timeline-work', ownerMessageId)
+  // Inspecting a running reply must not open its completed Work by default.
+  const [manualOpen, setManualOpen] = useWorkDisclosureChoice(
+    completed ? 'timeline-work' : 'live-timeline-work', ownerMessageId,
+  )
   const [searchOpened, setSearchOpened] = useState(false)
   const [dismissedReadingAnchor, setDismissedReadingAnchor] = useState<ChatReadingBlock>()
   const handleReasoningExpand = useCallback(() => {

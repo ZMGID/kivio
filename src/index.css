@@ -116,6 +116,12 @@
 /* 自定义 dark 变体：通过 .dark 类启用深色模式。色值不在这里翻转。 */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* 聊天优先使用平台界面字体，避免 Windows 的 system-ui 先匹配到 CJK 字体。 */
+:root[data-chat-window] {
+  --chat-font-sans-default: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+  --font-sans: var(--chat-font-sans-custom, var(--chat-font-sans-default));
+}
+
 html,
 body {
   height: 100%;
