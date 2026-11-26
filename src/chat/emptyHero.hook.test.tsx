@@ -67,7 +67,7 @@ describe('useEmptyHeroJab', () => {
     const { result } = renderHook(() => useEmptyHeroJab('zh'))
     expect(result.current.jab).toBeNull()
     act(() => {
-      result.current.onPoke(1)
+      result.current.onPoke()
     })
     expect(result.current.jab).toBe(emptyHeroJabPool('zh', 1)[0])
     act(() => {
@@ -79,7 +79,7 @@ describe('useEmptyHeroJab', () => {
   it('连点切换到脸热回应', () => {
     const { result } = renderHook(() => useEmptyHeroJab('zh'))
     act(() => {
-      result.current.onPoke(6)
+      for (let i = 0; i < 6; i++) result.current.onPoke()
     })
     expect(result.current.jab).toBe(emptyHeroJabPool('zh', 6)[0])
   })

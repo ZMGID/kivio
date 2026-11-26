@@ -11,6 +11,24 @@ function expectTextCaret(editor, offset) {
   })).toBe(offset)
 }
 
+test('shows the local agent icon or the Kivio mascot beside the empty chat greeting', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('kivio.chat.lastAgentRuntime', JSON.stringify({ kind: 'external', externalAgentId: 'codex' }))
+  })
+  await page.goto('/#chat')
+  const icon = page.locator('.chat-empty-hero-heading img')
+  const mascot = page.getByRole('button', { name: '墨墨 · Momo' })
+  await expect(icon).toHaveAttribute('src', '/agent-icons/codex.svg')
+  await expect(mascot).toHaveCount(0)
+  await page.locator('.kv-agent-picker > button').click()
+  await page.getByRole('radio', { name: 'Kivio Chat', exact: true }).click()
+  await expect(mascot).toBeVisible()
+  await expect(icon).toHaveCount(0)
+  await page.getByRole('radio', { name: 'Kivio Agent', exact: true }).click()
+  await expect(mascot).toBeVisible()
+  await expect(icon).toHaveCount(0)
+})
+
 test('keeps the empty chat centered when the window gets shorter', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.addInitScript(() => {

@@ -7,6 +7,7 @@ import { useConversationTransition } from './conversationTransitionStore'
 import { useStreamCoarse } from './streamingStore'
 import { useBackgroundTaskWait } from './useBackgroundTaskWait'
 import { InputBar, type InputBarProps } from './InputBar'
+import { AgentIcon } from '../components/AgentIcon'
 import { KivioBlob, type KivioBlobHandle } from './KivioBlob'
 import { useEmptyHeroJab, useEmptyHeroLine } from './emptyHero'
 import { TypewriterText } from './TypewriterText'
@@ -32,6 +33,7 @@ function MessageListLoading() {
 }
 
 function EmptyHeroHeading({
+  externalAgentId,
   lang,
   assistantName,
   projectName,
@@ -39,6 +41,7 @@ function EmptyHeroHeading({
   seed,
   active,
 }: {
+  externalAgentId?: string | null
   lang: Lang
   assistantName: string | null
   projectName: string | null
@@ -59,13 +62,20 @@ function EmptyHeroHeading({
   const text = jab ?? greeting
   return (
     <div className="chat-motion-fade-up chat-empty-hero-heading">
-      <KivioBlob ref={blobRef} size={56} mood="idle" onPoke={onPoke} />
+      {externalAgentId ? (
+        <button type="button" className="flex size-14 shrink-0 cursor-pointer items-center justify-center" onClick={onPoke} aria-label={externalAgentId}>
+          <AgentIcon id={externalAgentId} size={36} />
+        </button>
+      ) : (
+        <KivioBlob ref={blobRef} size={56} mood="idle" onPoke={onPoke} />
+      )}
       <h2
         className="chat-empty-hero-title cursor-pointer select-none"
         onPointerDown={(event) => {
           if (event.button !== 0) return
           event.preventDefault()
-          blobRef.current?.pokeAt(event.clientX)
+          if (blobRef.current) blobRef.current.pokeAt(event.clientX)
+          else onPoke()
         }}
       >
         <TypewriterText text={text} active={active} />
@@ -84,6 +94,7 @@ export interface ChatConversationPaneProps {
   onNewConversation: () => void
   protocolVersionMismatch: boolean
   showEmptyHero: boolean
+  externalAgentId?: string | null
   currentAssistantName: string | null
   selectedProjectName: string | null
   selectedSetName: string | null
@@ -122,6 +133,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
   onNewConversation,
   protocolVersionMismatch,
   showEmptyHero,
+  externalAgentId,
   currentAssistantName,
   selectedProjectName,
   selectedSetName,
@@ -186,6 +198,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
           <div data-momo-region className="chat-content-inset chat-empty-hero custom-scrollbar flex flex-1 flex-col items-center px-6 pb-10">
             <div className="chat-empty-hero-stack relative z-10 w-full max-w-4xl">
               <EmptyHeroHeading
+                externalAgentId={externalAgentId}
                 lang={lang}
                 assistantName={currentAssistantName}
                 projectName={selectedProjectName}

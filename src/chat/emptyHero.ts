@@ -142,6 +142,7 @@ export function emptyHeroJab(
 export function useEmptyHeroJab(lang: Lang) {
   const [jab, setJab] = useState<string | null>(null)
   const lastRef = useRef<string | null>(null)
+  const pokes = useRef({ count: 0, lastAt: 0 })
   const timerRef = useRef(0)
 
   useEffect(() => () => window.clearTimeout(timerRef.current), [])
@@ -151,7 +152,10 @@ export function useEmptyHeroJab(lang: Lang) {
     lastRef.current = null
   }, [lang])
 
-  const onPoke = useCallback((streak: number) => {
+  const onPoke = useCallback(() => {
+    const now = performance.now()
+    const streak = now - pokes.current.lastAt > 4200 ? 1 : pokes.current.count + 1
+    pokes.current = { count: streak, lastAt: now }
     const line = emptyHeroJab(lang, streak, lastRef.current)
     lastRef.current = line
     setJab(line)

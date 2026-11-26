@@ -3169,6 +3169,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onNewConversation={handleTitlebarNewConversation}
             protocolVersionMismatch={protocolVersionMismatch}
             showEmptyHero={showEmptyHero}
+            externalAgentId={usesExternalRuntime ? activeAgentRuntime.externalAgentId : null}
             currentAssistantName={currentAssistantSnapshot?.name ?? null}
             selectedProjectName={selectedProject?.name ?? null}
             selectedSetName={selectedSet?.name ?? null}
