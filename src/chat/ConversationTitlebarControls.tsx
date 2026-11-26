@@ -90,8 +90,8 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   const conversationId = conversation?.id ?? null
   const showWorkspace = !usesChatRuntime
   return (
-    <fieldset key={conversationId} className="contents" disabled={readOnly}>
-      <div className="flex min-w-0 items-center gap-1">
+    <fieldset className="contents" disabled={readOnly}>
+      <div key={conversationId} className="flex min-w-0 items-center gap-1">
         <div className="min-w-0 max-w-full shrink" data-tauri-drag-region="false">
           <AgentModelPicker
             agentRuntime={activeAgentRuntime}
@@ -142,7 +142,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
           <ConversationHistoryBranches conversationId={conversationId} lang={uiLang} {...historyBranches} />
         )}
         {showWorkspace && (
-          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} inlineAllowed={!readOnly} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} environment={environment} usage={usage} contextState={contextState} />
+          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} readOnly={readOnly} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} environment={environment} usage={usage} contextState={contextState} />
         )}
         {usesNativeTitlebar && !usesChatRuntime && !dockOpen && (
           <div className="shrink-0" data-tauri-drag-region="false">

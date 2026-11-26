@@ -56,6 +56,7 @@ type WorkspaceActionsMenuProps = {
   lang: Lang
   /** 弹出窗口没有右栏，始终以浮层打开。 */
   inlineAllowed?: boolean
+  readOnly?: boolean
   onOpenGitPanel?: () => void
   onOpenTasks?: () => void
   historyBranches?: HistoryBranchActions | null
@@ -186,6 +187,7 @@ function WorkspaceActionsPanel({
   dockOpen,
   lang,
   inline,
+  readOnly = false,
   onOpenGitPanel,
   onOpenTasks,
   historyBranches,
@@ -505,6 +507,7 @@ function WorkspaceActionsPanel({
         label={runningTasks > 0 ? `${t.workspaceMenu} · ${tasksLabel}` : t.workspaceMenu}
         size="sm"
         variant="ghost"
+        disabled={readOnly}
         onClick={() => {
           rememberWorkspacePanelOpen(!open)
           if (!inline) setPopoverOpen(!open)
@@ -538,6 +541,7 @@ function WorkspaceActionsPanel({
           role={inline ? 'complementary' : 'dialog'}
           aria-label={t.workspaceMenu}
           aria-hidden={presence.closing || undefined}
+          {...(readOnly ? { inert: '' } : {})}
           data-inline={inline || undefined}
           data-tauri-drag-region="false"
           onContextMenu={(event) => {

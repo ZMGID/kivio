@@ -3,6 +3,57 @@ import { expect, test } from '@playwright/test'
 const fixture = '/scripts/fixtures/chat-timeline.html'
 const viewport = '.chat-scroll-viewport'
 
+test('keeps the chat column in place while restoring a project conversation', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.addInitScript(() => {
+    localStorage.setItem('kivio-chat-workspace-panel', 'true')
+    localStorage.setItem('kivio-chat-dev-projects', JSON.stringify([
+      { id: 'project', name: 'Project', root_path: 'C:/project', created_at: 1, updated_at: 1 },
+    ]))
+    localStorage.setItem('kivio-chat-dev-conversations', JSON.stringify(['alpha', 'bravo'].map(id => ({
+      id, title: id, revision: 1, created_at: 1, updated_at: 2, project_id: 'project', provider_id: '', model: '',
+      agent_runtime: { kind: 'external', externalAgentId: 'codex', externalModel: 'gpt-5.5' },
+      messages: [{ id: id + '-question', role: 'user', content: id + ' question', timestamp: 1 }],
+    }))))
+  })
+  await page.goto('/#chat')
+  const select = id => page.getByRole('button', { name: id, exact: true }).click()
+  const workspace = page.locator('[data-workspace-panel][data-inline]')
+  const chatLayout = () => page.locator('.chat-main-pane').evaluate(pane => {
+    const bounds = selector => {
+      const { left, width } = pane.querySelector(selector).getBoundingClientRect()
+      return { left, width }
+    }
+    return { timeline: bounds('.chat-message-list'), composer: bounds('.chat-composer-footer > div') }
+  })
+  await select('alpha')
+  await expect(page.getByText('alpha question', { exact: true })).toBeVisible()
+  await select('bravo')
+  await expect(page.getByText('bravo question', { exact: true })).toBeVisible()
+  await expect(workspace).toBeVisible()
+  const settledLayout = await chatLayout()
+
+  await page.evaluate(async () => {
+    const { chatApi } = await import('/src/chat/api.ts')
+    const sync = chatApi.syncConversation
+    chatApi.syncConversation = async (...args) => {
+      if (args[0] === 'alpha') await new Promise(resolve => { window.finishWorkspaceReplay = resolve })
+      return sync(...args)
+    }
+  })
+  await select('alpha')
+  await page.waitForFunction(() => window.finishWorkspaceReplay)
+  await expect(page.getByText('alpha question', { exact: true })).toBeVisible()
+  expect(await chatLayout()).toEqual(settledLayout)
+  await expect(workspace).toBeVisible()
+  await expect(workspace).toHaveAttribute('inert', '')
+  await page.evaluate(() => window.finishWorkspaceReplay())
+  await expect(page.getByRole('button', { name: '工作区', exact: true })).toBeEnabled()
+  await expect(workspace).not.toHaveAttribute('inert')
+  expect(await chatLayout()).toEqual(settledLayout)
+})
+
 test('keeps the target model and effort visible throughout a conversation switch', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('kivio-chat-dev-conversations', JSON.stringify(['alpha', 'bravo'].map(id => ({
