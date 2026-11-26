@@ -23,8 +23,9 @@ describe('WebDAV configuration form', () => {
     }
     render(<Fixture />)
     expect(screen.getByRole('button', { name: 'Export configuration' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Export all chats' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Restore all chats' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Export full backup' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Restore full backup' })).toBeEnabled()
+    expect(screen.getByText(/notes, note folders and Trash/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Export everything' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Remote backup type')).not.toBeInTheDocument()
   })

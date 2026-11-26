@@ -35,13 +35,13 @@ export function BackupSection({ controller, lang }: {
     <section className="backup-section">
       <h3 className="backup-section-title">{zh ? '聊天全量备份' : 'Full chat backup'}</h3>
       <div className="backup-surface"><div className="backup-row">
-        <div className="backup-copy"><p className="kv-row-label">{zh ? '项目、对话和附件' : 'Projects, conversations and attachments'}</p>
-          <p className="kv-row-desc">{zh ? '包含助手、集、项目记录、全部对话、分支、草稿和 Kivio 保存的附件。恢复后重启，整体替换聊天数据。' : 'Includes assistants, sets, project records, all conversations, branches, drafts and attachments stored by Kivio. Restore replaces chat data and restarts the app.'}</p>
+        <div className="backup-copy"><p className="kv-row-label">{zh ? '项目、对话、附件和笔记' : 'Projects, conversations, attachments and notes'}</p>
+          <p className="kv-row-desc">{zh ? '包含助手、集、项目记录、全部对话、分支、草稿、附件，以及笔记、文件夹和笔记回收站。恢复会替换备份包含的数据并重启应用。' : 'Includes assistants, sets, project records, conversations, branches, drafts, attachments, notes, note folders and Trash. Restore replaces the data covered by the backup and restarts the app.'}</p>
           <p className="kv-row-desc">{zh ? '不包含项目代码、外部链接文件或 CLI 原生会话。换电脑后可能需要重新指定项目目录，外部 CLI 不保证能续聊。' : 'Excludes project source files, externally linked files and CLI native sessions. Project paths may need updating on another computer; CLI session continuation is not guaranteed.'}</p>
         </div>
         <div className="backup-actions">
-          <Button size="sm" disabled={disabled} onClick={controller.exportChatBackup}><Upload size={13} />{zh ? '导出全部聊天' : 'Export all chats'}</Button>
-          <Button size="sm" disabled={disabled} onClick={controller.restoreChatBackup}><Download size={13} />{zh ? '恢复全部聊天' : 'Restore all chats'}</Button>
+          <Button size="sm" disabled={disabled} onClick={controller.exportChatBackup}><Upload size={13} />{zh ? '导出全量备份' : 'Export full backup'}</Button>
+          <Button size="sm" disabled={disabled} onClick={controller.restoreChatBackup}><Download size={13} />{zh ? '恢复全量备份' : 'Restore full backup'}</Button>
         </div>
       </div></div>
     </section>

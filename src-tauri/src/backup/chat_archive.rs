@@ -5,13 +5,15 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const DIRECTORIES: [&str; 4] = [
+const DIRECTORIES: [&str; 5] = [
     "conversations",
     "external-agent-sessions",
     "subagents",
     "artifacts",
+    crate::notes::DIRECTORY,
 ];
 const FORMAT: &str = "kivio-chat-backup";
+const VERSION: u64 = 2;
 pub(super) const MAX_BYTES: u64 = 50 * 1024 * 1024 * 1024;
 
 fn error(e: impl std::fmt::Display) -> String {
@@ -40,7 +42,7 @@ pub(crate) fn export(root: &Path, destination: &Path) -> Result<(), String> {
     zip.start_file("manifest.json", options).map_err(error)?;
     serde_json::to_writer(
         &mut zip,
-        &serde_json::json!({"type": FORMAT, "version": 1, "sourceRoot": root,
+        &serde_json::json!({"type": FORMAT, "version": VERSION, "sourceRoot": root,
             "appVersion": option_env!("CARGO_PKG_VERSION").unwrap_or("development"),
             "createdAt": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(error)?.as_secs()}),
     )
@@ -94,6 +96,7 @@ pub(crate) fn export(root: &Path, destination: &Path) -> Result<(), String> {
         .join(destination.file_name().ok_or("无效备份路径")?);
     let mut remaining = MAX_BYTES;
     for directory in DIRECTORIES {
+        let _notes = (directory == crate::notes::DIRECTORY).then(crate::notes::lock_storage);
         let path = root.join(directory);
         if path.exists() {
             if target.starts_with(path.canonicalize().map_err(error)?) {
@@ -153,7 +156,8 @@ pub(crate) fn prepare(root: &Path, archive: &Path) -> Result<(), String> {
             .take(1024 * 1024),
     )
     .map_err(error)?;
-    if manifest["type"] != FORMAT || manifest["version"] != 1 {
+    let version = manifest["version"].as_u64();
+    if manifest["type"] != FORMAT || !matches!(version, Some(1 | VERSION)) {
         return Err("不支持的聊天备份格式或版本".into());
     }
     let source = manifest["sourceRoot"]
@@ -162,7 +166,12 @@ pub(crate) fn prepare(root: &Path, archive: &Path) -> Result<(), String> {
         .ok_or("备份缺少原始数据路径")?;
     let temporary = tempfile::tempdir_in(root.parent().ok_or("无效数据目录")?).map_err(error)?;
     let data = temporary.path().join("data");
-    for directory in DIRECTORIES {
+    let directories = DIRECTORIES
+        .iter()
+        .copied()
+        .filter(|directory| *directory != crate::notes::DIRECTORY || version == Some(VERSION))
+        .collect::<Vec<_>>();
+    for directory in &directories {
         fs::create_dir_all(data.join(directory)).map_err(error)?;
     }
     let mut names = HashSet::new();
@@ -181,7 +190,7 @@ pub(crate) fn prepare(root: &Path, archive: &Path) -> Result<(), String> {
             || !path
                 .components()
                 .all(|part| matches!(part, Component::Normal(_)))
-            || !DIRECTORIES
+            || !directories
                 .iter()
                 .any(|dir| name.starts_with(&format!("{dir}/")))
             || !names.insert(name.to_lowercase())
@@ -294,6 +303,81 @@ pub(crate) fn restore_at_startup(root: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn full_archive_roundtrips_notes_and_trash_and_preserves_previous_notes() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("source");
+        let target = workspace.path().join("target");
+        let note_dir = source.join("notes");
+        fs::create_dir_all(note_dir.join(".trash/item")).unwrap();
+        fs::create_dir_all(target.join("notes")).unwrap();
+        fs::write(note_dir.join("周报.md"), "---\ntags: [work]\n---\n周报正文").unwrap();
+        fs::write(note_dir.join("folders.json"), r#"["工作"]"#).unwrap();
+        fs::write(note_dir.join(".trash/item/old.md"), b"deleted draft").unwrap();
+        fs::write(target.join("notes/previous.md"), b"previous").unwrap();
+        let archive = workspace.path().join("full.zip");
+
+        export(&source, &archive).unwrap();
+        prepare(&target, &archive).unwrap();
+        restore_at_startup(&target).unwrap();
+        for name in ["周报.md", "folders.json", ".trash/item/old.md"] {
+            assert_eq!(
+                fs::read(target.join("notes").join(name)).unwrap(),
+                fs::read(note_dir.join(name)).unwrap()
+            );
+        }
+        assert!(!target.join("notes/previous.md").exists());
+        let retained = workspace
+            .path()
+            .read_dir()
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("target.chat-before-restore-")
+            })
+            .unwrap();
+        assert_eq!(
+            fs::read(retained.path().join("previous/notes/previous.md")).unwrap(),
+            b"previous"
+        );
+    }
+
+    #[test]
+    fn older_archives_leave_notes_intact_and_new_empty_archives_restore_empty_notes() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("source");
+        let target = workspace.path().join("target");
+        fs::create_dir_all(target.join("notes")).unwrap();
+        fs::write(target.join("notes/current.md"), b"keep me").unwrap();
+        let archive = workspace.path().join("old.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        zip.start_file("manifest.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        write!(
+            zip,
+            "{}",
+            serde_json::json!({"type": FORMAT, "version": 1, "sourceRoot": source})
+        )
+        .unwrap();
+        zip.finish().unwrap();
+
+        prepare(&target, &archive).unwrap();
+        restore_at_startup(&target).unwrap();
+        assert_eq!(
+            fs::read(target.join("notes/current.md")).unwrap(),
+            b"keep me"
+        );
+
+        let archive = workspace.path().join("current.zip");
+        export(&source, &archive).unwrap();
+        prepare(&target, &archive).unwrap();
+        restore_at_startup(&target).unwrap();
+        assert_eq!(target.join("notes").read_dir().unwrap().count(), 0);
+    }
     #[test]
     fn restart_resumes_after_old_directory_was_moved() {
         let workspace = tempfile::tempdir().unwrap();

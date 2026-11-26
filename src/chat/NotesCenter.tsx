@@ -17,6 +17,7 @@ import {
   editNoteDraft,
   flushNoteDraft,
   noteDraftStore,
+  noteOperationError,
   settleNoteDelete,
   showNote,
 } from './notesDraftStore'
@@ -100,13 +101,16 @@ export function NotesCenter() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
+  const [searchResult, setSearchResult] = useState<{ query: string; notes: NoteMeta[] } | null>(null)
+  const [trashed, setTrashed] = useState<NoteMeta[] | null>(null)
+  const [restoring, setRestoring] = useState(false)
 
   // 当前文件夹：null = 根目录（显示文件夹 + 散笔记），字符串 = 进入该文件夹
   const [currentFolder, setCurrentFolder] = useState<string | null>(null)
   // 文件夹命名弹框：WKWebView 不支持 window.prompt（恒返回 null），故用内联输入。
   // 输入走非受控 ref，规避中文 IME 合成期受控写回吞字（与编辑器同款处理）。
   const [folderDialog, setFolderDialog] = useState<
-    | { mode: 'create'; assignNoteId?: string }
+    | { mode: 'create'; assignNote?: Pick<NoteMeta, 'id' | 'folder'> }
     | { mode: 'rename'; original: string }
     | null
   >(null)
@@ -118,8 +122,8 @@ export function NotesCenter() {
   // 标题/正文输入保持非受控：受控 input 在中文 IME 合成期被 React 写回 value 会打断输入。
   const [draft] = useWindowStore(noteDraftStore)
   const editing = draft.note
+  const isEditing = editing !== null
   const flushMarkdownRef = useRef<(() => void) | null>(null)
-  const saving = draft.status === 'saving'
 
   const loadNotes = useCallback(async () => {
     setError('')
@@ -188,12 +192,27 @@ export function NotesCenter() {
     }
   }, [loadNotes])
 
-  const visibleNotes = useMemo(() => {
-    const needle = search.trim().toLowerCase()
-    return notes.filter((note) => needle
-      ? displayTitle(note.title, t.chatNotesUntitled).toLowerCase().includes(needle) || note.preview.toLowerCase().includes(needle)
-      : note.folder.trim() === (currentFolder ?? ''))
-  }, [notes, currentFolder, search, t])
+  const query = search.trim()
+  const inTrash = trashed !== null
+  useEffect(() => {
+    if (!query || isEditing || inTrash || !isTauriRuntime()) return
+    let cancelled = false
+    const timer = setTimeout(() => {
+      void api.notesSearch(query).then((matches) => {
+        if (!cancelled) setSearchResult({ query, notes: matches })
+      }).catch((err: unknown) => {
+        if (cancelled) return
+        setSearchResult({ query, notes: [] })
+        setError(noteOperationError(err))
+      })
+    }, 180)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [query, isEditing, inTrash, notes])
+
+  const visibleNotes = useMemo(() => query
+    ? searchResult?.query === query ? searchResult.notes : []
+    : notes.filter((note) => note.folder.trim() === (currentFolder ?? '')),
+  [query, searchResult, notes, currentFolder])
 
   // 离开笔记页不是取消：把未落盘的草稿交给窗口里的保存队列，回来仍打开同一篇。
   useEffect(() => () => {
@@ -207,6 +226,28 @@ export function NotesCenter() {
     if (noteDraftStore.getSnapshot().session !== draft.session) return
     editNoteDraft({ content: markdown })
   }, [draft.session])
+
+  const saveDraft = useCallback(() => {
+    flushMarkdownRef.current?.()
+    return flushNoteDraft()
+  }, [])
+
+  const reloadConflict = useCallback(async () => {
+    const current = noteDraftStore.getSnapshot()
+    if (!current.note || current.status !== 'conflict') return
+    const confirmed = await confirmDialog({
+      message: t.chatNotesReloadConfirm,
+      confirmLabel: t.chatNotesReload,
+      danger: true,
+    })
+    if (!confirmed || noteDraftStore.getSnapshot() !== current) return
+    try {
+      const note = await api.notesRead(current.note.id)
+      if (noteDraftStore.getSnapshot() === current) showNote(note)
+    } catch (err) {
+      setError(noteOperationError(err))
+    }
+  }, [t])
 
   const openNote = useCallback(async (id: string) => {
     const request = claimNoteNavigation()
@@ -269,27 +310,53 @@ export function NotesCenter() {
       if (!ok) return
       setError('')
       try {
+        if (noteDraftStore.getSnapshot().note?.id === id && !await saveDraft()) return
         await settleNoteDelete(id, () => api.notesDelete(id))
         setNotes((prev) => prev.filter((n) => n.id !== id))
+        setSearchResult((prev) => prev && { ...prev, notes: prev.notes.filter((note) => note.id !== id) })
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
       }
     },
-    [notes, t],
+    [notes, saveDraft, t],
   )
+
+  const openTrash = useCallback(async () => {
+    const request = claimNoteNavigation()
+    setError('')
+    try {
+      const deleted = await api.notesTrashList()
+      if (noteNavigationCurrent(request)) setTrashed(deleted)
+    } catch (err) {
+      if (noteNavigationCurrent(request)) setError(noteOperationError(err))
+    }
+  }, [])
+
+  const restoreNote = useCallback(async (id: string) => {
+    setRestoring(true)
+    setError('')
+    try {
+      await api.notesRestore(id)
+      setTrashed((current) => current?.filter((note) => note.id !== id) ?? null)
+      await loadNotes()
+    } catch (err) {
+      setError(noteOperationError(err))
+    } finally {
+      setRestoring(false)
+    }
+  }, [loadNotes])
 
   /* ===== 文件夹管理 ===== */
   const moveNoteToFolder = useCallback(
-    async (id: string, folder: string) => {
+    async (note: NoteMeta, folder: string) => {
       setMoveMenuFor(null)
       setError('')
       try {
-        const note = await api.notesRead(id)
         if (note.folder === folder) return
-        await api.notesUpdate(id, note.title, note.content, folder)
+        await api.notesUpdate(note.id, { folder: { before: note.folder, after: folder } })
         await loadNotes()
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setError(noteOperationError(err))
       }
     },
     [loadNotes],
@@ -316,9 +383,9 @@ export function NotesCenter() {
       if (folderDialog.mode === 'create') {
         setFolders(await api.notesFolderCreate(name))
         // 若来自卡片「新建文件夹并移入」，创建后把该笔记归入新文件夹。
-        if (folderDialog.assignNoteId) {
-          const note = await api.notesRead(folderDialog.assignNoteId)
-          await api.notesUpdate(note.id, note.title, note.content, name)
+        if (folderDialog.assignNote) {
+          const note = folderDialog.assignNote
+          await api.notesUpdate(note.id, { folder: { before: note.folder, after: name } })
           await loadNotes()
         }
       } else {
@@ -328,7 +395,7 @@ export function NotesCenter() {
       }
       setFolderDialog(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(noteOperationError(err))
     }
   }, [folderDialog, currentFolder, loadNotes])
 
@@ -354,6 +421,10 @@ export function NotesCenter() {
 
   /* ===== 编辑器态 ===== */
   if (editing) {
+    const saveStatus = {
+      idle: '', pending: t.chatNotesPending, saving: t.annotateSaving, saved: t.saved,
+      error: t.chatNotesSaveFailed, conflict: t.chatNotesSaveFailed,
+    }[draft.status]
     return (
       <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900">
         <div className="mx-auto flex h-full w-full min-h-0 max-w-[820px] flex-col px-9 pb-4 pt-6">
@@ -363,8 +434,8 @@ export function NotesCenter() {
               {t.chatNotesBack}
             </Button>
             <div className="flex shrink-0 items-center gap-2">
-              <span className="text-[12px] text-neutral-400 dark:text-neutral-500">
-                {saving ? t.annotateSaving : t.saved}
+              <span role="status" className="text-[12px] text-neutral-500">
+                {saveStatus}
               </span>
               <IconButton
                 size="sm"
@@ -396,9 +467,39 @@ export function NotesCenter() {
             />
           </div>
 
-          <ErrorNotice message={draft.error || error} />
+          <ErrorNotice
+            message={error || (draft.status === 'conflict' ? t.chatNotesConflict : draft.status === 'error' ? draft.error : '')}
+            actionLabel={draft.status === 'conflict' ? t.chatNotesReload : draft.status === 'error' ? t.chatNotesRetrySave : undefined}
+            onAction={draft.status === 'conflict' ? () => void reloadConflict() : () => void saveDraft()}
+          />
         </div>
       </div>
+    )
+  }
+
+  if (trashed) {
+    return (
+      <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7">
+          <Button variant="ghost" size="sm" onClick={() => { setTrashed(null); setError('') }}>
+            <ArrowLeft size={14} />{t.chatNavNotes}
+          </Button>
+          <h1 className="mb-5 mt-3 text-[28px] font-semibold text-neutral-950">{t.chatNotesTrash}</h1>
+          <ErrorNotice message={error} />
+          {trashed.length === 0 && <p className="text-sm text-neutral-500">{t.chatNotesTrashEmpty}</p>}
+          {trashed.map((note) => (
+            <div key={note.id} className="flex items-center justify-between gap-3 px-3 py-2">
+              <div className="min-w-0">
+                <h2 className="truncate text-sm font-medium">{displayTitle(note.title, t.chatNotesUntitled)}</h2>
+                {note.preview && <p className="truncate text-xs text-neutral-500">{note.preview}</p>}
+              </div>
+              <Button size="sm" variant="ghost" disabled={restoring} onClick={() => void restoreNote(note.id)}>
+                {t.chatNotesRestore}
+              </Button>
+            </div>
+          ))}
+        </div>
+      </main>
     )
   }
 
@@ -424,12 +525,15 @@ export function NotesCenter() {
             <div className="w-full max-w-xs">
               <Input
                 value={search}
-                onChange={setSearch}
+                  onChange={(value) => { setSearch(value); setError('') }}
                 placeholder={t.chatNotesSearchPlaceholder}
                 aria-label={t.chatNotesSearchPlaceholder}
               />
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-2">
+              <Button variant="ghost" onClick={() => void openTrash()}>
+                <Trash2 size={14} />{t.chatNotesTrash}
+              </Button>
               <Button variant="ghost" onClick={() => void openNotesFolder()}>
                 <FolderOpen open size={14} />
                 {t.chatNotesOpenFolder}
@@ -465,7 +569,7 @@ export function NotesCenter() {
             <ErrorNotice message={error} />
           )}
 
-          {loading && notes.length === 0 ? (
+          {(loading && notes.length === 0) || (query && searchResult?.query !== query && isTauriRuntime()) ? (
             <div className="mt-6 flex flex-col gap-3">
               {Array.from({ length: 3 }, (_, i) => (
                 <div key={i} className="kv-skeleton h-7 w-full rounded" />
@@ -545,7 +649,7 @@ export function NotesCenter() {
                         tabIndex={0}
                         onClick={() => void openNote(note.id)}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
+                          if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
                             e.preventDefault()
                             void openNote(note.id)
                           }
@@ -587,7 +691,7 @@ export function NotesCenter() {
                                     <button
                                       type="button"
                                       className="kv-menu-item"
-                                      onClick={() => void moveNoteToFolder(note.id, '')}
+                                      onClick={() => void moveNoteToFolder(note, '')}
                                     >
                                       {note.folder.trim() === '' && <Check size={12} className="text-accent" />}
                                       <span className={note.folder.trim() === '' ? '' : 'ml-[18px]'}>{t.chatNotesLibraryRoot}</span>
@@ -597,7 +701,7 @@ export function NotesCenter() {
                                         key={f}
                                         type="button"
                                         className="kv-menu-item truncate"
-                                        onClick={() => void moveNoteToFolder(note.id, f)}
+                                        onClick={() => void moveNoteToFolder(note, f)}
                                       >
                                         {note.folder.trim() === f && <Check size={12} className="text-accent" />}
                                         <span className={`truncate ${note.folder.trim() === f ? '' : 'ml-[18px]'}`}>{f}</span>
@@ -609,7 +713,7 @@ export function NotesCenter() {
                                       className="kv-menu-item"
                                       onClick={() => {
                                         setMoveMenuFor(null)
-                                        setFolderDialog({ mode: 'create', assignNoteId: note.id })
+                                        setFolderDialog({ mode: 'create', assignNote: note })
                                       }}
                                     >
                                       <FolderPlus size={12} />
@@ -633,6 +737,12 @@ export function NotesCenter() {
                             </IconButton>
                           </div>
                         </div>
+                        {query && (
+                          <div className="ml-6 min-w-0 text-xs text-neutral-500">
+                            <p>{note.folder || t.chatNotesLibraryRoot}</p>
+                            {note.preview && <p className="mt-1 line-clamp-2">{note.preview}</p>}
+                          </div>
+                        )}
                       </article>
                     ))}
                   </div>

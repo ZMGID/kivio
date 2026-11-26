@@ -59,7 +59,7 @@ export function WebDavBackupSection({ controller, lang }: {
         <Button size="sm" variant={config?.url ? 'default' : 'primary'} disabled={disabled} onClick={openEditor}>{config?.url ? (zh ? '管理连接' : 'Manage connection') : (zh ? '配置 WebDAV' : 'Configure WebDAV')}</Button>
       </div>
       {config?.url && <div className="backup-row backup-divider">
-        <div className="backup-copy"><p className="kv-row-label">{zh ? '远程备份' : 'Remote backups'}</p><p className="kv-row-desc">{zh ? '配置备份保存设置；聊天全量备份保存全部聊天，不包含供应商配置或项目代码。' : 'Configuration saves settings; full chat backup saves all chats, excluding provider settings and project files.'}</p></div>
+        <div className="backup-copy"><p className="kv-row-label">{zh ? '远程备份' : 'Remote backups'}</p><p className="kv-row-desc">{zh ? '配置备份保存设置。聊天全量备份保存聊天、附件、笔记、文件夹和笔记回收站。' : 'Configuration backups save settings. Full chat backups save chats, attachments, notes, note folders and Trash.'}</p></div>
         <div className="backup-actions">
           <Select size="sm" ariaLabel={zh ? '远程备份类型' : 'Remote backup type'} value={kind} onChange={(value) => { if (value === 'configuration' || value === 'chat') setKind(value) }} disabled={disabled || !ready} options={[{ value: 'configuration', label: zh ? '配置备份' : 'Configuration' }, { value: 'chat', label: zh ? '聊天全量备份' : 'Full chat backup' }]} />
           <Button size="sm" disabled={disabled || !ready} onClick={() => void run({ type: 'upload', kind })}><Upload size={13} />{zh ? '上传备份' : 'Upload backup'}</Button>
@@ -97,7 +97,7 @@ export function WebDavBackupSection({ controller, lang }: {
       </>}
       {status}
     </BackupDialog>}
-    {browsing && <BackupDialog title={zh ? '恢复云端备份' : 'Restore a cloud backup'} description={zh ? '配置恢复会替换设置；聊天全量恢复会替换聊天数据并重启应用。' : 'Configuration restore replaces settings. Full chat restore replaces chat data and restarts the app.'} closeLabel={zh ? '关闭' : 'Close'} locked={controller.busy} onClose={() => setBrowsing(false)}>
+    {browsing && <BackupDialog title={zh ? '恢复云端备份' : 'Restore a cloud backup'} description={zh ? '配置恢复会替换设置。聊天全量恢复会替换备份包含的数据并重启应用。' : 'Configuration restore replaces settings. Full chat restore replaces the data covered by the backup and restarts the app.'} closeLabel={zh ? '关闭' : 'Close'} locked={controller.busy} onClose={() => setBrowsing(false)}>
       <div className="backup-row backup-divider">
         <div className="backup-copy"><p className="kv-row-label">{zh ? '从云端恢复' : 'Restore from the cloud'}</p><p className="kv-row-desc">{zh ? '选择一个备份恢复到当前电脑。' : 'Choose a backup to restore on this computer.'}</p></div>
         <Button size="sm" variant="ghost" disabled={disabled || !ready} onClick={() => void run({ type: 'list' })}><RefreshCw size={13} />{zh ? '刷新备份列表' : 'Refresh backups'}</Button>

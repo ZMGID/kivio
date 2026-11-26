@@ -1,10 +1,10 @@
-import { api, type Note } from '../api/tauri'
+import { api, type Note, type NoteEdit } from '../api/tauri'
 import { createWindowStore } from '../utils/windowStore'
 
 /** Debounce for typing. Leaving the page flushes immediately and does not wait this out. */
 export const NOTE_SAVE_DEBOUNCE_MS = 800
 
-export type NoteSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error'
+export type NoteSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'conflict'
 
 /** Editable note plus the save flight. Survives leaving the notes page. */
 export interface NoteDraftState {
@@ -101,15 +101,21 @@ export function editNoteDraft(patch: { title?: string; content?: string; folder?
   }, NOTE_SAVE_DEBOUNCE_MS)
 }
 
-function acknowledge(noteId: string, session: number, submitted: { title: string; content: string; folder: string }, updated: Note) {
+function acknowledge(noteId: string, session: number, edit: NoteEdit, updated: Note) {
   noteDraftStore.setState((prev) => {
     if (!live(noteId, session) || !prev.note) return prev
     return {
       ...prev,
-      note: updated,
-      title: prev.title === submitted.title ? updated.title : prev.title,
-      content: prev.content === submitted.content ? updated.content : prev.content,
-      folder: prev.folder === submitted.folder ? updated.folder : prev.folder,
+      // Untouched fields retain the values the editor currently displays.
+      note: {
+        ...updated,
+        title: edit.title ? updated.title : prev.note.title,
+        content: edit.content ? updated.content : prev.note.content,
+        folder: edit.folder ? updated.folder : prev.note.folder,
+      },
+      title: edit.title?.after === prev.title ? updated.title : prev.title,
+      content: edit.content?.after === prev.content ? updated.content : prev.content,
+      folder: edit.folder?.after === prev.folder ? updated.folder : prev.folder,
       status: 'saving',
     }
   })
@@ -139,17 +145,22 @@ async function writeNoteSession(noteId: string, session: number) {
       if (!live(noteId, session) || isDirty(noteDraftStore.getSnapshot())) continue
       return
     }
-    const submitted = { title: snap.title, content: snap.content, folder: snap.folder }
+    const { note, title, content, folder } = snap
+    if (!note) return
+    const edit: NoteEdit = {}
+    if (title !== note.title) edit.title = { before: note.title, after: title }
+    if (content !== note.content) edit.content = { before: note.content, after: content }
+    if (folder !== note.folder) edit.folder = { before: note.folder, after: folder }
     if (!live(noteId, session)) return
     try {
-      const updated = await api.notesUpdate(noteId, submitted.title, submitted.content, submitted.folder)
+      const updated = await api.notesUpdate(noteId, edit)
       if (!live(noteId, session)) return
-      acknowledge(noteId, session, submitted, updated)
+      acknowledge(noteId, session, edit, updated)
     } catch (err) {
       if (!live(noteId, session)) return
-      const message = err instanceof Error ? err.message : String(err)
+      const conflict = typeof err === 'object' && err !== null && 'kind' in err && err.kind === 'conflict'
       noteDraftStore.setState((prev) => (
-        live(noteId, session) ? { ...prev, status: 'error', error: message } : prev
+        live(noteId, session) ? { ...prev, status: conflict ? 'conflict' : 'error', error: noteOperationError(err) } : prev
       ))
       return
     }
@@ -161,7 +172,7 @@ async function drainNote(noteId: string, session: number): Promise<boolean> {
     await noteDraftStore.run(`note:${noteId}`, () => writeNoteSession(noteId, session))
     const after = noteDraftStore.getSnapshot()
     if (after.session !== session || after.note?.id !== noteId) return false
-    if (retiredNoteIds.has(noteId) || after.status === 'error') return false
+    if (retiredNoteIds.has(noteId) || after.status === 'error' || after.status === 'conflict') return false
     if (!isDirty(after)) return true
   }
 }
@@ -178,6 +189,15 @@ export function flushNoteDraft(): Promise<boolean> {
     return Promise.resolve(true)
   }
   return drainNote(noteId, session)
+}
+
+export function noteOperationError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object' && error !== null) {
+    if ('message' in error && typeof error.message === 'string') return error.message
+    if ('kind' in error && error.kind === 'conflict') return '笔记已被修改 / Note changed on disk'
+  }
+  return String(error)
 }
 
 /**

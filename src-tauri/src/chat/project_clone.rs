@@ -52,32 +52,6 @@ pub(crate) fn normalize_clone_url(input: &str) -> Result<String, String> {
     Err("无法识别的仓库地址：请填写 Git 地址或 GitHub 的 owner/repo。".into())
 }
 
-/// Publish the completed directory on the same filesystem without replacing an existing entry.
-pub(crate) fn publish_clone(staged: &Path, target: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use rustix::fs::{renameat_with, RenameFlags, CWD};
-        Ok(renameat_with(
-            CWD,
-            staged,
-            CWD,
-            target,
-            RenameFlags::NOREPLACE,
-        )?)
-    }
-    #[cfg(windows)]
-    {
-        use windows::{core::HSTRING, Win32::Storage::FileSystem::MoveFileW};
-        unsafe {
-            MoveFileW(
-                &HSTRING::from(staged.as_os_str()),
-                &HSTRING::from(target.as_os_str()),
-            )
-        }
-        .map_err(|err| std::io::Error::from_raw_os_error(err.code().0 & 0xffff))
-    }
-}
-
 async fn run_git_clone(url: &str, target: &Path) -> Result<(), String> {
     let mut cmd = tokio::process::Command::new("git");
     cmd.args([
@@ -171,6 +145,7 @@ pub(crate) async fn clone_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::rename_no_replace;
 
     #[test]
     fn accepts_common_git_addresses() {
@@ -220,11 +195,11 @@ mod tests {
         }
         std::fs::write(first.join("result"), "first").unwrap();
         std::fs::write(second.join("result"), "second").unwrap();
-        assert!(publish_clone(&first, &target).is_err());
+        assert!(rename_no_replace(&first, &target).is_err());
         assert_eq!(target.read_dir().unwrap().count(), 0);
         std::fs::remove_dir(&target).unwrap();
-        publish_clone(&first, &target).unwrap();
-        assert!(publish_clone(&second, &target).is_err());
+        rename_no_replace(&first, &target).unwrap();
+        assert!(rename_no_replace(&second, &target).is_err());
         assert_eq!(
             std::fs::read_to_string(target.join("result")).unwrap(),
             "first"

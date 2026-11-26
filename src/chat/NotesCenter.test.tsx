@@ -2,12 +2,15 @@ import { act, fireEvent, screen } from '@testing-library/react'
 import { render } from '../test/renderWithNotices'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { NotesCenter } from './NotesCenter'
-import type { Note } from '../api/tauri'
+import type { Note, NoteEdit } from '../api/tauri'
 import { NOTE_SAVE_DEBOUNCE_MS, resetNoteDraftStore, showNote } from './notesDraftStore'
 
 const mocks = vi.hoisted(() => ({
   update: vi.fn(),
   remove: vi.fn(),
+  search: vi.fn(),
+  trashList: vi.fn(),
+  restore: vi.fn(),
   onMarkdown: null as null | ((ctx: unknown, md: string) => void),
   initialMarkdown: '',
   editor: null as null | { markdown: string },
@@ -21,11 +24,14 @@ vi.mock('../api/tauri', () => ({
   isTauriRuntime: () => true,
   api: {
     notesList: async () => [{ ...mocks.persisted, preview: 'original' }],
+    notesSearch: mocks.search,
     notesFoldersList: async () => ['Work'],
     notesRead: async () => mocks.persisted,
     notesDirPath: async () => '',
     notesUpdate: mocks.update,
     notesDelete: mocks.remove,
+    notesTrashList: mocks.trashList,
+    notesRestore: mocks.restore,
   },
 }))
 vi.mock('@milkdown/crepe', () => ({
@@ -62,9 +68,22 @@ beforeEach(() => {
   vi.resetAllMocks()
   resetNoteDraftStore()
   mocks.remove.mockResolvedValue(undefined)
+  mocks.trashList.mockResolvedValue([])
+  mocks.restore.mockResolvedValue(undefined)
   mocks.persisted = { ...mocks.note }
-  mocks.update.mockImplementation(async (id: string, title: string, content: string, folder: string) => {
-    mocks.persisted = { ...mocks.persisted!, id, title, content, folder }
+  mocks.search.mockImplementation(async (query: string) => {
+    const note = mocks.persisted
+    return note?.content.includes(query) ? [{ ...note, preview: note.content.slice(-90) }] : []
+  })
+  mocks.update.mockImplementation(async (id: string, edit: NoteEdit) => {
+    const note = mocks.persisted
+    if (!note) throw new Error('note missing')
+    mocks.persisted = {
+      ...note, id,
+      title: edit.title?.after ?? note.title,
+      content: edit.content?.after ?? note.content,
+      folder: edit.folder?.after ?? note.folder,
+    }
     return mocks.persisted
   })
 })
@@ -81,14 +100,18 @@ async function back() {
 }
 
 it('searches across folders without separate source tabs', async () => {
-  mocks.persisted = { ...mocks.note, folder: 'Work', origin: 'chat' }
+  const content = 'preface '.repeat(40) + 'needle past the preview'
+  mocks.persisted = { ...mocks.note, content, folder: 'Work', origin: 'chat' }
   await act(async () => { render(<NotesCenter />) })
   expect(screen.queryByText('Test note')).toBeNull()
   expect(screen.queryByText('chatNotesTabChat')).toBeNull()
   expect(screen.queryByText('chatNotesTabLibrary')).toBeNull()
-  await act(async () => { fireEvent.change(screen.getByPlaceholderText('chatNotesSearchPlaceholder'), { target: { value: 'original' } }) })
+  await act(async () => { fireEvent.change(screen.getByPlaceholderText('chatNotesSearchPlaceholder'), { target: { value: 'needle past the preview' } }) })
+  await advance(200)
+  expect(screen.getByText(/needle past the preview/)).toBeInTheDocument()
+  expect(screen.getByText('Work')).toBeInTheDocument()
   await act(async () => { fireEvent.click(screen.getByText('Test note')) })
-  expect(mocks.initialMarkdown).toBe('original')
+  expect(mocks.initialMarkdown).toBe(content)
 })
 
 it.each(['user', 'chat'])('shows a moved %s note in its folder and after reopening', async (origin) => {
@@ -153,6 +176,56 @@ it('does not write an unchanged note', async () => {
   expect(mocks.update).not.toHaveBeenCalled()
 })
 
+it('shows pending and failed saves accurately and retries from the editor', async () => {
+  mocks.update.mockRejectedValueOnce(new Error('disk full'))
+  await openEditor()
+  typeContent('pending draft')
+  expect(screen.getByText('chatNotesPending')).toBeInTheDocument()
+  await advance()
+  expect(screen.getByText('chatNotesSaveFailed')).toBeInTheDocument()
+  expect(screen.queryByText('saved')).toBeNull()
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'chatNotesRetrySave' })) })
+  expect(screen.getByText('saved')).toBeInTheDocument()
+  expect(mocks.persisted?.content).toBe('pending draft')
+})
+
+it('lets the move button handle Enter without opening its note', async () => {
+  await act(async () => { render(<NotesCenter />) })
+  const move = screen.getByRole('button', { name: 'chatNotesMoveToFolder' })
+  await act(async () => { expect(fireEvent.keyDown(move, { key: 'Enter' })).toBe(true) })
+  expect(screen.queryByRole('button', { name: 'chatNotesBack' })).toBeNull()
+})
+
+it('keeps the visible baseline and draft when an outside edit conflicts', async () => {
+  await openEditor()
+  mocks.persisted = { ...mocks.note, content: 'outside edit' }
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Renamed' } })
+  await advance()
+  expect(mocks.update).toHaveBeenLastCalledWith('n1', { title: { before: 'Test note', after: 'Renamed' } })
+  expect(mocks.persisted.content).toBe('outside edit')
+  expect(mocks.editor?.markdown).toBe('original')
+
+  mocks.update.mockRejectedValueOnce({ kind: 'conflict', field: 'content' })
+  typeContent('my edit')
+  await advance()
+  expect(mocks.update).toHaveBeenLastCalledWith('n1', { content: { before: 'original', after: 'my edit' } })
+  expect(screen.getByText('chatNotesConflict')).toBeInTheDocument()
+  expect(mocks.editor?.markdown).toBe('my edit')
+  expect(mocks.persisted.content).toBe('outside edit')
+  window.confirm = () => true
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'chatNotesReload' })) })
+  expect(mocks.editor?.markdown).toBe('outside edit')
+})
+
+it('restores a previously deleted note from Trash', async () => {
+  mocks.trashList.mockResolvedValue([{ ...mocks.note, id: 'trash-id', preview: 'original' }])
+  await act(async () => { render(<NotesCenter />) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'chatNotesTrash' })) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'chatNotesRestore' })) })
+  expect(mocks.restore).toHaveBeenCalledWith('trash-id')
+  expect(screen.getByText('chatNotesTrashEmpty')).toBeInTheDocument()
+})
+
 it('keeps the latest draft and saving state when the page is left and reopened', async () => {
   let finish!: (note: Note) => void
   mocks.update.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
@@ -167,7 +240,7 @@ it('keeps the latest draft and saving state when the page is left and reopened',
   expect(screen.getByText('annotateSaving')).toBeTruthy()
   expect(mocks.initialMarkdown).toBe('kept draft')
   await act(async () => { finish({ ...mocks.note, content: 'kept draft' }) })
-  expect(mocks.update).toHaveBeenCalledWith('n1', 'Test note', 'kept draft', '')
+  expect(mocks.update).toHaveBeenCalledWith('n1', { content: { before: 'original', after: 'kept draft' } })
 })
 
 it('restores the draft and error when a save fails while the page is gone, then retries it', async () => {
@@ -249,7 +322,10 @@ it('preserves title edits made while a content save is pending', async () => {
   typeContent('updated content')
   await advance()
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New title' } })
-  await act(async () => { finish({ ...mocks.note, content: 'updated content' }) })
+  await act(async () => {
+    mocks.persisted = { ...mocks.note, content: 'updated content' }
+    finish(mocks.persisted)
+  })
   await back()
   expect(mocks.persisted).toMatchObject({ title: 'New title', content: 'updated content' })
 })

@@ -1468,6 +1468,8 @@ export type Note = {
   updatedAt: string
 }
 
+export type NoteEdit = Partial<Record<'title' | 'content' | 'folder', { before: string; after: string }>>
+
 /** 交给 Kivio AI 的安装任务（含官方 README URL + Kivio 契约） */
 export type PluginInstallBrief = {
   pluginId: string
@@ -2060,17 +2062,19 @@ export const api = {
 
   /** 扩展 → 笔记 */
   notesList: () => invoke<NoteMeta[]>('notes_list'),
+  notesSearch: (query: string) => invoke<NoteMeta[]>('notes_search', { query }),
   notesRead: (id: string) => invoke<Note>('notes_read', { id }),
   notesCreate: (title: string, content: string, folder: string, origin: string) =>
     invoke<Note>('notes_create', { title, content, folder, origin }),
-  notesUpdate: (id: string, title: string, content: string, folder: string) =>
-    invoke<Note>('notes_update', { id, title, content, folder }),
+  notesUpdate: (id: string, edit: NoteEdit) => invoke<Note>('notes_update', { id, edit }),
   notesFoldersList: () => invoke<string[]>('notes_folders_list'),
   notesFolderCreate: (name: string) => invoke<string[]>('notes_folder_create', { name }),
   notesFolderRename: (oldName: string, newName: string) =>
     invoke<string[]>('notes_folder_rename', { old: oldName, new: newName }),
   notesFolderDelete: (name: string) => invoke<string[]>('notes_folder_delete', { name }),
   notesDelete: (id: string) => invoke<void>('notes_delete', { id }),
+  notesTrashList: () => invoke<NoteMeta[]>('notes_trash_list'),
+  notesRestore: (id: string) => invoke<void>('notes_restore', { id }),
   /** 在系统文件管理器里打开笔记目录（用户可直接拖入外部 .md）。返回该目录路径。 */
   notesOpenFolder: () => invoke<string>('notes_open_folder'),
   /** 笔记目录的绝对路径，用于订阅 workspace:activity 自动刷新。 */

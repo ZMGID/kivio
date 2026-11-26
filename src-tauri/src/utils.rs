@@ -1,4 +1,30 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Move an entry on the same filesystem without replacing its destination.
+pub(crate) fn rename_no_replace(source: &Path, target: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use rustix::fs::{renameat_with, RenameFlags, CWD};
+        Ok(renameat_with(
+            CWD,
+            source,
+            CWD,
+            target,
+            RenameFlags::NOREPLACE,
+        )?)
+    }
+    #[cfg(windows)]
+    {
+        use windows::{core::HSTRING, Win32::Storage::FileSystem::MoveFileW};
+        unsafe {
+            MoveFileW(
+                &HSTRING::from(source.as_os_str()),
+                &HSTRING::from(target.as_os_str()),
+            )
+        }
+        .map_err(|err| std::io::Error::from_raw_os_error(err.code().0 & 0xffff))
+    }
+}
 
 /// Strip the Windows `\\?\` / `\\?\UNC\` prefix that `fs::canonicalize` adds.
 ///

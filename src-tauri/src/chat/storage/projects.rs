@@ -176,9 +176,7 @@ pub(crate) fn register_project(
                 .map_err(|err| format!("解析存放位置失败：{err}"))?;
             let target = parent.join(&project.name);
             let result = match root {
-                ProjectRoot::Cloned(staged) => {
-                    super::super::project_clone::publish_clone(staged, &target)
-                }
+                ProjectRoot::Cloned(staged) => crate::utils::rename_no_replace(staged, &target),
                 _ => fs::create_dir(&target),
             };
             result.map_err(|err| {

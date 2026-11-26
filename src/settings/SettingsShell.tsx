@@ -224,8 +224,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       export: api.exportChatBackup,
       restore: api.restoreChatBackup,
       confirmRestore: () => confirm(lang === 'zh'
-        ? '将整体替换项目记录、助手、集和全部聊天数据，并重启应用。供应商配置和项目代码不受影响。恢复前的数据会保留在本机。继续？'
-        : 'Replace project records, assistants, sets and all chat data, then restart? Provider settings and project files are unchanged. Previous chat data is retained locally.',
+        ? '将替换项目记录、助手、集和全部聊天数据。如果备份包含笔记，也会替换笔记、文件夹和回收站。恢复后应用会重启，原数据保留在本机。继续？'
+        : 'Replace project records, assistants, sets and all chat data? Archives that include notes also replace notes, folders and Trash. The app restarts after restore and retains your previous data locally.',
       { title: lang === 'zh' ? '恢复聊天全量备份' : 'Restore full chat backup', kind: 'warning' }),
     },
     webdav: {
