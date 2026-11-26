@@ -133,8 +133,7 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
     await checkCliInstallInfoBatch(activeIds, true)
   }
   const updateAll = async () => {
-    // 逐个来：并行跑多个 npm 全局安装会互相抢锁。
-    for (const id of updatableIds) await runCliInstall(id, loadAgents)
+    await Promise.all(updatableIds.map(id => runCliInstall(id, loadAgents)))
   }
 
   const patchOverride = useCallback(

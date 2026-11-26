@@ -13,6 +13,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::external_agents::types::{RuntimeAgentDef, UnifiedAgentEvent};
 
@@ -24,13 +25,16 @@ tokio::task_local! {
 #[derive(Default)]
 struct ResourceState {
     uses: HashMap<uuid::Uuid, ResourceEntry>,
+    writers: HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
 }
 struct ResourceEntry {
     keys: Vec<String>,
     exclusive: bool,
     conversation: Option<String>,
     pending: bool,
+    _writer: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
+static RESOURCE_RELEASED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 static RESOURCE_STATE: std::sync::LazyLock<Mutex<ResourceState>> =
     std::sync::LazyLock::new(Default::default);
 
@@ -79,14 +83,18 @@ pub(crate) fn runtime_resources(agent: Option<&str>, binary: &std::path::Path) -
                     &crate::external_agents::overrides::agent_config(agent).unwrap_or_default(),
                 ),
             );
-            if let Some((_, prefix)) =
+            if let Some((package, prefix)) =
                 crate::external_agents::installer::installed_npm_package(def, binary)
             {
-                keys.push(format!("prefix:{}", resource_path(&prefix)));
+                keys.push(npm_package_resource(&prefix, package));
             }
         }
     }
     keys
+}
+
+pub(crate) fn npm_package_resource(prefix: &std::path::Path, package: &str) -> String {
+    format!("npm:{}:{package}", resource_path(prefix))
 }
 
 #[derive(Clone)]
@@ -94,30 +102,15 @@ pub(crate) struct ResourceLease(Arc<ResourceLeaseOwner>);
 struct ResourceLeaseOwner {
     id: uuid::Uuid,
 }
-impl ResourceLease {
-    pub(crate) fn acquire(keys: Vec<String>, exclusive: bool) -> Result<Self, String> {
-        Self::acquire_allowing(keys, exclusive, &Default::default(), false)
-    }
-    fn acquire_allowing(
-        keys: Vec<String>,
+impl ResourceState {
+    fn check_available(
+        &self,
+        keys: &[String],
         exclusive: bool,
         idle: &std::collections::HashSet<String>,
-        pending: bool,
-    ) -> Result<Self, String> {
-        let mut state = RESOURCE_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        let owner = MAINTENANCE_OWNER.try_with(|lease| lease.id()).ok();
-        if exclusive {
-            if let Some(owner_id) = owner {
-                if state.uses.get(&owner_id).is_some_and(|entry| {
-                    entry.exclusive && keys.iter().all(|key| entry.keys.contains(key))
-                }) {
-                    return MAINTENANCE_OWNER
-                        .try_with(Clone::clone)
-                        .map_err(|_| "维护授权已失效".into());
-                }
-            }
-        }
-        for (id, entry) in &state.uses {
+        owner: Option<uuid::Uuid>,
+    ) -> Result<(), String> {
+        for (id, entry) in &self.uses {
             if Some(*id) == owner {
                 continue;
             }
@@ -134,25 +127,61 @@ impl ResourceLease {
                 return Err("外部 CLI 正在使用或维护中，请稍后重试".into());
             }
         }
+        Ok(())
+    }
+    fn insert_lease(
+        &mut self,
+        keys: Vec<String>,
+        exclusive: bool,
+        pending: bool,
+        writer: Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) -> ResourceLease {
         let id = uuid::Uuid::new_v4();
-        state.uses.insert(
+        self.uses.insert(
             id,
             ResourceEntry {
                 keys,
                 exclusive,
                 conversation: PROCESS_CONVERSATION.try_with(Clone::clone).ok(),
                 pending,
+                _writer: writer,
             },
         );
-        Ok(Self(Arc::new(ResourceLeaseOwner { id })))
+        ResourceLease(Arc::new(ResourceLeaseOwner { id }))
+    }
+    fn writer_queue(&mut self, key: String) -> Arc<tokio::sync::Mutex<()>> {
+        self.writers.retain(|_, queue| queue.strong_count() > 0);
+        let slot = self.writers.entry(key).or_default();
+        slot.upgrade().unwrap_or_else(|| {
+            let queue = Arc::new(tokio::sync::Mutex::new(()));
+            *slot = Arc::downgrade(&queue);
+            queue
+        })
+    }
+}
+impl ResourceLease {
+    pub(crate) fn acquire(keys: Vec<String>, exclusive: bool) -> Result<Self, String> {
+        Self::acquire_use(keys, exclusive, false)
     }
     pub(crate) fn pending(agent: &str) -> Result<Self, String> {
-        Self::acquire_allowing(
-            vec![format!("agent:{agent}")],
-            false,
-            &Default::default(),
-            true,
-        )
+        Self::acquire_use(vec![format!("agent:{agent}")], false, true)
+    }
+    fn acquire_use(keys: Vec<String>, exclusive: bool, pending: bool) -> Result<Self, String> {
+        let mut state = RESOURCE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let owner = MAINTENANCE_OWNER.try_with(ResourceLease::id).ok();
+        if exclusive
+            && owner
+                .and_then(|id| state.uses.get(&id))
+                .is_some_and(|entry| {
+                    entry.exclusive && keys.iter().all(|key| entry.keys.contains(key))
+                })
+        {
+            return MAINTENANCE_OWNER
+                .try_with(Clone::clone)
+                .map_err(|_| "维护授权已失效".into());
+        }
+        state.check_available(&keys, exclusive, &Default::default(), owner)?;
+        Ok(state.insert_lease(keys, exclusive, pending, None))
     }
     pub(crate) fn id(&self) -> uuid::Uuid {
         self.0.id
@@ -165,6 +194,7 @@ impl Drop for ResourceLeaseOwner {
             .unwrap_or_else(|e| e.into_inner())
             .uses
             .remove(&self.id);
+        RESOURCE_RELEASED.notify_waiters();
     }
 }
 
@@ -550,6 +580,7 @@ impl TurnBusyGuard {
 impl Drop for TurnBusyGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+        RESOURCE_RELEASED.notify_waiters();
     }
 }
 
@@ -748,6 +779,23 @@ pub(crate) struct LiveSessionDiagnostic {
     pub(crate) registry_size: usize,
 }
 
+struct MaintenanceClaim {
+    lease: ResourceLease,
+    controls: Vec<LiveSession>,
+    idle: std::collections::HashSet<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaintenanceWait {
+    Cli,
+    Writer,
+}
+
+enum MaintenanceBlock {
+    Cli(String),
+    Writer(Arc<tokio::sync::Mutex<()>>),
+}
+
 impl LiveSessionRegistry {
     pub(crate) async fn prepare_settings_change(
         &self,
@@ -757,32 +805,68 @@ impl LiveSessionRegistry {
         if agents.is_empty() {
             return Ok(None);
         }
-        self.prepare_maintenance(agents, keys).await.map(Some)
+        self.prepare_maintenance(agents, keys, None, None).await
     }
 
     pub(crate) async fn prepare_maintenance(
         &self,
         agents: &[String],
         keys: Vec<String>,
-    ) -> Result<ResourceLease, String> {
-        let (lease, controls, idle) = {
-            let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            let affected: Vec<_> = sessions
-                .iter()
-                .filter(|(_, session)| agents.contains(&session.agent_id))
-                .map(|(id, session)| (id.clone(), session.busy.load(Ordering::Acquire)))
-                .collect();
-            if affected.iter().any(|(_, busy)| *busy) {
-                return Err("外部 CLI 正在回复，请结束后重试".into());
+        writer_key: Option<String>,
+        wait: Option<(&CancellationToken, &(dyn Fn(MaintenanceWait) + Sync))>,
+    ) -> Result<Option<ResourceLease>, String> {
+        let writer = writer_key.map(|key| {
+            RESOURCE_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .writer_queue(key)
+        });
+        let mut granted = None;
+        let mut announced = None;
+        let MaintenanceClaim {
+            lease,
+            controls,
+            idle,
+        } = loop {
+            if wait.is_some_and(|(cancel, _)| cancel.is_cancelled()) {
+                return Ok(None);
             }
-            let idle: std::collections::HashSet<String> =
-                affected.iter().map(|(id, _)| id.clone()).collect();
-            let lease = ResourceLease::acquire_allowing(keys, true, &idle, false)?;
-            let controls: Vec<_> = affected
-                .into_iter()
-                .filter_map(|(id, _)| sessions.remove(&id))
-                .collect();
-            (lease, controls, idle)
+            // Subscribe before the atomic busy check, including releases during that check.
+            let released = RESOURCE_RELEASED.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
+            let blocked =
+                match self.claim_maintenance(agents, &keys, writer.as_ref(), granted.take()) {
+                    Ok(claim) => break claim,
+                    Err(blocked) => blocked,
+                };
+            let Some((cancel, on_wait)) = wait else {
+                return Err(match blocked {
+                    MaintenanceBlock::Cli(error) => error,
+                    MaintenanceBlock::Writer(_) => "其他安装正在写入，请稍后重试".into(),
+                });
+            };
+            let reason = match &blocked {
+                MaintenanceBlock::Cli(_) => MaintenanceWait::Cli,
+                MaintenanceBlock::Writer(_) => MaintenanceWait::Writer,
+            };
+            if announced != Some(reason) {
+                on_wait(reason);
+                announced = Some(reason);
+            }
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(None),
+                permit = async {
+                    match blocked {
+                        MaintenanceBlock::Cli(_) => {
+                            released.await;
+                            None
+                        }
+                        MaintenanceBlock::Writer(queue) => Some(queue.lock_owned().await),
+                    }
+                } => granted = permit,
+            }
         };
         for session in &controls {
             session.control.close().await?;
@@ -790,6 +874,9 @@ impl LiveSessionRegistry {
         drop(controls);
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
+                let released = RESOURCE_RELEASED.notified();
+                tokio::pin!(released);
+                released.as_mut().enable();
                 let alive = RESOURCE_STATE
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -804,12 +891,58 @@ impl LiveSessionRegistry {
                 if !alive {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                released.await;
             }
         })
         .await
         .map_err(|_| "CLI 进程尚未退出，请稍后重试".to_string())?;
-        Ok(lease)
+        Ok(Some(lease))
+    }
+
+    fn claim_maintenance(
+        &self,
+        agents: &[String],
+        keys: &[String],
+        writer: Option<&Arc<tokio::sync::Mutex<()>>>,
+        granted: Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) -> Result<MaintenanceClaim, MaintenanceBlock> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut resources = RESOURCE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let owners: std::collections::HashSet<_> = resources
+            .uses
+            .values()
+            .filter(|entry| entry.keys.iter().any(|key| keys.contains(key)))
+            .filter_map(|entry| entry.conversation.as_ref())
+            .collect();
+        let mut idle = std::collections::HashSet::new();
+        for (id, session) in sessions.iter() {
+            if agents.contains(&session.agent_id) || owners.contains(id) {
+                if session.busy.load(Ordering::Acquire) {
+                    return Err(MaintenanceBlock::Cli(
+                        "外部 CLI 正在回复，请结束后重试".into(),
+                    ));
+                }
+                idle.insert(id.clone());
+            }
+        }
+        resources
+            .check_available(keys, true, &idle, None)
+            .map_err(MaintenanceBlock::Cli)?;
+        let guard = match (granted, writer) {
+            (Some(granted), _) => Some(granted),
+            (None, Some(queue)) => match queue.clone().try_lock_owned() {
+                Ok(guard) => Some(guard),
+                Err(_) => return Err(MaintenanceBlock::Writer(queue.clone())),
+            },
+            (None, None) => None,
+        };
+        let lease = resources.insert_lease(keys.to_vec(), true, false, guard);
+        let controls = idle.iter().filter_map(|id| sessions.remove(id)).collect();
+        Ok(MaintenanceClaim {
+            lease,
+            controls,
+            idle,
+        })
     }
 
     pub(crate) fn reserve(&self, conversation_id: &str) -> Result<Arc<SessionLease>, String> {
@@ -1186,24 +1319,48 @@ mod tests {
             }
         });
         session.control = control.clone();
-        session.busy.store(true, Ordering::Release);
-        let busy = session.busy.clone();
+        let turn = TurnBusyGuard::new(session.busy.clone());
         registry.register(conversation.clone(), session);
         assert!(registry
             .prepare_settings_change(&[agent.clone()], keys.clone())
             .await
             .is_err());
         assert!(!control.is_closed());
-        busy.store(false, Ordering::Release);
+        let cancel = CancellationToken::new();
+        let agents = [agent.clone()];
+        let install =
+            registry.prepare_maintenance(&agents, keys.clone(), None, Some((&cancel, &|_| {})));
+        tokio::pin!(install);
+        assert!(futures::poll!(&mut install).is_pending());
+        cancel.cancel();
+        assert!(install.await.unwrap().is_none());
+        assert!(registry.is_current(&conversation, &control));
+        let retry = CancellationToken::new();
+        let writer = Some(format!("prefix:{agent}"));
+        let other = registry
+            .prepare_maintenance(&[], vec![], writer.clone(), Some((&retry, &|_| {})))
+            .await
+            .unwrap()
+            .unwrap();
+        let install =
+            registry.prepare_maintenance(&agents, keys.clone(), writer, Some((&retry, &|_| {})));
+        tokio::pin!(install);
+        assert!(futures::poll!(&mut install).is_pending());
         let pending = ResourceLease::pending(&agent).unwrap();
+        drop(turn);
+        assert!(futures::poll!(&mut install).is_pending());
         assert!(registry
             .prepare_settings_change(&[agent.clone()], keys.clone())
             .await
             .is_err());
         drop(pending);
-        let guard = registry
-            .prepare_settings_change(&[agent.clone()], keys)
+        assert!(futures::poll!(&mut install).is_pending());
+        assert!(registry.is_current(&conversation, &control));
+        assert!(!control.is_closed());
+        drop(other);
+        let guard = tokio::time::timeout(Duration::from_secs(3), install)
             .await
+            .unwrap()
             .unwrap()
             .unwrap();
         assert!(control.is_closed());
@@ -1261,20 +1418,14 @@ mod tests {
         retry.wait().await.unwrap();
     }
     #[test]
-    fn maintenance_excludes_pending_start_and_shared_prefix() {
+    fn maintenance_excludes_pending_start_of_the_same_cli() {
         let id = format!("fixture-{}", uuid::Uuid::new_v4());
         let pending = ResourceLease::pending(&id).unwrap();
         assert!(ResourceLease::acquire(vec![format!("agent:{id}")], true).is_err());
         drop(pending);
-        let maintenance =
-            ResourceLease::acquire(vec![format!("agent:{id}"), format!("prefix:{id}")], true)
-                .unwrap();
+        let maintenance = ResourceLease::acquire(vec![format!("agent:{id}")], true).unwrap();
         assert!(ResourceLease::pending(&id).is_err());
-        assert!(ResourceLease::acquire(
-            vec![format!("agent:other-{id}"), format!("prefix:{id}")],
-            false
-        )
-        .is_err());
+        assert!(ResourceLease::pending(&format!("other-{id}")).is_ok());
         drop(maintenance);
         assert!(ResourceLease::pending(&id).is_ok());
     }

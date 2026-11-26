@@ -752,6 +752,7 @@ pub fn run() {
             external_agents::commands::chat_external_cli_fetch_relay_models,
             external_agents::installer::chat_external_cli_install_info,
             external_agents::installer::chat_external_cli_install,
+            external_agents::installer::chat_external_cli_cancel_install_wait,
             external_agents::installer::chat_external_cli_open_config_dir,
             external_agents::pi_extensions::chat_pi_extensions_inventory,
             external_agents::pi_extensions::chat_pi_extension_set_enabled,

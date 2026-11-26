@@ -52,6 +52,23 @@ pub struct AgentChild {
     group: Option<u32>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct CliSpawnInterrupted(pub(super) String);
+
+impl std::fmt::Display for CliSpawnInterrupted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CliSpawnInterrupted {}
+
+impl CliSpawnInterrupted {
+    pub(super) fn from_io(error: &std::io::Error) -> Option<Self> {
+        error.get_ref()?.downcast_ref::<Self>().cloned()
+    }
+}
+
 pub(super) fn acquire_cli_spawn_resource(
     command: &mut Command,
 ) -> std::io::Result<Option<super::session::live::ResourceLease>> {
@@ -71,17 +88,20 @@ pub(super) fn acquire_cli_spawn_resource(
                 Option<u64>,
             ) = serde_json::from_str(&value.to_string_lossy()).map_err(std::io::Error::other)?;
             if super::session::live::resource_path(&binary) != expected {
-                return Err(std::io::Error::other("CLI executable changed before spawn"));
+                return Err(std::io::Error::other(CliSpawnInterrupted(
+                    "CLI executable changed before spawn".into(),
+                )));
             }
             let keys = super::session::live::runtime_resources(agent.as_deref(), &binary);
             let lease = super::session::live::ResourceLease::acquire(keys, false)
+                .map_err(CliSpawnInterrupted)
                 .map_err(std::io::Error::other)?;
             if agent.as_deref().is_some_and(|agent| {
                 revision.is_none() || super::overrides::launch_revision(agent) != revision
             }) {
-                return Err(std::io::Error::other(
-                    "CLI configuration changed before spawn",
-                ));
+                return Err(std::io::Error::other(CliSpawnInterrupted(
+                    "CLI configuration changed before spawn".into(),
+                )));
             }
             Ok(lease)
         })
@@ -674,18 +694,24 @@ fn probe_cache_key(path: &Path) -> Option<String> {
 /// `--version`（实测 6.6ms ~ 328ms 不等），之后走 `PROBE_CACHE` ⇒ 稳态只剩
 /// `which -a` 的 ~2-3ms，与改动前基本持平。
 pub async fn resolve_binary(def: &RuntimeAgentDef) -> Option<PathBuf> {
+    try_resolve_binary(def).await.ok().flatten()
+}
+
+pub(super) async fn try_resolve_binary(
+    def: &RuntimeAgentDef,
+) -> Result<Option<PathBuf>, CliSpawnInterrupted> {
     // 用户在设置页指定了路径就**只认它**：静默回退到 PATH 会让「我明明指了这个二进制」
     // 与实际跑的东西对不上，比诚实报「未安装」更难查。
     if let Some(path) = crate::external_agents::overrides::custom_path(def.id) {
         let path = crate::external_agents::wsl::normalize_custom_path(path).await;
-        return probe_executable_cached(&path, def.version_args)
-            .await
-            .then_some(path);
+        return Ok(probe_executable_cached(&path, def.version_args)
+            .await?
+            .then_some(path));
     }
     for candidate in std::iter::once(def.bin).chain(def.fallback_bins.iter().copied()) {
         for path in which_all(candidate).await {
-            if probe_executable_cached(&path, def.version_args).await {
-                return Some(path);
+            if probe_executable_cached(&path, def.version_args).await? {
+                return Ok(Some(path));
             }
         }
     }
@@ -709,8 +735,8 @@ pub async fn resolve_binary(def: &RuntimeAgentDef) -> Option<PathBuf> {
         let relative = "DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh";
         for root in roots.into_iter().flatten() {
             let path = root.join(relative);
-            if path.is_file() && probe_executable_cached(&path, def.version_args).await {
-                return Some(path);
+            if path.is_file() && probe_executable_cached(&path, def.version_args).await? {
+                return Ok(Some(path));
             }
         }
     }
@@ -724,8 +750,8 @@ pub async fn resolve_binary(def: &RuntimeAgentDef) -> Option<PathBuf> {
             directories::UserDirs::new().map(|d| d.home_dir().join(".local/bin/agy"))
         };
         if let Some(path) = path.filter(|p| p.is_file()) {
-            if probe_executable_cached(&path, def.version_args).await {
-                return Some(path);
+            if probe_executable_cached(&path, def.version_args).await? {
+                return Ok(Some(path));
             }
         }
     }
@@ -733,23 +759,26 @@ pub async fn resolve_binary(def: &RuntimeAgentDef) -> Option<PathBuf> {
     // 不插到 PATH 候选前面：本机已经装了 Windows 版 CLI 的人不能被 WSL 里同名二进制抢走。
     for candidate in std::iter::once(def.bin).chain(def.fallback_bins.iter().copied()) {
         if let Some(path) = crate::external_agents::wsl::linux_bin_unc(candidate).await {
-            if probe_executable_cached(&path, def.version_args).await {
-                return Some(path);
+            if probe_executable_cached(&path, def.version_args).await? {
+                return Ok(Some(path));
             }
         }
     }
-    None
+    Ok(None)
 }
 
 /// `probe_executable` + `PROBE_CACHE`（key 含 mtime/size，换版本自动失效）。
-async fn probe_executable_cached(path: &Path, version_args: &[&str]) -> bool {
+async fn probe_executable_cached(
+    path: &Path,
+    version_args: &[&str],
+) -> Result<bool, CliSpawnInterrupted> {
     let key = probe_cache_key(path);
     if let Some(key) = key.as_deref() {
         if let Some(cached) = PROBE_CACHE.lock().ok().and_then(|c| c.get(key).cloned()) {
-            return cached.executable;
+            return Ok(cached.executable);
         }
     }
-    let (ok, version) = probe_executable(path, version_args).await;
+    let (ok, version) = probe_executable(path, version_args).await?;
     if let (Some(key), Ok(mut cache)) = (key, PROBE_CACHE.lock()) {
         cache.insert(
             key,
@@ -759,7 +788,7 @@ async fn probe_executable_cached(path: &Path, version_args: &[&str]) -> bool {
             },
         );
     }
-    ok
+    Ok(ok)
 }
 
 /// 探活时顺手记下的 CLI 版本号（`--version` 首行），**不起任何新进程**。
@@ -813,7 +842,10 @@ pub fn clear_probe_cache() {
 /// 返回 `(能否启动, --version 首行)`。第二项**只是搭便车**：这次子进程本来就要跑，
 /// 顺手把 stdout 接住给版本门控用（此前是 `Stdio::null()` 直接丢掉）。它拿不到时一律
 /// `None`，绝不影响第一项的判定 —— 未登录的 CLI 完全可能既非零退出又没有版本输出。
-async fn probe_executable(path: &Path, version_args: &[&str]) -> (bool, Option<String>) {
+async fn probe_executable(
+    path: &Path,
+    version_args: &[&str],
+) -> Result<(bool, Option<String>), CliSpawnInterrupted> {
     let mut command = cli_probe_command(path);
     command
         .args(version_args)
@@ -825,15 +857,20 @@ async fn probe_executable(path: &Path, version_args: &[&str]) -> (bool, Option<S
     let child = match AgentChild::spawn(&mut command) {
         Ok(child) => child,
         // spawn 失败 = 这个候选不是个能跑的可执行文件（EACCES / ENOEXEC / ENOENT）。
-        Err(_) => return (false, None),
+        Err(err) => {
+            if let Some(interrupted) = CliSpawnInterrupted::from_io(&err) {
+                return Err(interrupted);
+            }
+            return Ok((false, None));
+        }
     };
     // 超时时这个 future 被丢弃 ⇒ 连带丢弃 Child ⇒ `kill_on_drop(true)` 收尾，
     // 与改动前的显式 `start_kill()` 等价。
     let is_wsl = crate::external_agents::wsl::is_wsl_target(path);
-    match timeout(PROBE_TIMEOUT, child.wait_with_output()).await {
+    let outcome = match timeout(PROBE_TIMEOUT, child.wait_with_output()).await {
         Ok(Ok(output)) => {
             if is_wsl && crate::external_agents::wsl::wsl_stdout_is_system_error(&output.stdout) {
-                return (false, None);
+                return Ok((false, None));
             }
             let text = if is_wsl {
                 crate::external_agents::wsl::decode_wsl_output(&output.stdout)
@@ -844,9 +881,9 @@ async fn probe_executable(path: &Path, version_args: &[&str]) -> (bool, Option<S
         }
         // Win32：进程能起来就算在。WSL：真正启动的是 wsl.exe 垫片——没装组件时它
         // 会卡在 MSI 几十秒（本机 61s / REGDB_E_CLASSNOTREG），超时绝不等于 CLI 在。
-        Ok(Err(_)) => (!is_wsl, None),
-        Err(_) => (!is_wsl, None),
-    }
+        Ok(Err(_)) | Err(_) => (!is_wsl, None),
+    };
+    Ok(outcome)
 }
 
 /// `--version` 输出里的版本行：首个非空行，裁到 `VERSION_LINE_CAP` 字符。
@@ -992,6 +1029,41 @@ pub fn parse_json_line(line: &str) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn maintenance_conflict_does_not_cache_a_working_cli_as_unavailable() {
+        use crate::external_agents::session::live::{runtime_resources, ResourceLease};
+
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let binary = {
+            let path = directory.path().join("test-cli.cmd");
+            std::fs::write(&path, "@echo off\r\necho test-cli 1.2.3\r\n").unwrap();
+            path
+        };
+        #[cfg(unix)]
+        let binary = {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = directory.path().join("test-cli");
+            std::fs::write(&path, "#!/bin/sh\necho test-cli 1.2.3\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let maintenance = ResourceLease::acquire(runtime_resources(None, &binary), true).unwrap();
+        assert!(probe_executable_cached(&binary, &["--version"])
+            .await
+            .is_err());
+        drop(maintenance);
+
+        assert!(probe_executable_cached(&binary, &["--version"])
+            .await
+            .unwrap());
+        assert_eq!(
+            cached_cli_version(&binary).as_deref(),
+            Some("test-cli 1.2.3")
+        );
+    }
 
     #[tokio::test]
     async fn finished_probe_releases_the_maintenance_lease_before_returning() {
@@ -1332,7 +1404,7 @@ mod tests {
     async fn probing_a_wsl_unc_when_wsl_is_broken_is_not_installed() {
         let fake = std::path::PathBuf::from(r"\\wsl$\Ubuntu\usr\bin\claude");
         let started = std::time::Instant::now();
-        let (ok, _) = probe_executable(&fake, &["--version"]).await;
+        let (ok, _) = probe_executable(&fake, &["--version"]).await.unwrap();
         assert!(!ok, "wsl.exe MSI stub must not count as an installed CLI");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(8),
@@ -1521,7 +1593,7 @@ mod probe_tests {
     async fn probe_accepts_a_working_binary() {
         let f = Fixtures::new("ok");
         let good = f.script("good", "#!/bin/sh\necho v1.2.3\n");
-        let (ok, version) = probe_executable(&good, &["--version"]).await;
+        let (ok, version) = probe_executable(&good, &["--version"]).await.unwrap();
         assert!(ok);
         // 探活顺手把版本行接住了（此前 stdout 丢进 null，版本门控只能另起一次进程）。
         assert_eq!(version.as_deref(), Some("v1.2.3"));
@@ -1534,7 +1606,7 @@ mod probe_tests {
     async fn probe_accepts_nonzero_exit_because_unauthenticated_clis_exit_nonzero() {
         let f = Fixtures::new("notauth");
         let notauth = f.script("notauth", "#!/bin/sh\necho 'Not logged in' >&2\nexit 1\n");
-        let (ok, version) = probe_executable(&notauth, &["--version"]).await;
+        let (ok, version) = probe_executable(&notauth, &["--version"]).await.unwrap();
         assert!(ok, "非零退出被当成不存在——未登录的 CLI 会被误判为未安装");
         // 版本拿不到（输出全在 stderr）时必须是 None，且**不影响**「存在」的判定。
         assert_eq!(version, None);
@@ -1547,12 +1619,14 @@ mod probe_tests {
         assert!(
             !probe_executable(&f.unreadable("noexec"), &["--version"])
                 .await
+                .unwrap()
                 .0
         );
         // ENOENT：路径根本不存在（等价于断掉的 symlink）
         assert!(
             !probe_executable(&f.0.join("missing"), &["--version"])
                 .await
+                .unwrap()
                 .0
         );
     }
@@ -1570,6 +1644,7 @@ mod probe_tests {
         assert!(
             probe_executable(&f.empty_exec("empty"), &["--version"])
                 .await
+                .unwrap()
                 .0
         );
     }
@@ -1580,7 +1655,7 @@ mod probe_tests {
         let f = Fixtures::new("slow");
         let slow = f.script("slow", "#!/bin/sh\nsleep 30\n");
         let started = std::time::Instant::now();
-        assert!(probe_executable(&slow, &["--version"]).await.0);
+        assert!(probe_executable(&slow, &["--version"]).await.unwrap().0);
         assert!(
             started.elapsed() < PROBE_TIMEOUT + Duration::from_secs(2),
             "超时守卫没生效，探活被挂死"
@@ -1679,7 +1754,7 @@ mod probe_tests {
                 .unwrap_or(0)
         };
 
-        assert!(probe_executable(&bin, &["--version"]).await.0);
+        assert!(probe_executable(&bin, &["--version"]).await.unwrap().0);
         assert_eq!(count(), 1, "第一次应真的启动一次");
 
         // 走 resolve_binary 的缓存路径：同一个 key 命中后不得再起进程。

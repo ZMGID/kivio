@@ -4,7 +4,7 @@ import { Button, IconButton } from '../../components/Button'
 import { i18n, type Lang } from '../../components/i18n'
 import { getCliInstallJob } from '../cliInstallJobs'
 import { Toggle } from '../components'
-import { deriveCliMaintenance, getCliInstallInfo } from './cliMaintenance'
+import { cliInstallWaitLabel, deriveCliMaintenance, getCliInstallInfo } from './cliMaintenance'
 import { IconBox } from './shared'
 
 export type AgentRow = {
@@ -73,7 +73,8 @@ export function AgentSidebar({
       <div className="kv-cli-nav-list custom-scrollbar">
         {rows.map(({ agent, disabled, summary, attention }) => {
           const maintenance = deriveCliMaintenance(agent, getCliInstallInfo(agent.id))
-          const running = getCliInstallJob(agent.id).running
+          const job = getCliInstallJob(agent.id)
+          const waitLabel = cliInstallWaitLabel(job, agent.name, t)
           const selected = agent.id === selectedId
           const off = disabled || !agent.available
           return (
@@ -95,8 +96,8 @@ export function AgentSidebar({
                     {agent.available && maintenance.localVersion && (
                       <span className="kv-cli-nav-version">{maintenance.localVersion}</span>
                     )}
-                    {running ? (
-                      <span className="kv-cli-updating-dot" aria-label={t.externalAgentsInstalling} />
+                    {job.running ? (
+                      <span className="kv-cli-updating-dot" aria-label={waitLabel ?? t.externalAgentsInstalling} />
                     ) : (
                       !off &&
                       maintenance.state === 'outdated' && (
@@ -112,7 +113,7 @@ export function AgentSidebar({
                       )
                     )}
                   </span>
-                  <span className={`kv-cli-nav-sub ${attention ? 'warn' : ''}`}>{summary}</span>
+                  <span className={`kv-cli-nav-sub ${attention ? 'warn' : ''}`}>{waitLabel ?? summary}</span>
                 </span>
               </button>
               {agent.available && (

@@ -1,7 +1,7 @@
 //! 设置页「本地 CLI Agent」的安装/更新支撑：官方安装方式表、npm registry 最新版查询、
 //! 带流式日志的安装执行、配置目录打开。
 //!
-//! ponytail: 查版本 / 跑官方命令 / 打开目录。**没有**卸载、没有取消、没有多后端策略协商。
+//! ponytail: 查版本 / 跑官方命令 / 打开目录。等待可取消，命令启动后执行到结束或超时。
 //! 自动维护只执行预览捕获的安装目标；未证明归属的安装使用官方手动指引。
 //! npm / pnpm / yarn / bun 的安装命令一律钉死 `registry.npmjs.org`：国内镜像经常
 //! 缺 `@deepseek-ai/*` 这类新包，用户自己的 `.npmrc` 不能把安装带跑偏。
@@ -20,7 +20,8 @@ use crate::external_agents::types::{
 use crate::proc::NoConsoleWindow;
 
 use super::session::live::{
-    resource_path, runtime_resources, LiveSessionRegistry, MAINTENANCE_OWNER,
+    npm_package_resource, resource_path, runtime_resources, LiveSessionRegistry, MaintenanceWait,
+    MAINTENANCE_OWNER,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -1243,14 +1244,71 @@ async fn maintenance_preview(
     (latest, prepared)
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum InstallProgress<'a> {
+    WaitingForCli,
+    WaitingForWriter,
+    Running,
+    Output { line: &'a str },
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct InstallLogEvent {
-    agent_id: String,
-    plan_id: String,
-    line: Option<String>,
-    done: bool,
-    success: bool,
+struct InstallLogEvent<'a> {
+    agent_id: &'a str,
+    plan_id: &'a str,
+    #[serde(flatten)]
+    progress: InstallProgress<'a>,
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallOutcome {
+    Installed,
+    Cancelled,
+}
+
+use tokio_util::sync::CancellationToken;
+
+struct InstallJob {
+    agent: String,
+    cancel: CancellationToken,
+}
+
+static INSTALL_JOBS: LazyLock<Mutex<HashMap<String, (String, CancellationToken)>>> =
+    LazyLock::new(Default::default);
+
+impl InstallJob {
+    fn start(agent: &str, plan: &str) -> Result<Self, String> {
+        let mut jobs = INSTALL_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+        if jobs.contains_key(agent) {
+            return Err("此 CLI 已有安装或更新任务".into());
+        }
+        let cancel = CancellationToken::new();
+        jobs.insert(agent.into(), (plan.into(), cancel.clone()));
+        Ok(Self {
+            agent: agent.into(),
+            cancel,
+        })
+    }
+}
+
+impl Drop for InstallJob {
+    fn drop(&mut self) {
+        INSTALL_JOBS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.agent);
+    }
+}
+
+#[tauri::command]
+pub fn chat_external_cli_cancel_install_wait(plan_id: String) {
+    let jobs = INSTALL_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, cancel)) = jobs.values().find(|(plan, _)| plan == &plan_id) {
+        cancel.cancel();
+    }
 }
 
 const INSTALL_TIMEOUT_SECS: u64 = 300;
@@ -1367,49 +1425,35 @@ fn flush_progress_line(acc: &mut Vec<u8>) -> Option<String> {
     (!line.is_empty()).then_some(line)
 }
 
-/// 跑 `install_command` 并把 stdout/stderr 按行流到 `external-cli-install` 事件。
-///
-/// ponytail: 不支持中途取消——安装是低频一次性动作，超时（300s）就自己结束。
 #[tauri::command]
 pub async fn chat_external_cli_install(
     app: AppHandle,
     state: tauri::State<'_, crate::state::AppState>,
     agent_id: String,
     plan_id: String,
-) -> Result<(), String> {
+) -> Result<InstallOutcome, String> {
     let def = get_agent_def(&agent_id).ok_or("未知外部 Agent")?;
+    let job = InstallJob::start(&agent_id, &plan_id)?;
     let plan = consume_plan(&plan_id, &agent_id)?;
-    let emit = |line: String| {
+    let publish = |progress: InstallProgress<'_>| {
         let _ = app.emit(
             "external-cli-install",
             InstallLogEvent {
-                agent_id: agent_id.clone(),
-                plan_id: plan_id.clone(),
-                line: Some(line),
-                done: false,
-                success: false,
+                agent_id: &agent_id,
+                plan_id: &plan_id,
+                progress,
             },
         );
     };
-    let result = execute_install_plan(
+    execute_install_plan(
         &state.http,
         state.external_live_sessions(),
         def,
         &plan,
-        &emit,
+        &job.cancel,
+        &publish,
     )
-    .await;
-    let _ = app.emit(
-        "external-cli-install",
-        InstallLogEvent {
-            agent_id,
-            plan_id,
-            line: None,
-            done: true,
-            success: result.is_ok(),
-        },
-    );
-    result
+    .await
 }
 
 async fn execute_install_plan(
@@ -1417,49 +1461,74 @@ async fn execute_install_plan(
     sessions: &LiveSessionRegistry,
     def: &super::types::RuntimeAgentDef,
     plan: &PreparedInstall,
-    emit: &impl Fn(String),
-) -> Result<(), String> {
+    cancel: &CancellationToken,
+    publish: &(impl Fn(InstallProgress<'_>) + Sync),
+) -> Result<InstallOutcome, String> {
     let mut keys = runtime_resources(Some(def.id), &plan.binary);
-    match &plan.source {
+    if let InstallSource::NewNpm { prefix } = &plan.source {
+        if let Some(package) = def.install.npm_package {
+            keys.push(npm_package_resource(prefix, package));
+        }
+    }
+    let writer = match &plan.source {
         InstallSource::NewNpm { prefix } | InstallSource::Npm { prefix, .. } => {
-            keys.push(format!("prefix:{}", resource_path(prefix)));
+            Some(format!("prefix:{}", resource_path(prefix)))
         }
-        InstallSource::Managed(source) => keys.extend(source.lock_key()),
+        InstallSource::Managed(source) => source.lock_key(),
+    };
+    let Some(lease) = sessions
+        .prepare_maintenance(
+            std::slice::from_ref(&plan.agent),
+            keys,
+            writer,
+            Some((cancel, &|reason| {
+                publish(match reason {
+                    MaintenanceWait::Cli => InstallProgress::WaitingForCli,
+                    MaintenanceWait::Writer => InstallProgress::WaitingForWriter,
+                })
+            })),
+        )
+        .await?
+    else {
+        return Ok(InstallOutcome::Cancelled);
+    };
+    if cancel.is_cancelled() {
+        return Ok(InstallOutcome::Cancelled);
     }
-    let lease = sessions
-        .prepare_maintenance(std::slice::from_ref(&plan.agent), keys)
-        .await?;
-    let stale = || "CLI 路径、配置或安装来源已改变，请刷新安装计划".to_string();
-    if !plan.identity.still_current(def, &plan.binary) {
-        return Err(stale());
-    }
-    match &plan.source {
-        InstallSource::Npm { prefix, package } => {
-            if proven_npm_prefix(&plan.binary, package)
-                .as_deref()
-                .map(resource_path)
-                != Some(resource_path(prefix))
-            {
-                return Err(stale());
-            }
-        }
-        InstallSource::Managed(source) => {
-            if ManagedSource::resolve(def, &plan.binary, &plan.environment).as_ref() != Some(source)
-            {
-                return Err(stale());
-            }
-            let offer = source.offer(http, &plan.binary, &plan.environment).await?;
-            if offer.version != plan.version
-                || offer.action != plan.action
-                || !plan.identity.still_current(def, &plan.binary)
-            {
-                return Err(stale());
-            }
-        }
-        InstallSource::NewNpm { .. } => {}
-    }
+    publish(InstallProgress::Running);
+    let emit = &|line: String| publish(InstallProgress::Output { line: &line });
     MAINTENANCE_OWNER
         .scope(lease, async {
+            let stale = || "CLI 路径、配置或安装来源已改变，请刷新安装计划".to_string();
+            if !plan.identity.still_current(def, &plan.binary) {
+                return Err(stale());
+            }
+            match &plan.source {
+                InstallSource::Npm { prefix, package } => {
+                    if proven_npm_prefix(&plan.binary, package)
+                        .as_deref()
+                        .map(resource_path)
+                        != Some(resource_path(prefix))
+                    {
+                        return Err(stale());
+                    }
+                }
+                InstallSource::Managed(source) => {
+                    if ManagedSource::resolve(def, &plan.binary, &plan.environment).as_ref()
+                        != Some(source)
+                    {
+                        return Err(stale());
+                    }
+                    let offer = source.offer(http, &plan.binary, &plan.environment).await?;
+                    if offer.version != plan.version
+                        || offer.action != plan.action
+                        || !plan.identity.still_current(def, &plan.binary)
+                    {
+                        return Err(stale());
+                    }
+                }
+                InstallSource::NewNpm { .. } => {}
+            }
             match &plan.action {
                 InstallAction::Command(command_plan) => {
                     let mut command = super::spawn::cli_command(&command_plan.program);
@@ -1480,7 +1549,8 @@ async fn execute_install_plan(
                     asset.install(http, def, plan, emit).await?;
                 }
             }
-            finish_cli_install(def, plan, emit).await
+            finish_cli_install(def, plan, emit).await?;
+            Ok(InstallOutcome::Installed)
         })
         .await
 }
@@ -1571,18 +1641,32 @@ esac
         assert_eq!(latest.as_deref(), Some("1.2.4"));
         let plan = plan.unwrap();
         std::fs::write(prefix.join("latest"), "1.2.5").unwrap();
-        assert!(execute_install_plan(&http, &sessions, def, &plan, &|_| {})
-            .await
-            .is_err());
+        assert!(execute_install_plan(
+            &http,
+            &sessions,
+            def,
+            &plan,
+            &CancellationToken::new(),
+            &|_| {}
+        )
+        .await
+        .is_err());
         assert_eq!(
             std::fs::read_link(&binary).unwrap(),
             Path::new("../Cellar/opencode/1.2.3/bin/opencode")
         );
 
         let (_, refreshed) = preview().await;
-        execute_install_plan(&http, &sessions, def, &refreshed.unwrap(), &|_| {})
-            .await
-            .unwrap();
+        execute_install_plan(
+            &http,
+            &sessions,
+            def,
+            &refreshed.unwrap(),
+            &CancellationToken::new(),
+            &|_| {},
+        )
+        .await
+        .unwrap();
         assert_eq!(
             std::fs::read_link(&binary).unwrap(),
             Path::new("../Cellar/opencode/1.2.5/bin/opencode")
@@ -1692,6 +1776,213 @@ esac
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn queued_install_waits_for_its_turn_then_its_writer_and_can_cancel() {
+        use super::super::session::live::ResourceLease;
+        let root = tempfile::tempdir().unwrap();
+        let probe = write_version_probe(root.path(), "echo 1.2.3", "echo 1.2.3");
+        let def = RuntimeAgentDef {
+            id: "queue-fixture",
+            ..get_agent_def("codex").unwrap().clone()
+        };
+        let plan = prepare_install(
+            &def,
+            probe.clone(),
+            InstallSource::NewNpm {
+                prefix: root.path().into(),
+            },
+            "1.2.3",
+            InstallAction::Command(CommandPlan::direct(probe.to_string_lossy(), &[])),
+            std::env::vars_os().collect(),
+        );
+        let sessions = LiveSessionRegistry::default();
+        let http = reqwest::Client::new();
+        let phases = Mutex::new(Vec::new());
+        let publish = |event: InstallProgress<'_>| {
+            let phase = match event {
+                InstallProgress::WaitingForCli => "cli",
+                InstallProgress::WaitingForWriter => "writer",
+                InstallProgress::Running => "running",
+                InstallProgress::Output { .. } => return,
+            };
+            phases.lock().unwrap().push(phase);
+        };
+        let turn = ResourceLease::pending(def.id).unwrap();
+        let cancel = CancellationToken::new();
+        let task = execute_install_plan(&http, &sessions, &def, &plan, &cancel, &publish);
+        tokio::pin!(task);
+        assert!(futures::poll!(&mut task).is_pending());
+        assert_eq!(*phases.lock().unwrap(), ["cli"]);
+        let writer = format!("prefix:{}", resource_path(root.path()));
+        let other_cancel = CancellationToken::new();
+        let other_writer = || {
+            sessions.prepare_maintenance(
+                &[],
+                vec![],
+                Some(writer.clone()),
+                Some((&other_cancel, &|_| {})),
+            )
+        };
+        let std::task::Poll::Ready(Ok(Some(other))) = futures::poll!(Box::pin(other_writer()))
+        else {
+            panic!("waiting turn held prefix");
+        };
+        drop(turn);
+        assert!(futures::poll!(&mut task).is_pending());
+        assert_eq!(*phases.lock().unwrap(), ["cli", "writer"]);
+        cancel.cancel();
+        assert_eq!(task.await.unwrap(), InstallOutcome::Cancelled);
+        assert_eq!(*phases.lock().unwrap(), ["cli", "writer"]);
+        let retry = CancellationToken::new();
+        let task = execute_install_plan(&http, &sessions, &def, &plan, &retry, &publish);
+        tokio::pin!(task);
+        assert!(futures::poll!(&mut task).is_pending());
+        let next_turn = ResourceLease::pending(def.id).expect("turn accepted while writer queued");
+        let next_writer = other_writer();
+        tokio::pin!(next_writer);
+        assert!(futures::poll!(&mut next_writer).is_pending());
+        drop(other);
+        assert!(futures::poll!(&mut task).is_pending());
+        assert_eq!(*phases.lock().unwrap(), ["cli", "writer", "writer", "cli"]);
+        let std::task::Poll::Ready(Ok(Some(next_writer))) = futures::poll!(&mut next_writer) else {
+            panic!("install waiting for a new turn held the writer");
+        };
+        retry.cancel();
+        assert_eq!(task.await.unwrap(), InstallOutcome::Cancelled);
+        drop(next_turn);
+        let retry = CancellationToken::new();
+        let task = execute_install_plan(&http, &sessions, &def, &plan, &retry, &publish);
+        tokio::pin!(task);
+        assert!(futures::poll!(&mut task).is_pending());
+        drop(next_writer);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), task)
+                .await
+                .unwrap()
+                .unwrap(),
+            InstallOutcome::Installed
+        );
+        assert_eq!(
+            *phases.lock().unwrap(),
+            ["cli", "writer", "writer", "cli", "writer", "running"]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "installs official Codex and Grok packages in a temporary npm prefix"]
+    async fn install_grok_during_a_codex_reply() {
+        let root = tempfile::tempdir().unwrap();
+        let prefix = root.path().join("npm");
+        let home = root.path().join("codex");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&prefix).unwrap();
+        let mut env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+        env.retain(|key, _| {
+            !environment_key_matches(key, std::ffi::OsStr::new("npm_config_prefix"))
+        });
+        env.insert("npm_config_prefix".into(), prefix.as_os_str().into());
+        env.insert("CODEX_HOME".into(), home.as_os_str().into());
+        let http = reqwest::Client::new();
+        let sessions = LiveSessionRegistry::default();
+        let install = |agent| {
+            let env = env.clone();
+            let (http, sessions, prefix) = (&http, &sessions, &prefix);
+            async move {
+                let def = get_agent_def(agent).unwrap();
+                let latest = latest_version(http, &def.install).await.unwrap();
+                let plan = prepare_npm_install(http, def, None, None, Some(&latest), env)
+                    .await
+                    .unwrap();
+                assert!(plan.binary.starts_with(prefix));
+                let outcome = tokio::time::timeout(
+                    Duration::from_secs(330),
+                    execute_install_plan(
+                        http,
+                        sessions,
+                        def,
+                        &plan,
+                        &CancellationToken::new(),
+                        &|event| match event {
+                            InstallProgress::Output { line } => println!("{line}"),
+                            InstallProgress::Running => {}
+                            _ => panic!("an unrelated live CLI blocked installation"),
+                        },
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(outcome, InstallOutcome::Installed);
+                plan.binary
+            }
+        };
+        let codex = install("codex").await;
+        let def = get_agent_def("codex").unwrap();
+        assert!(installed_npm_package(def, &codex).is_some());
+        // Hold a real Codex turn at its model request while Grok is installed.
+        let request = CancellationToken::new();
+        let reply = CancellationToken::new();
+        let (started, finish) = (request.clone(), reply.clone());
+        let router = axum::Router::new().route("/v1/responses", axum::routing::post(move || async move {
+            started.cancel();
+            finish.cancelled().await;
+            let item = serde_json::json!({"type":"message","id":"msg_cli","role":"assistant","status":"completed",
+                "content":[{"type":"output_text","text":"INSTALL_TEST_OK"}]});
+            let events = [
+                serde_json::json!({"type":"response.created","response":{"id":"resp_cli","status":"in_progress","output":[]}}),
+                serde_json::json!({"type":"response.output_item.added","output_index":0,"item":{"id":"msg_cli","type":"message","role":"assistant","content":[]}}),
+                serde_json::json!({"type":"response.output_text.delta","item_id":"msg_cli","output_index":0,"content_index":0,"delta":"INSTALL_TEST_OK"}),
+                serde_json::json!({"type":"response.output_item.done","output_index":0,"item":item}),
+                serde_json::json!({"type":"response.completed","response":{"id":"resp_cli","model":"gpt-5","status":"completed","output":[item]}}),
+            ];
+            let body: String = events.iter().map(|event| format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap())).collect();
+            ([("content-type", "text/event-stream")], body)
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        std::fs::write(
+            home.join("config.toml"),
+            format!(
+                r#"
+model = "gpt-5"
+model_provider = "fixture"
+[model_providers.fixture]
+name = "Fixture"
+base_url = "http://127.0.0.1:{port}/v1"
+wire_api = "responses"
+"#
+            ),
+        )
+        .unwrap();
+        let mut command = super::super::spawn::agent_probe_command(def, &codex);
+        command
+            .args([
+                "exec",
+                "--skip-git-repo-check",
+                "--ephemeral",
+                "Reply with INSTALL_TEST_OK",
+            ])
+            .env("CODEX_HOME", &home)
+            .current_dir(root.path())
+            .stdout(std::process::Stdio::piped());
+        let child = super::super::spawn::AgentChild::spawn(&mut command).unwrap();
+        tokio::time::timeout(Duration::from_secs(45), request.cancelled())
+            .await
+            .unwrap();
+        install("grok").await;
+        reply.cancel();
+        let output = tokio::time::timeout(Duration::from_secs(45), child.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "INSTALL_TEST_OK"
+        );
+    }
     #[test]
     fn npm_entry_uses_manifest_alias_and_rejects_comment_only_shim() {
         let def = get_agent_def("opencode").unwrap();
@@ -1796,6 +2087,9 @@ esac
             let (actual_package, actual_prefix) = installed_npm_package(def, &entry).unwrap();
             assert_eq!(actual_package, package);
             assert_eq!(resource_path(&actual_prefix), resource_path(&prefix));
+            let resources = runtime_resources(Some(def.id), &entry);
+            assert!(resources.contains(&npm_package_resource(&prefix, package)));
+            assert!(!resources.contains(&format!("prefix:{}", resource_path(&prefix))));
         }
     }
 
@@ -1828,7 +2122,12 @@ esac
             &LiveSessionRegistry::default(),
             def,
             &plan,
-            &|line| println!("{line}"),
+            &CancellationToken::new(),
+            &|event| {
+                if let InstallProgress::Output { line } = event {
+                    println!("{line}")
+                }
+            },
         )
         .await
         .unwrap();

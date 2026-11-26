@@ -352,9 +352,14 @@ export const externalCliSettingsApi = {
     return invoke<ExternalCliInstallInfo>('chat_external_cli_install_info', { agentId })
   },
 
-  async externalCliInstall(agentId: string, planId: string): Promise<void> {
+  async externalCliInstall(agentId: string, planId: string): Promise<void | 'cancelled'> {
     if (!isTauriRuntime()) return
-    await invoke('chat_external_cli_install', { agentId, planId })
+    const outcome = await invoke<'installed' | 'cancelled'>('chat_external_cli_install', { agentId, planId })
+    if (outcome === 'cancelled') return outcome
+  },
+
+  async cancelExternalCliInstallWait(planId: string): Promise<void> {
+    if (isTauriRuntime()) await invoke('chat_external_cli_cancel_install_wait', { planId })
   },
 
   /** 在系统文件管理器里打开该 CLI 的配置目录。 */
@@ -494,13 +499,10 @@ export const externalCliSettingsApi = {
   },
 }
 
-export interface ExternalCliInstallLog {
+export type ExternalCliInstallLog = {
   agentId: string
   planId: string
-  line: string | null
-  done: boolean
-  success: boolean
-}
+} & ({ kind: 'output'; line: string } | { kind: 'waitingForCli' | 'waitingForWriter' | 'running' })
 
 export async function onExternalCliInstallLog(
   handler: (event: ExternalCliInstallLog) => void,

@@ -11,13 +11,15 @@ import {
   RefreshCw,
   UserRound,
 } from 'lucide-react'
-import type { DetectedExternalAgent } from '../../api/externalCliSettings'
+import { externalCliSettingsApi, type DetectedExternalAgent } from '../../api/externalCliSettings'
+import { notifyError } from '../../components/appNoticeStore'
 import { Button, IconButton } from '../../components/Button'
 import { i18n, type Lang } from '../../components/i18n'
 import { copyToClipboard } from '../../utils/clipboard'
 import { clearCliInstallJob } from '../cliInstallJobs'
 import {
   checkCliInstallInfo,
+  cliInstallWaitLabel,
   deriveCliMaintenance,
   runCliInstall,
   useCliInstallInfo,
@@ -95,6 +97,7 @@ export function MaintenanceCard({
   const job = useCliInstallJob(agent.id)
   const { info, checking, checkedAt } = entry
   const { running, log, result } = job
+  const waitLabel = cliInstallWaitLabel(job, agent.name, t)
   const maintenance = deriveCliMaintenance(agent, entry)
   const { state, latestVersion, localVersion, actionable } = maintenance
   const logRef = useRef<HTMLPreElement | null>(null)
@@ -155,7 +158,12 @@ export function MaintenanceCard({
         label={stateHeadline(state, latestVersion, t)}
         desc={detail}
       >
-        {(actionable || running) && (
+        {job.running && waitLabel ? (
+          <Button size="sm" onClick={() => void externalCliSettingsApi.cancelExternalCliInstallWait(job.planId)
+            .catch(error => notifyError(String(error)))}>
+            {t.externalAgentsCancelWait}
+          </Button>
+        ) : (actionable || running) && (
           <Button
             size="sm"
             variant="primary"
@@ -169,7 +177,7 @@ export function MaintenanceCard({
                 : t.externalAgentsInstall}
           </Button>
         )}
-        {needsAction && !actionable && !running && info && (
+        {needsAction && !actionable && !running && !checking && info && (
           <a
             className="kv-btn sm"
             href={info.docsUrl}
@@ -215,12 +223,12 @@ export function MaintenanceCard({
             role="status"
           >
             {running
-              ? t.externalAgentsInstalling
+              ? waitLabel ?? t.externalAgentsInstalling
               : result === 'ok'
                 ? installDoneLabel(agent.id, state === 'broken', t)
                 : t.externalAgentsInstallFailed}
           </div>
-          {(running || result === 'fail') && (
+          {((running && !waitLabel) || result === 'fail') && (
             <pre ref={logRef} className="kv-cli-log" aria-label={t.externalAgentsInstallLog}>
               {log.length > 0 ? log.join('\n') : t.externalAgentsInstalling}
             </pre>

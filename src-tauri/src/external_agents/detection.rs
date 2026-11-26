@@ -1,4 +1,4 @@
-use crate::external_agents::spawn::CliProcessOutput;
+use crate::external_agents::spawn::{CliProcessOutput, CliSpawnInterrupted};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
@@ -6,13 +6,13 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::external_agents::providers::dsh::{DEFAULT_MODEL as DSH_DEFAULT_MODEL, OFFICIAL_MODELS};
-use crate::external_agents::registry::AGENT_DEFS;
 use crate::external_agents::session::acp::detect_acp_models;
 use crate::external_agents::session::claude_init::detect_claude_models;
 use crate::external_agents::session::codex_app_server::{
     codex_static_fallback_probe, detect_codex_models, merge_codex_model_catalog,
     parse_codex_model_list_result,
 };
+use crate::external_agents::session::live::ResourceLease;
 use crate::external_agents::session::pi_rpc::parse_pi_models;
 use crate::external_agents::types::{
     default_model_option, fallback_models_from_pairs, reasoning_options_from_pairs,
@@ -33,20 +33,23 @@ pub const AVAILABILITY_CACHE_TTL: Duration = Duration::from_secs(600);
 
 /// 只探可用性（binary + version + auth），**不跑昂贵的模型探测**（claude 达 25s）。
 /// models 回填 `fallback_models`——列表阶段不展示真实模型，选中后由模型层懒查覆盖。
-pub async fn detect_availability_single(def: &RuntimeAgentDef) -> DetectedAgent {
-    let path = super::spawn::resolve_binary(def).await;
+pub(super) async fn detect_availability_single(
+    def: &RuntimeAgentDef,
+) -> Result<DetectedAgent, CliSpawnInterrupted> {
+    let _resource = ResourceLease::pending(def.id).map_err(CliSpawnInterrupted)?;
+    let path = super::spawn::try_resolve_binary(def).await?;
     let available = path.is_some();
     let version = if available {
-        probe_version(def, path.as_deref()).await
+        probe_version(def, path.as_deref()).await?
     } else {
         None
     };
     let auth_status = if available {
-        probe_auth(def, path.as_deref()).await
+        probe_auth(def, path.as_deref()).await?
     } else {
         Some("unavailable".to_string())
     };
-    DetectedAgent {
+    Ok(DetectedAgent {
         id: def.id.to_string(),
         name: def.name.to_string(),
         available,
@@ -59,24 +62,48 @@ pub async fn detect_availability_single(def: &RuntimeAgentDef) -> DetectedAgent 
         native_providers: native_provider_summaries(def),
         disabled: false,
         capabilities: def.capabilities(),
-    }
+    })
+}
+
+pub(super) struct AvailabilityScan {
+    pub(super) agents: Vec<DetectedAgent>,
+    pub(super) complete: bool,
 }
 
 /// 并发探测所有 CLI 的可用性（cwd 无关）。
-pub async fn detect_availability_all() -> Vec<DetectedAgent> {
-    let handles: Vec<_> = AGENT_DEFS
+pub(super) async fn scan_availability(
+    definitions: &[RuntimeAgentDef],
+    previous: &[DetectedAgent],
+) -> AvailabilityScan {
+    let handles: Vec<_> = definitions
         .iter()
-        .map(|def| tokio::spawn(async move { detect_availability_single(def).await }))
+        .cloned()
+        .map(|def| {
+            (
+                def.id,
+                tokio::spawn(async move { detect_availability_single(&def).await }),
+            )
+        })
         .collect();
-    let mut out = Vec::with_capacity(handles.len());
-    for handle in handles {
+    let mut scan = AvailabilityScan {
+        agents: Vec::with_capacity(handles.len()),
+        complete: true,
+    };
+    for (id, handle) in handles {
         match handle.await {
-            Ok(agent) => out.push(agent),
-            // B4：join 失败（探测 task panic）不再静默吞掉——记录以便定位。
+            Ok(Ok(agent)) => {
+                scan.agents.push(agent);
+                continue;
+            }
+            Ok(Err(_)) => {}
             Err(err) => eprintln!("[external-agent] availability probe task join failed: {err}"),
         }
+        scan.complete = false;
+        if let Some(agent) = previous.iter().find(|agent| agent.id == id) {
+            scan.agents.push(agent.clone());
+        }
     }
-    out
+    scan
 }
 
 /// 单个 agent 的模型探测结果：模型列表 + reasoning 选项 + 来源 + 失败摘要，以及 CLI 自己当前
@@ -1050,12 +1077,12 @@ pub async fn detect_single_agent(def: &RuntimeAgentDef, cwd: &Path) -> DetectedA
     let path = super::spawn::resolve_binary(def).await;
     let available = path.is_some();
     let version = if available {
-        probe_version(def, path.as_deref()).await
+        probe_version(def, path.as_deref()).await.ok().flatten()
     } else {
         None
     };
     let auth_status = if available {
-        probe_auth(def, path.as_deref()).await
+        probe_auth(def, path.as_deref()).await.ok().flatten()
     } else {
         Some("unavailable".to_string())
     };
@@ -1098,43 +1125,51 @@ pub fn sandbox_options_for(def: &RuntimeAgentDef) -> Vec<RuntimeModelOption> {
         .collect()
 }
 
-async fn probe_version(def: &RuntimeAgentDef, path: Option<&std::path::Path>) -> Option<String> {
-    let bin = path?;
-    let output = crate::external_agents::spawn::agent_probe_command(def, bin)
+async fn probe_version(
+    def: &RuntimeAgentDef,
+    path: Option<&Path>,
+) -> Result<Option<String>, CliSpawnInterrupted> {
+    let Some(bin) = path else { return Ok(None) };
+    let output = super::spawn::agent_probe_command(def, bin)
         .args(def.version_args)
         .no_console_window()
         .group_output()
-        .await
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let line = text.lines().next()?.trim();
-    if line.is_empty() {
-        None
-    } else {
-        Some(line.to_string())
+        .await;
+    match output {
+        Ok(output) if output.status.success() => Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)),
+        Err(err) => CliSpawnInterrupted::from_io(&err).map_or(Ok(None), Err),
+        Ok(_) => Ok(None),
     }
 }
 
-async fn probe_auth(def: &RuntimeAgentDef, path: Option<&std::path::Path>) -> Option<String> {
-    let args = def.auth_probe_args?;
-    let bin = path?;
+async fn probe_auth(
+    def: &RuntimeAgentDef,
+    path: Option<&Path>,
+) -> Result<Option<String>, CliSpawnInterrupted> {
+    let (Some(args), Some(bin)) = (def.auth_probe_args, path) else {
+        return Ok(None);
+    };
     let output = tokio::time::timeout(
         Duration::from_secs(5),
-        crate::external_agents::spawn::agent_probe_command(def, bin)
+        super::spawn::agent_probe_command(def, bin)
             .args(args)
             .no_console_window()
             .group_output(),
     )
-    .await
-    .ok()?
-    .ok()?;
-    if output.status.success() {
-        Some("ok".to_string())
-    } else {
-        Some("auth_required".to_string())
+    .await;
+    match output {
+        Ok(Ok(output)) => Ok(Some(if output.status.success() {
+            "ok".to_string()
+        } else {
+            "auth_required".to_string()
+        })),
+        Ok(Err(err)) => CliSpawnInterrupted::from_io(&err).map_or(Ok(None), Err),
+        Err(_) => Ok(None),
     }
 }
 
@@ -1606,6 +1641,125 @@ fn parse_models_list(stdout: &str) -> Option<Vec<RuntimeModelOption>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::external_agents::registry::AGENT_DEFS;
+
+    #[tokio::test]
+    async fn availability_scan_retains_only_observed_status_during_cli_maintenance() {
+        use crate::external_agents::session::live::runtime_resources;
+
+        const TEST: &str = "external_agents::detection::tests::availability_scan_retains_only_observed_status_during_cli_maintenance";
+        const FIXTURE_DIR: &str = "KIVIO_AVAILABILITY_SCAN_FIXTURE_DIR";
+        let Some(root) = std::env::var_os(FIXTURE_DIR) else {
+            let dir = tempfile::tempdir().unwrap();
+            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(FIXTURE_DIR, dir.path())
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+
+        let root = std::path::PathBuf::from(root);
+        let binary = root.join("main-cli.cmd");
+        let other = root.join("other-cli.cmd");
+        let mut agents = [AGENT_DEFS[0].clone(), AGENT_DEFS[1].clone()];
+        let mut settings = crate::settings::Settings::default();
+        for (def, path) in agents.iter_mut().zip([&binary, &other]) {
+            def.auth_probe_args = Some(&["auth-fixture"]);
+            settings
+                .chat
+                .external_cli_agents
+                .entry(def.id.into())
+                .or_default()
+                .path = path.to_string_lossy().into_owned();
+        }
+        super::super::overrides::sync_from_settings(&settings);
+
+        let write_cli = |path: &Path, version: &str, auth_exit: u8| {
+            #[cfg(windows)]
+            std::fs::write(
+                path,
+                format!("@echo off\r\nif \"%~1\"==\"auth-fixture\" exit /b {auth_exit}\r\necho {version}\r\n"),
+            ).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                std::fs::write(
+                    path,
+                    format!("#!/bin/sh\nif [ \"$1\" = auth-fixture ]; then exit {auth_exit}; fi\necho {version}\n"),
+                ).unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        };
+
+        write_cli(&other, "other 1.0.0", 0);
+        let keys = runtime_resources(Some(agents[0].id), &binary);
+        let maintenance = ResourceLease::acquire(keys, true).unwrap();
+        let pending_first_install = scan_availability(&agents, &[]).await;
+        assert!(!pending_first_install.complete);
+        assert_eq!(pending_first_install.agents.len(), 1);
+        assert_eq!(pending_first_install.agents[0].id, agents[1].id);
+        drop(maintenance);
+
+        write_cli(&binary, "fixture 1.0.0", 1);
+        let stable = scan_availability(&agents, &[]).await;
+        assert!(stable.complete);
+        assert!(stable.agents[0].available);
+        assert_eq!(stable.agents[0].path.as_deref(), binary.to_str());
+        assert_eq!(stable.agents[0].version.as_deref(), Some("fixture 1.0.0"));
+        assert_eq!(
+            stable.agents[0].auth_status.as_deref(),
+            Some("auth_required")
+        );
+
+        let maintenance = ResourceLease::acquire(runtime_resources(None, &binary), true).unwrap();
+        write_cli(&other, "other 20.0.0", 0);
+        let interrupted = scan_availability(&agents, &stable.agents).await;
+        assert!(!interrupted.complete);
+        assert!(interrupted.agents[0].available);
+        assert_eq!(interrupted.agents[0].path, stable.agents[0].path);
+        assert_eq!(interrupted.agents[0].version, stable.agents[0].version);
+        assert_eq!(
+            interrupted.agents[0].auth_status,
+            stable.agents[0].auth_status
+        );
+        assert_eq!(
+            interrupted.agents[1].version.as_deref(),
+            Some("other 20.0.0")
+        );
+        write_cli(&binary, "fixture 2.0.0", 0);
+        drop(maintenance);
+
+        let refreshed = scan_availability(&agents, &stable.agents).await;
+        assert!(refreshed.complete);
+        assert_eq!(
+            refreshed.agents[0].version.as_deref(),
+            Some("fixture 2.0.0")
+        );
+        assert_eq!(refreshed.agents[0].auth_status.as_deref(), Some("ok"));
+
+        let broken = root.join("broken-cli.exe");
+        std::fs::write(&broken, "invalid executable").unwrap();
+        settings
+            .chat
+            .external_cli_agents
+            .get_mut(agents[0].id)
+            .unwrap()
+            .path = broken.to_string_lossy().into_owned();
+        super::super::overrides::sync_from_settings(&settings);
+        let broken = scan_availability(&agents, &refreshed.agents).await;
+        assert!(broken.complete);
+        assert!(!broken.agents[0].available);
+        assert_eq!(broken.agents[0].auth_status.as_deref(), Some("unavailable"));
+    }
 
     #[tokio::test]
     async fn codex_failed_discovery_is_not_a_successful_catalog() {

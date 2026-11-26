@@ -249,7 +249,9 @@ pub async fn list_external_cli_slash_commands(
 
     let commands = match def.slash_strategy {
         SlashStrategy::ClaudeInit => {
-            let detected = detect_availability_single(def).await;
+            let detected = detect_availability_single(def)
+                .await
+                .map_err(|error| error.to_string())?;
             if !detected.available {
                 return Err(format!(
                     "{} 未安装或不可用，请确认 CLI 在 PATH 中，或已安装到 WSL。",
@@ -268,7 +270,9 @@ pub async fn list_external_cli_slash_commands(
             probe_claude_slash_commands(&resolved_bin, Path::new(&cwd), &args).await?
         }
         SlashStrategy::Acp => {
-            let detected = detect_availability_single(def).await;
+            let detected = detect_availability_single(def)
+                .await
+                .map_err(|error| error.to_string())?;
             if !detected.available {
                 return Err(format!(
                     "{} 未安装或不可用，请确认 CLI 在 PATH 中，或已安装到 WSL。",

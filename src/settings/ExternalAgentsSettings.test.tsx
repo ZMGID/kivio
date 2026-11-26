@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
-import { externalCliSettingsApi, onExternalCliInstallLog } from '../api/externalCliSettings'
+import { externalCliSettingsApi, onExternalCliInstallLog, type ExternalCliInstallInfo } from '../api/externalCliSettings'
 import { resetCliInstallJobsForTests } from './cliInstallJobs'
 import { resetCliInstallInfoForTests } from './externalAgents/cliMaintenance'
 import type { Settings as SettingsData } from '../api/tauri'
@@ -33,6 +33,7 @@ vi.mock('../api/externalCliSettings', () => ({
       configDir: '/home/u/.claude',
     }),
     externalCliInstall: vi.fn(),
+    cancelExternalCliInstallWait: vi.fn().mockResolvedValue(undefined),
     externalCliImportCcSwitch: vi.fn(),
     externalCliScanCcSwitch: vi.fn().mockResolvedValue({ providers: [], skipped: 0 }),
     externalCliFetchRelayModels: vi.fn().mockResolvedValue([]),
@@ -279,6 +280,51 @@ describe('ExternalAgentsSettings', () => {
     expect(screen.queryByText('安装日志')).not.toBeInTheDocument()
   })
 
+  it('does not resubmit completed batch updates while refreshing their plans', async () => {
+    const agents = [
+      { id: 'claude', name: 'Claude Code', available: true, capabilities, models: [], version: '1.0.0' },
+      { id: 'codex', name: 'Codex', available: true, capabilities, models: [], version: '1.0.0' },
+    ]
+    mockDetect.mockResolvedValue(agents)
+    const previews = new Map<string, (info: ExternalCliInstallInfo) => void>()
+    const preview = (agentId: string, patch: Partial<ExternalCliInstallInfo> = {}): ExternalCliInstallInfo => ({
+      agentId,
+      localVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      updateAvailable: true,
+      command: 'npm install',
+      docsUrl: 'https://example.com',
+      configDir: null,
+      ...preparedInstall,
+      planId: `initial-${agentId}`,
+      ...patch,
+    })
+    mockInstallInfo.mockImplementation(async agentId => preview(agentId))
+    renderPanel()
+    const updateAll = await screen.findByRole('button', { name: '全部更新' })
+    mockInstallInfo.mockImplementation(agentId => new Promise(resolve => { previews.set(agentId, resolve) }))
+    fireEvent.click(updateAll)
+    await waitFor(() => expect(previews.size).toBe(2))
+    expect(screen.getByRole('status')).toHaveTextContent('安装完成')
+
+    await act(async () => { fireEvent.click(updateAll) })
+    expect(mockInstall.mock.calls).toEqual([['claude', 'initial-claude'], ['codex', 'initial-codex']])
+    expect(screen.getByRole('status')).toHaveTextContent('安装完成')
+
+    mockInstallInfo.mockImplementation(async agentId => preview(agentId, {
+      localVersion: '1.1.0', updateAvailable: false, planId: null,
+    }))
+    await act(async () => {
+      previews.get('claude')?.(preview('claude', { localVersion: '1.1.0', updateAvailable: false, planId: null }))
+      previews.get('codex')?.(preview('codex', { latestVersion: '1.2.0', planId: 'new-codex' }))
+    })
+    expect(screen.getByText('已是最新')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Codex'))
+    fireEvent.click(await screen.findByRole('button', { name: '更新' }))
+    await waitFor(() => expect(mockInstall).toHaveBeenLastCalledWith('codex', 'new-codex'))
+    expect(mockInstall).toHaveBeenCalledTimes(3)
+  })
+
   it('keeps an in-flight update visible after switching CLIs and coming back', async () => {
     let finishInstall: () => void = () => {}
     mockInstall.mockImplementation(
@@ -287,15 +333,7 @@ describe('ExternalAgentsSettings', () => {
           finishInstall = resolve
         }),
     )
-    let emit:
-      | ((event: {
-          agentId: string
-          planId: string
-          line: string | null
-          done: boolean
-          success: boolean
-        }) => void)
-      | undefined
+    let emit: Parameters<typeof mockOnInstallLog>[0] | undefined
     mockOnInstallLog.mockImplementation(async (handler) => {
       emit = handler
       return () => {}
@@ -308,18 +346,22 @@ describe('ExternalAgentsSettings', () => {
     })
     expect(screen.getByLabelText('执行中…')).toBeInTheDocument()
 
+    emit?.({ agentId: 'claude', planId: 'prepared-plan', kind: 'waitingForCli' })
+    expect(await screen.findByRole('button', { name: '取消等待' })).toBeEnabled()
+    expect(screen.getByRole('status')).toHaveTextContent('等待 Claude Code 当前任务结束')
+
     fireEvent.click(screen.getByText('Codex'))
     await waitFor(() => {
       expect(screen.queryByRole('status')).not.toBeInTheDocument()
     })
-    expect(screen.getByLabelText('执行中…')).toBeInTheDocument()
+    expect(screen.getByLabelText('等待 Claude Code 当前任务结束')).toBeInTheDocument()
 
+    emit?.({ agentId: 'claude', planId: 'prepared-plan', kind: 'running' })
     emit?.({
       agentId: 'claude',
       planId: 'prepared-plan',
       line: '$ npm install -g @anthropic-ai/claude-code@latest',
-      done: false,
-      success: false,
+      kind: 'output',
     })
 
     fireEvent.click(screen.getByText('Claude Code'))
@@ -335,6 +377,37 @@ describe('ExternalAgentsSettings', () => {
       expect(screen.getByRole('status')).toHaveTextContent('安装完成')
     })
     expect(screen.getByRole('status')).not.toHaveTextContent('DeepSeek')
+  })
+
+  it('cancels a queued installation and offers a fresh update without reporting failure', async () => {
+    let emit: Parameters<typeof mockOnInstallLog>[0] | undefined
+    mockOnInstallLog.mockImplementation(async handler => {
+      emit = handler
+      return () => {}
+    })
+    let finish: (value: 'cancelled') => void = () => {}
+    mockInstall.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    vi.mocked(externalCliSettingsApi.cancelExternalCliInstallWait).mockImplementation(async () => {
+      finish('cancelled')
+    })
+    renderPanel()
+    fireEvent.click(await screen.findByRole('button', { name: '更新' }))
+    await waitFor(() => expect(mockInstall).toHaveBeenCalledOnce())
+    const originalPreview = await mockInstallInfo.mock.results[0].value
+    let finishPreview: (info: ExternalCliInstallInfo) => void = () => {}
+    mockInstallInfo.mockImplementationOnce(() => new Promise(resolve => { finishPreview = resolve }))
+    emit?.({ agentId: 'claude', planId: 'prepared-plan', kind: 'waitingForWriter' })
+    fireEvent.click(await screen.findByRole('button', { name: '取消等待' }))
+    expect(externalCliSettingsApi.cancelExternalCliInstallWait).toHaveBeenCalledWith('prepared-plan')
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
+    const oldUpdate = screen.queryByRole('button', { name: '更新' })
+    if (oldUpdate) fireEvent.click(oldUpdate)
+    expect(mockInstall).toHaveBeenCalledOnce()
+
+    finishPreview({ ...originalPreview, planId: 'retry-plan' })
+    mockInstall.mockResolvedValue()
+    fireEvent.click(await screen.findByRole('button', { name: '更新' }))
+    await waitFor(() => expect(mockInstall).toHaveBeenLastCalledWith('claude', 'retry-plan'))
   })
 
   it('reminds about the DeepSeek key only after a dsh install finishes', async () => {

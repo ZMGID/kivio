@@ -2,11 +2,10 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::chat::types::AgentRuntimeConfig;
 use crate::external_agents::detection::{
-    detect_agent_models, detect_availability_all, native_provider_summaries,
-    AVAILABILITY_CACHE_KEY, AVAILABILITY_CACHE_TTL, EXTERNAL_AGENT_MODELS_CACHE_TTL,
-    EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
+    detect_agent_models, native_provider_summaries, scan_availability, AVAILABILITY_CACHE_KEY,
+    AVAILABILITY_CACHE_TTL, EXTERNAL_AGENT_MODELS_CACHE_TTL, EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
 };
-use crate::external_agents::registry::get_agent_def;
+use crate::external_agents::registry::{get_agent_def, AGENT_DEFS};
 use crate::external_agents::slash::{cache_key, list_external_cli_slash_commands};
 use crate::external_agents::types::{CachedAgentModels, DetectedAgent, ModelSource};
 use crate::external_agents::workspace::resolve_detection_cwd;
@@ -44,10 +43,6 @@ pub async fn chat_detect_external_agents(
 ) -> Result<serde_json::Value, String> {
     let _ = &conversation_id; // 可用性与 cwd 无关；参数保留为兼容前端签名。
     let force = force_refresh.unwrap_or(false);
-    if force {
-        crate::external_agents::wsl::invalidate_locator_cache();
-        crate::external_agents::spawn::clear_probe_cache();
-    }
     if !force {
         if let Some(agents) = state
             .external_discovery()
@@ -77,19 +72,20 @@ pub async fn chat_detect_external_agents(
         .external_discovery()
         .acquire_availability_probe()
         .await;
-    if !force {
-        if let Some(agents) = state
-            .external_discovery()
-            .get_cached_detected_agents(AVAILABILITY_CACHE_KEY, AVAILABILITY_CACHE_TTL)
-        {
-            return Ok(serde_json::json!({
-                "success": true,
-                "agents": stamp_availability(agents),
-                "cached": true,
-            }));
-        }
+    if force {
+        crate::external_agents::wsl::invalidate_locator_cache();
+        crate::external_agents::spawn::clear_probe_cache();
+    } else if let Some(agents) = state
+        .external_discovery()
+        .get_cached_detected_agents(AVAILABILITY_CACHE_KEY, AVAILABILITY_CACHE_TTL)
+    {
+        return Ok(serde_json::json!({
+            "success": true,
+            "agents": stamp_availability(agents),
+            "cached": true,
+        }));
     }
-    let agents = publish_availability(&app, &state, detect_availability_all().await);
+    let agents = refresh_availability(&app, &state).await;
     Ok(serde_json::json!({
         "success": true,
         "agents": agents,
@@ -97,16 +93,19 @@ pub async fn chat_detect_external_agents(
     }))
 }
 
-fn publish_availability(
-    app: &AppHandle,
-    state: &AppState,
-    agents: Vec<DetectedAgent>,
-) -> Vec<DetectedAgent> {
-    state
-        .external_discovery()
-        .set_cached_detected_agents(AVAILABILITY_CACHE_KEY.to_string(), agents.clone());
-    save_availability_snapshot(state, &agents);
-    let agents = stamp_availability(agents);
+async fn refresh_availability(app: &AppHandle, state: &AppState) -> Vec<DetectedAgent> {
+    let discovery = state.external_discovery();
+    let previous = discovery
+        .get_cached_detected_agents(AVAILABILITY_CACHE_KEY, AVAILABILITY_CACHE_TTL)
+        .or_else(|| load_availability_snapshot(state))
+        .unwrap_or_default();
+    let scan = scan_availability(AGENT_DEFS, &previous).await;
+    if scan.complete {
+        discovery
+            .set_cached_detected_agents(AVAILABILITY_CACHE_KEY.to_string(), scan.agents.clone());
+        save_availability_snapshot(state, &scan.agents);
+    }
+    let agents = stamp_availability(scan.agents);
     let _ = app.emit(
         "external-agents-updated",
         serde_json::json!({ "agents": &agents }),
@@ -122,7 +121,7 @@ fn spawn_availability_refresh(app: AppHandle) {
         let Some(_guard) = state.external_discovery().try_acquire_availability_probe() else {
             return;
         };
-        publish_availability(&app, &state, detect_availability_all().await);
+        refresh_availability(&app, &state).await;
     });
 }
 

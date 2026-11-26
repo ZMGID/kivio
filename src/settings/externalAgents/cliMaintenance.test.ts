@@ -161,6 +161,50 @@ describe('install info store', () => {
     expect(reload).toHaveBeenCalledWith(true)
   })
 
+  it('does not submit a plan while a concurrent preview may replace it', async () => {
+    await checkCliInstallInfo('claude')
+    let finishPreview: (value: ExternalCliInstallInfo) => void = () => {}
+    mockInfo.mockImplementationOnce(() => new Promise(resolve => { finishPreview = resolve }))
+    const refreshing = checkCliInstallInfo('claude', true)
+    const reload = vi.fn().mockResolvedValue(undefined)
+
+    const attempt = runCliInstall('claude', reload)
+    try {
+      await Promise.resolve()
+      expect(mockInstall).not.toHaveBeenCalled()
+    } finally {
+      finishPreview(info({ planId: 'plan-2' }))
+      await Promise.all([refreshing, attempt])
+    }
+
+    await runCliInstall('claude', reload)
+
+    expect(mockInstall.mock.calls).toEqual([['claude', 'plan-2']])
+  })
+
+  it('checks the installed version after the installer and rescan finish', async () => {
+    await checkCliInstallInfo('claude')
+    let finishInstall: () => void = () => {}
+    mockInstall.mockImplementationOnce(() => new Promise(resolve => { finishInstall = resolve }))
+    let finishRescan: () => void = () => {}
+    const reload = vi.fn(() => new Promise<void>(resolve => { finishRescan = resolve }))
+    const installed = runCliInstall('claude', reload)
+    await Promise.resolve()
+
+    await checkCliInstallInfo('claude', true)
+    const previewCountWhileInstalling = mockInfo.mock.calls.length
+    finishInstall()
+    await vi.waitFor(() => expect(reload).toHaveBeenCalledWith(true))
+    const previewCountWhileRescanning = mockInfo.mock.calls.length
+    mockInfo.mockResolvedValue(info({ localVersion: '1.1.0', updateAvailable: false, planId: null }))
+    finishRescan()
+    await installed
+
+    expect(previewCountWhileInstalling).toBe(1)
+    expect(previewCountWhileRescanning).toBe(1)
+    expect(getCliInstallInfo('claude').info?.localVersion).toBe('1.1.0')
+  })
+
   it('does nothing when there is no plan to run', async () => {
     mockInfo.mockResolvedValue(info({ planId: null }))
     await checkCliInstallInfo('claude')

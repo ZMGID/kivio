@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import type { i18n, Lang } from '../../components/i18n'
 import {
   externalCliSettingsApi,
   type DetectedExternalAgent,
@@ -56,9 +57,14 @@ export function getCliInstallInfo(agentId: string): CliInstallInfoEntry {
 }
 
 /** 查一次版本与安装计划。`force` 为 false 时，刚查过的直接复用。 */
-export function checkCliInstallInfo(agentId: string, force = false): Promise<void> {
+export function checkCliInstallInfo(
+  agentId: string,
+  force = false,
+  rescan?: () => Promise<void>,
+): Promise<void> {
   const inFlight = pending.get(agentId)
   if (inFlight) return inFlight
+  if (getCliInstallJob(agentId).running) return Promise.resolve()
   const current = getCliInstallInfo(agentId)
   if (
     !force &&
@@ -68,18 +74,19 @@ export function checkCliInstallInfo(agentId: string, force = false): Promise<voi
   ) {
     return Promise.resolve()
   }
-  write(agentId, { ...current, checking: true })
-  const task = (async () => {
+  const task = Promise.resolve().then(async () => {
     let info: ExternalCliInstallInfo | null = null
     try {
+      if (rescan) await rescan()
       info = await externalCliSettingsApi.externalCliInstallInfo(agentId)
     } catch {
       info = null
     }
     pending.delete(agentId)
     write(agentId, { info, checking: false, checkedAt: Date.now(), failed: info === null })
-  })()
+  })
   pending.set(agentId, task)
+  write(agentId, { ...current, checking: true })
   return task
 }
 
@@ -107,6 +114,12 @@ export function useCliInstallInfo(agentId: string): CliInstallInfoEntry {
 
 export function useCliInstallJob(agentId: string): CliInstallJob {
   return useSyncExternalStore(subscribeCliInstallJobs, () => getCliInstallJob(agentId))
+}
+
+export function cliInstallWaitLabel(job: CliInstallJob, agent: string, t: (typeof i18n)[Lang]): string | null {
+  if (!job.running) return null
+  if (job.phase === 'waitingForCli') return t.externalAgentsWaitingForCli.replace('{agent}', agent)
+  return job.phase === 'waitingForWriter' ? t.externalAgentsWaitingForWriter : null
 }
 
 let jobsRevision = 0
@@ -162,7 +175,7 @@ export function deriveCliMaintenance(
     state,
     localVersion,
     latestVersion,
-    actionable: needsAction && Boolean(info?.planId),
+    actionable: needsAction && !entry.checking && Boolean(info?.planId),
   }
 }
 
@@ -174,19 +187,19 @@ export async function runCliInstall(
   agentId: string,
   reloadAgents: (force?: boolean) => Promise<void>,
 ): Promise<void> {
-  if (getCliInstallJob(agentId).running) return
-  const { checkedAt } = getCliInstallInfo(agentId)
+  const { checkedAt, checking } = getCliInstallInfo(agentId)
+  if (checking || getCliInstallJob(agentId).running) return
   if (checkedAt === null || Date.now() - checkedAt > PLAN_MAX_AGE_MS) {
     await checkCliInstallInfo(agentId, true)
   }
-  const planId = getCliInstallInfo(agentId).info?.planId
-  if (!planId) return
+  const entry = getCliInstallInfo(agentId)
+  const { info } = entry
+  if (entry.checking || !info?.planId) return
+  const { planId } = info
+  write(agentId, { ...entry, info: { ...info, planId: null } })
   await startCliInstall(agentId, planId, {
     install: (id, plan) => externalCliSettingsApi.externalCliInstall(id, plan),
-    afterDone: async () => {
-      // 计划是一次性的，执行完必须重查，否则下一次点击拿到的是已消费的计划。
-      await checkCliInstallInfo(agentId, true)
-      await reloadAgents(true)
-    },
+    // 版本检查读取探测缓存，安装后先重新探测，再生成计划。
+    afterDone: (id, cancelled) => checkCliInstallInfo(id, true, cancelled ? undefined : () => reloadAgents(true)),
   })
 }

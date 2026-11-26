@@ -64,10 +64,9 @@ describe('cliInstallJobs', () => {
         }),
     })
     await Promise.resolve()
-    emit?.({ agentId: 'claude', planId: 'plan-claude', line: '$ npm', done: false, success: false })
-    emit?.({ agentId: 'codex', planId: 'other-plan', line: 'ignore me', done: false, success: false })
-    emit?.({ agentId: 'claude', planId: 'expired-plan', line: 'stale output', done: false, success: false })
-    emit?.({ agentId: 'claude', planId: 'expired-plan', line: null, done: true, success: true })
+    emit?.({ agentId: 'claude', planId: 'plan-claude', kind: 'output', line: '$ npm' })
+    emit?.({ agentId: 'codex', planId: 'other-plan', kind: 'output', line: 'ignore me' })
+    emit?.({ agentId: 'claude', planId: 'expired-plan', kind: 'output', line: 'stale output' })
     expect(getCliInstallJob('claude').log).toEqual(['$ npm'])
     expect(getCliInstallJob('claude').running).toBe(true)
     finish()
@@ -105,22 +104,20 @@ describe('cliInstallJobs', () => {
       afterDone,
     })
     await Promise.resolve()
-    emit?.({ agentId: 'pi', planId: 'plan-pi', line: 'added 144 packages', done: false, success: false })
+    emit?.({ agentId: 'pi', planId: 'plan-pi', kind: 'output', line: 'added 144 packages' })
     expect(getCliInstallJob('pi')).toMatchObject({ running: true, result: null })
 
-    emit?.({ agentId: 'pi', planId: 'plan-pi', line: 'Pi startup verification failed', done: false, success: false })
-    emit?.({ agentId: 'pi', planId: 'plan-pi', line: null, done: true, success: false })
+    emit?.({ agentId: 'pi', planId: 'plan-pi', kind: 'output', line: 'Pi startup verification failed' })
     rejectInstall(new Error('Pi startup verification failed'))
     await started
     expect(getCliInstallJob('pi')).toMatchObject({ running: false, result: 'fail' })
     expect(getCliInstallJob('pi').log).toContain('Pi startup verification failed')
     expect(unlisten).toHaveBeenCalledOnce()
-    expect(afterDone).toHaveBeenCalledWith('pi')
+    expect(afterDone).toHaveBeenCalledWith('pi', false)
 
     await startCliInstall('pi', 'plan-pi', {
       install: async () => {
-        emit?.({ agentId: 'pi', planId: 'plan-pi', line: 'Pi 0.87.1 verified', done: false, success: false })
-        emit?.({ agentId: 'pi', planId: 'plan-pi', line: null, done: true, success: true })
+        emit?.({ agentId: 'pi', planId: 'plan-pi', kind: 'output', line: 'Pi 0.87.1 verified' })
       },
     })
     expect(getCliInstallJob('pi')).toEqual({
