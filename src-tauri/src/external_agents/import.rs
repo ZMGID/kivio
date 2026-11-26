@@ -1430,7 +1430,7 @@ async fn publish_import(
     }
 
     let native_title = match def.stream_format {
-        StreamFormat::AntigravityStreamJson | StreamFormat::DshJsonRpc | StreamFormat::PiRpc => {
+        StreamFormat::AntigravityAcp | StreamFormat::DshJsonRpc | StreamFormat::PiRpc => {
             selected.title.as_deref().map(truncate_title)
         }
         _ => source_title(agent_id, source.as_deref()),
@@ -1508,7 +1508,7 @@ async fn publish_import(
     if !def.resumes_session_via_cli
         || matches!(
             def.stream_format,
-            StreamFormat::PiRpc | StreamFormat::AntigravityStreamJson
+            StreamFormat::PiRpc | StreamFormat::AntigravityAcp
         )
     {
         crate::external_agents::session::save_live_handle(

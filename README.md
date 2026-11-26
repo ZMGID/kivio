@@ -187,6 +187,8 @@ macOS 需要**辅助功能**与**屏幕录制**权限。启动后按引导填供
 
 本机已安装即可作为对话后端：Claude Code、Codex、Antigravity、OpenCode、Gemini、Kimi、Pi、Hermes、Grok、DeepSeek Harness。可用性按本机探测；模型列表按所选 CLI 懒加载。
 
+Hermes 的选择题需要启用原生 `clarify` 工具。在 Hermes 配置的 `platform_toolsets.acp` 列表中保留原有工具集并加入 `clarify`。使用默认 ACP 工具集时，列表可写成 `[hermes-acp, clarify]`。本机 Gemini CLI 通过 Kivio 的本地 MCP 服务提问，Windows 运行 WSL 内的 Gemini 时，此服务暂不可用。
+
 </details>
 
 <details>

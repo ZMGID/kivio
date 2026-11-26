@@ -1,12 +1,10 @@
-//! Kivio-maintained command catalog, verified with agy 1.2.6. No runtime discovery.
-//! Reports cannot enter the NDJSON stream: agy emits ERROR and exits. Run them
-//! separately without a conversation binding; native skill expansion stays in-stream.
 use super::spawn::CliProcessOutput;
 use std::path::Path;
 use std::time::Duration;
 
 use crate::external_agents::spawn::{cli_command, fold_stderr};
 use crate::external_agents::types::ExternalCliSlashCommand;
+use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext};
 use crate::proc::NoConsoleWindow;
 
 pub(crate) fn structured_error(stderr: &str) -> Option<String> {
@@ -123,43 +121,48 @@ pub fn command_name(prompt: &str) -> Option<&str> {
         .next()
 }
 
-/// Keep the active model/effort/mode flags but never pass the stream protocol
-/// or conversation id to a report process. Reports must not alter native history.
-pub fn report_args(args: &[String], prompt: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut index = 0;
-    while index < args.len() {
-        if matches!(
-            args[index].as_str(),
-            "--input-format" | "--output-format" | "--conversation"
-        ) {
-            index += 2;
-        } else {
-            out.push(args[index].clone());
-            index += 1;
-        }
-    }
-    // agy 1.2.6 changed the default print timeout to unlimited. Keep Kivio's report
-    // subprocess bounded on both sides so a stuck report cannot outlive its UI turn.
-    out.extend([
-        "--print-timeout".into(),
-        "55s".into(),
-        "-p".into(),
-        prompt.trim().into(),
-    ]);
-    out
-}
-
-pub async fn report(
+pub(super) async fn local_reply(
     bin: &Path,
     cwd: &Path,
-    args: &[String],
+    ctx: &RuntimeContext,
+    options: &RuntimeBuildOptions,
+    prompt: &str,
+) -> Option<String> {
+    let name = command_name(prompt)?;
+    if is_terminal_only(name) {
+        return Some(format!(
+            "/{name} 需要 Antigravity 交互式终端。输入 /help 可查看已适配命令。"
+        ));
+    }
+    if !is_report(name) {
+        return None;
+    }
+    if prompt.split_whitespace().nth(1).is_some() {
+        return Some(format!("/{name} 当前适配为只读查询，请不带参数执行。模型、推理强度和权限可在会话菜单中修改；其他配置请在 agy 原生终端中修改。"));
+    }
+    if name == "help" {
+        return Some(render_report(name, &help_text()));
+    }
+    let settings = super::providers::antigravity::antigravity_report_settings(ctx, options);
+    Some(match report(bin, cwd, &settings, prompt).await {
+        Ok(text) if text.is_empty() => "命令已完成，没有返回内容。".into(),
+        Ok(text) => render_report(name, &text),
+        Err(error) => format!("命令执行失败：{error}"),
+    })
+}
+
+async fn report(
+    bin: &Path,
+    cwd: &Path,
+    settings: &[String],
     prompt: &str,
 ) -> Result<String, String> {
     let output = tokio::time::timeout(
         Duration::from_secs(60),
         cli_command(bin)
-            .args(report_args(args, prompt))
+            .args(settings)
+            .args(["--print-timeout", "55s", "-p", prompt.trim()])
+            .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
             .current_dir(cwd)
             .no_console_window()
             .kill_on_drop(true)
@@ -269,40 +272,6 @@ mod tests {
             .all(|c| is_report(&c.name) && !is_terminal_only(&c.name)));
         assert_eq!(command_name("  /usage  "), Some("usage"));
         assert_eq!(command_name("hello /usage"), None);
-    }
-
-    #[test]
-    fn report_launch_keeps_active_settings_without_stream_or_session() {
-        let args = [
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--conversation",
-            "native-id",
-            "--model",
-            "custom-model",
-            "--effort",
-            "high",
-            "--add-dir",
-            "C:\\my files",
-        ]
-        .map(str::to_string);
-        assert_eq!(
-            report_args(&args, "/model"),
-            [
-                "--model",
-                "custom-model",
-                "--effort",
-                "high",
-                "--add-dir",
-                "C:\\my files",
-                "--print-timeout",
-                "55s",
-                "-p",
-                "/model"
-            ]
-        );
     }
 
     #[test]

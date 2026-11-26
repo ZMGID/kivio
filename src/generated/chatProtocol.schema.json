@@ -61,6 +61,12 @@
         "id": {
           "type": "string"
         },
+        "isSecret": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "options": {
           "items": {
             "$ref": "#/$defs/ChatAskUserOptionPayload"

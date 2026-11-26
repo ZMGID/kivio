@@ -4,6 +4,7 @@ import { AskUserBlock } from './AskUserBlock'
 import { AsyncQuestionsContext } from './asyncQuestionsContext'
 import { userPromptEventToRecord } from './streamApply'
 import { api } from '../api/tauri'
+import { createAskUserDraftStorage } from './askUserTools'
 import mcpContract from './fixtures/ask-user-mcp-contract.json'
 import type { ToolCallRecord } from './types'
 
@@ -32,8 +33,50 @@ const RETRY_QUESTION = {
   allow_custom: true,
 }
 
+it('only submits a bounded multiple choice after selecting a valid number of options', async () => {
+  const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+  try {
+    render(<AskUserBlock variant="docked" interactionId="bounded" toolCall={askUserCall({
+      phase: 'awaiting', questions: [{ ...RETRY_QUESTION, required: false, allow_custom: false, allow_multiple: true,
+        value_schema: { type: 'array', minItems: 2, maxItems: 2 } }],
+    })} />)
+    const send = screen.getByRole('button', { name: '提交' })
+    const options = screen.getAllByRole('option')
+    expect(send).toBeEnabled()
+    fireEvent.click(options[0])
+    expect(send).toBeDisabled()
+    fireEvent.click(options[1])
+    expect(send).toBeEnabled()
+    fireEvent.click(options[2])
+    expect(send).toBeDisabled()
+    fireEvent.click(options[0])
+    fireEvent.click(send)
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('bounded', {
+      '0': { selected_option_ids: ['1', '2'], custom_text: null },
+    }, false))
+  } finally {
+    submit.mockRestore()
+  }
+})
+
 describe('AskUserBlock', () => {
   afterEach(() => vi.restoreAllMocks())
+  it('masks a private Codex answer and submits it without copying it into a shared draft', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    const storage = createAskUserDraftStorage()
+    const { container } = render(<AskUserBlock variant="docked" interactionId="interaction-1" draftStorage={storage}
+      toolCall={askUserCall({ phase: 'awaiting', questions: [{
+        id: 'pin', prompt: 'Private code', options: [], allowCustom: true, isSecret: true,
+      }] })} />)
+    const field = container.querySelector('input')!
+    expect(field).toHaveAttribute('type', 'password')
+    fireEvent.change(field, { target: { value: '  sample  code  ' } })
+    expect(JSON.stringify(storage.read())).not.toContain('sample')
+    fireEvent.click(screen.getByText('提交'))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {
+      pin: { selected_option_ids: [], custom_text: '  sample  code  ' },
+    }, false))
+  })
   it('locks the submitted draft until a failed answer can be retried', async () => {
     let rejectSubmission: (error: Error) => void = () => {}
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockImplementationOnce(() => new Promise((_, reject) => {

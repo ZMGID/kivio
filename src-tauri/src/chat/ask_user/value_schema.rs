@@ -2,7 +2,143 @@
 //! parsing; this same validator owns submission validation and successful wire encoding.
 use serde_json::Value;
 
-use super::{AskUserAnswer, AskUserQuestion};
+use super::{AskUserAnswer, AskUserOption, AskUserQuestion};
+
+/// ACP encodes a titled choice as `oneOf`, and an array as `items.anyOf`
+/// (titled choices) or `items.enum` (plain strings). Card IDs index the
+/// original options so a display label never changes the value sent back.
+pub(crate) struct FormChoices<'a> {
+    entries: &'a [Value],
+    titled: bool,
+    multiple: bool,
+    min: u64,
+    max: u64,
+}
+
+impl<'a> FormChoices<'a> {
+    pub(crate) fn parse(schema: &'a Value) -> Option<Self> {
+        let multiple = schema["type"] == "array";
+        let entries = if multiple { &schema["items"] } else { schema };
+        let titled = entries
+            .get(if multiple { "anyOf" } else { "oneOf" })
+            .is_some();
+        let key = match (multiple, titled) {
+            (true, true) => "anyOf",
+            (true, false) => "enum",
+            (false, true) if schema["type"] == "string" => "oneOf",
+            (false, false) if schema["type"] == "string" => "enum",
+            _ => return None,
+        };
+        if !schema
+            .as_object()?
+            .iter()
+            .all(|(name, value)| match name.as_str() {
+                "type" | "default" => true,
+                "title" | "description" => value.is_string(),
+                "items" | "minItems" | "maxItems" if multiple => name == "items" || value.is_u64(),
+                "oneOf" | "enum" if !multiple => name == key,
+                _ => false,
+            })
+        {
+            return None;
+        }
+        if multiple
+            && !entries.as_object()?.iter().all(|(name, value)| {
+                name == key || (!titled && name == "type" && value == "string")
+            })
+        {
+            return None;
+        }
+        if multiple && !titled && entries["type"] != "string" {
+            return None;
+        }
+        let entries = entries[key].as_array()?.as_slice();
+        let min = schema["minItems"].as_u64().unwrap_or(0);
+        let max = schema["maxItems"].as_u64().unwrap_or(entries.len() as u64);
+        if entries.is_empty() || max == 0 || min > max || min > entries.len() as u64 {
+            return None;
+        }
+        let choices = Self {
+            entries,
+            titled,
+            multiple,
+            min,
+            max,
+        };
+        let mut seen = std::collections::HashSet::new();
+        for entry in entries {
+            if titled
+                && !entry.as_object()?.iter().all(|(key, value)| {
+                    matches!(key.as_str(), "const" | "title" | "description") && value.is_string()
+                })
+            {
+                return None;
+            }
+            let wire = choices.wire_value(entry).as_str()?;
+            if !seen.insert(wire) || choices.label(entry)?.trim().is_empty() {
+                return None;
+            }
+        }
+        Some(choices)
+    }
+
+    fn wire_value(&self, entry: &'a Value) -> &'a Value {
+        if self.titled {
+            &entry["const"]
+        } else {
+            entry
+        }
+    }
+
+    fn label(&self, entry: &'a Value) -> Option<&'a str> {
+        entry
+            .get("title")
+            .unwrap_or_else(|| self.wire_value(entry))
+            .as_str()
+    }
+
+    pub(crate) fn options(&self) -> Vec<AskUserOption> {
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| AskUserOption {
+                id: index.to_string(),
+                label: self.label(entry).expect("validated choice").to_string(),
+                description: entry["description"].as_str().map(str::to_string),
+            })
+            .collect()
+    }
+
+    fn selected(&self, ids: &[String]) -> Result<Value, String> {
+        let values: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                let index = id
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|index| index.to_string() == *id);
+                index
+                    .and_then(|i| self.entries.get(i))
+                    .map(|entry| self.wire_value(entry).clone())
+                    .ok_or_else(|| "Unknown choice".to_string())
+            })
+            .collect::<Result<_, _>>()?;
+        if self.multiple {
+            if !(self.min..=self.max).contains(&(values.len() as u64)) {
+                return Err(format!(
+                    "Expected {} to {} selected options",
+                    self.min, self.max
+                ));
+            }
+            Ok(Value::Array(values))
+        } else {
+            let [value] = values.as_slice() else {
+                return Err("Expected one selected option".into());
+            };
+            Ok(value.clone())
+        }
+    }
+}
 
 pub(crate) fn supports_value_schema(schema: &Value) -> bool {
     let Some(object) = schema.as_object() else {
@@ -135,12 +271,23 @@ fn check_value(schema: &Value, value: &Value) -> Result<(), String> {
 pub(crate) fn answer_value(
     question: &AskUserQuestion,
     answer: &AskUserAnswer,
-) -> Result<Value, String> {
+) -> Result<Option<Value>, String> {
     let result = (|| {
         let schema = question
             .value_schema
             .as_ref()
             .ok_or("Missing value schema")?;
+        if let Some(choices) = FormChoices::parse(schema) {
+            if let Some(custom) = &answer.custom_text {
+                if !question.allow_custom || custom.trim().is_empty() {
+                    return Err("Expected a non-empty custom answer".into());
+                }
+                if !choices.multiple || answer.selected_option_ids.is_empty() {
+                    return Ok(None);
+                }
+            }
+            return choices.selected(&answer.selected_option_ids).map(Some);
+        }
         if !supports_value_schema(schema) {
             return Err("Unsupported value schema".into());
         }
@@ -180,7 +327,7 @@ pub(crate) fn answer_value(
             }
         };
         check_value(schema, &value)?;
-        Ok(value)
+        Ok(Some(value))
     })();
     result.map_err(|error: String| format!("Question `{}`: {error}", question.id))
 }

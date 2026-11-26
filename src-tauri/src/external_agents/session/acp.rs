@@ -21,6 +21,9 @@ use crate::proc::NoConsoleWindow;
 
 const ACP_PROTOCOL_VERSION: i64 = 1;
 
+#[path = "acp_hermes_questions.rs"]
+mod hermes_questions;
+
 fn cli_protocol_cwd(bin: &Path, cwd: &Path) -> PathBuf {
     crate::external_agents::wsl::path_for_cli(bin, cwd)
 }
@@ -230,13 +233,26 @@ fn agent_supports_additional_directories(initialize_result: &Value) -> bool {
         == Some(true)
 }
 
-fn acp_initialize_params(terminal: bool) -> Value {
-    // Live chat sessions must advertise `terminal: true` and implement `terminal/*`.
-    // Probe/import processes never handle those methods, so they keep it false.
-    let mut client_capabilities = json!({ "terminal": terminal });
-    if terminal {
-        // Grok 1.0.17+ can forward MCP form elicitation over ACP. Probes do not
-        // own an interaction host, so they must not advertise the capability.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AcpClientMode {
+    Probe,
+    AgentTerminal,
+    HostTerminal,
+}
+
+impl AcpClientMode {
+    fn live(agent_id: &str) -> Self {
+        if agent_id == "antigravity" {
+            Self::AgentTerminal
+        } else {
+            Self::HostTerminal
+        }
+    }
+}
+
+fn acp_initialize_params(mode: AcpClientMode) -> Value {
+    let mut client_capabilities = json!({ "terminal": mode == AcpClientMode::HostTerminal });
+    if mode != AcpClientMode::Probe {
         client_capabilities["elicitation"] = json!({ "form": {} });
     }
     json!({
@@ -768,9 +784,14 @@ pub async fn detect_acp_models(
     let mut reasoning_options: Vec<RuntimeModelOption> = Vec::new();
     let deadline = Duration::from_secs(timeout_secs);
 
-    write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(false))
-        .await
-        .ok()?;
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        acp_initialize_params(AcpClientMode::Probe),
+    )
+    .await
+    .ok()?;
 
     let started = std::time::Instant::now();
     // 收到 session/new 结果后再留一个短窗口（1.5s）收异步 session/update 推送的模型（N4）——
@@ -947,9 +968,14 @@ pub async fn detect_acp_commands(
     let mut commands: Option<Vec<ExternalCliSlashCommand>> = None;
     let deadline = Duration::from_secs(timeout_secs);
 
-    write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(false))
-        .await
-        .ok()?;
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        acp_initialize_params(AcpClientMode::Probe),
+    )
+    .await
+    .ok()?;
 
     let started = std::time::Instant::now();
     loop {
@@ -1779,6 +1805,7 @@ pub struct AcpSession {
     reader: Lines<BufReader<AgentStdout>>,
     session_id: String,
     trailing_usage_update: bool,
+    permission_fallback: Option<PermissionFallback>,
     pub(crate) supports_load: bool,
     next_id: u64,
     /// Ring-buffered stderr tail (N1): drained for the process lifetime, joined on close / error
@@ -1795,7 +1822,7 @@ pub struct AcpSession {
     current_model: Option<String>,
     current_reasoning: Option<String>,
     model_catalog: AcpModelCatalog,
-    terminals: AcpTerminalHost,
+    terminals: Option<AcpTerminalHost>,
 }
 
 /// Sentinel returned by `run_turn` when a config change (reasoning without a config option) can
@@ -1869,8 +1896,11 @@ fn mode_set_rpc(
     session_id: &str,
     result: &Value,
     mode: Option<&str>,
-) -> Option<(&'static str, Value)> {
-    let mode = mode.map(str::trim).filter(|m| !m.is_empty())?;
+) -> Result<Option<(&'static str, Value)>, String> {
+    let Some(mode) = mode.map(str::trim).filter(|m| !m.is_empty()) else {
+        return Ok(None);
+    };
+    let unsupported = || format!("ACP agent does not offer session mode {mode}");
     let offers = |list: Option<&Value>, key: &str| {
         list.and_then(Value::as_array).is_some_and(|items| {
             items
@@ -1890,27 +1920,32 @@ fn mode_set_rpc(
             })
         });
     if let Some(option) = config {
-        let id = option.get("id").and_then(Value::as_str)?;
-        if option.get("currentValue").and_then(Value::as_str) == Some(mode)
-            || !offers(option.get("options"), "value")
-        {
-            return None;
+        if option.get("currentValue").and_then(Value::as_str) == Some(mode) {
+            return Ok(None);
         }
-        return Some((
+        let id = option
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(unsupported)?;
+        if !offers(option.get("options"), "value") {
+            return Err(unsupported());
+        }
+        return Ok(Some((
             "session/set_config_option",
             json!({ "sessionId": session_id, "configId": id, "value": mode }),
-        ));
+        )));
     }
-    let modes = result.get("modes")?;
-    if modes.get("currentModeId").and_then(Value::as_str) == Some(mode)
-        || !offers(modes.get("availableModes"), "id")
-    {
-        return None;
+    let modes = result.get("modes").ok_or_else(unsupported)?;
+    if modes.get("currentModeId").and_then(Value::as_str) == Some(mode) {
+        return Ok(None);
     }
-    Some((
+    if !offers(modes.get("availableModes"), "id") {
+        return Err(unsupported());
+    }
+    Ok(Some((
         "session/set_mode",
         json!({ "sessionId": session_id, "modeId": mode }),
-    ))
+    )))
 }
 
 /// What a mid-turn reasoning change needs (N3): nothing, an in-session `set_config_option`, or a
@@ -1942,6 +1977,7 @@ fn reasoning_action(
 impl AcpSession {
     #[allow(clippy::too_many_arguments)]
     pub async fn connect(
+        agent_id: &str,
         resolved_bin: &Path,
         args: &[String],
         cwd: &Path,
@@ -1954,6 +1990,10 @@ impl AcpSession {
         additional_directories: &[String],
     ) -> Result<Self, String> {
         let mut command = crate::external_agents::spawn::cli_command(resolved_bin);
+        let antigravity = agent_id == "antigravity";
+        if antigravity {
+            command.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+        }
         crate::external_agents::spawn::bypass_loopback_proxy(&mut command);
         let mut child = crate::external_agents::spawn::AgentChild::spawn(
             command
@@ -1983,17 +2023,19 @@ impl AcpSession {
             }
         };
         let mut reader = BufReader::new(stdout).lines();
-        let mut terminals = AcpTerminalHost::new(cwd.to_path_buf());
+        let client_mode = AcpClientMode::live(agent_id);
+        let mut terminals = (client_mode == AcpClientMode::HostTerminal)
+            .then(|| AcpTerminalHost::new(cwd.to_path_buf()));
 
         // Fallible handshake, isolated so an error path can kill the child and fold in stderr.
         let handshake = async {
-            write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(true))
+            write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(client_mode))
                 .await
                 .map_err(|e| format!("initialize: {e}"))?;
             let init_result = acp_read_until_id(
                 &mut reader,
                 &mut stdin,
-                Some(&mut terminals),
+                terminals.as_mut(),
                 None,
                 1,
                 ACP_INITIALIZE_TIMEOUT,
@@ -2019,51 +2061,69 @@ impl AcpSession {
             let mut next_id: u64 = 2;
             let (result, session_id) = match resume_session {
                 Some(sid) => {
+                    let mut attempts = Vec::new();
+                    if antigravity
+                        && init_result
+                            .pointer("/agentCapabilities/sessionCapabilities/resume")
+                            .is_some_and(Value::is_object)
+                    {
+                        attempts.push(("session/resume", cli_protocol_cwd(resolved_bin, cwd)));
+                    }
+                    attempts.extend(
+                        crate::external_agents::wsl::cwd_spellings_for_cli(resolved_bin, cwd)
+                            .into_iter()
+                            .map(|path| ("session/load", path)),
+                    );
+                    let mut checked_listing = false;
                     let mut last_err = None;
                     let mut loaded = None;
-                    for cwd_try in
-                        crate::external_agents::wsl::cwd_spellings_for_cli(resolved_bin, cwd)
-                    {
+                    for (method, cwd_try) in attempts {
+                        // agy 1.5.10 accepts an unknown ID in session/load and fails
+                        // only after sending the prompt. Verify the ID before that fallback.
+                        if antigravity && method == "session/load" && !checked_listing {
+                            confirm_antigravity_session(&mut reader, &mut stdin, sid, &mut next_id)
+                                .await?;
+                            checked_listing = true;
+                        }
                         let params = build_session_load_params(
                             &cwd_try,
                             sid,
                             &mcp_servers,
                             additional_directories,
                         );
-                        write_rpc(&mut stdin, next_id, "session/load", params)
+                        let id = next_id;
+                        next_id += 1;
+                        write_rpc(&mut stdin, id, method, params)
                             .await
-                            .map_err(|e| format!("session/load: {e}"))?;
+                            .map_err(|e| format!("{method}: {e}"))?;
                         match acp_read_until_id(
                             &mut reader,
                             &mut stdin,
-                            Some(&mut terminals),
+                            terminals.as_mut(),
                             model_catalog.handshake(Some(sid), None),
-                            next_id,
+                            id,
                             ACP_SESSION_NEW_TIMEOUT,
                         )
                         .await
+                        .map_err(|err| format!("{method}: {err}"))?
+                        .into_result()
                         {
-                            Ok(AcpHandshakeReply::Response(Ok(result))) => {
-                                if !result.is_object() {
-                                    return Err("ACP protocol error: invalid session/load result"
-                                        .to_string());
+                            Ok(result) => {
+                                if !result.is_object()
+                                    || result.get("sessionId")
+                                        .is_some_and(|id| id.as_str() != Some(sid))
+                                {
+                                    return Err(format!("ACP protocol error: invalid {method} result"));
                                 }
                                 loaded = Some(result);
-                                next_id += 1;
                                 break;
                             }
-                            Ok(AcpHandshakeReply::Response(Err(err)))
-                                if is_missing_acp_session_error(&err) =>
+                            Err(err) if is_missing_acp_session_error(&err)
+                                || (method == "session/resume" && err == format!("Failed to read session {sid}; retry, or load it with session/load")) =>
                             {
-                                last_err = Some(format!("session/load: {err}"));
-                                next_id += 1;
+                                last_err = Some(format!("{method}: {err}"));
                             }
-                            Ok(AcpHandshakeReply::TimedOut) => {
-                                return Err("session/load: ACP handshake timeout".to_string());
-                            }
-                            Ok(AcpHandshakeReply::Response(Err(err))) | Err(err) => {
-                                return Err(format!("session/load: {err}"));
-                            }
+                            Err(err) => return Err(format!("{method}: {err}")),
                         }
                     }
                     let result = loaded.ok_or_else(|| {
@@ -2087,7 +2147,7 @@ impl AcpSession {
                     let result = acp_read_until_id(
                         &mut reader,
                         &mut stdin,
-                        Some(&mut terminals),
+                        terminals.as_mut(),
                         model_catalog.handshake(None, None),
                         next_id,
                         ACP_SESSION_NEW_TIMEOUT,
@@ -2106,7 +2166,9 @@ impl AcpSession {
                 }
             };
 
-            terminals.set_session_id(session_id.clone());
+            if let Some(host) = &mut terminals {
+                host.set_session_id(session_id.clone());
+            }
             let (mut model_config_id, mut reasoning_config_id) = find_config_ids(&result);
             let mut current_reasoning = normalize_opt(extract_acp_reasoning(&result).1.as_deref());
 
@@ -2121,7 +2183,7 @@ impl AcpSession {
                 let selected = acp_read_until_id(
                     &mut reader,
                     &mut stdin,
-                    Some(&mut terminals),
+                    terminals.as_mut(),
                     model_catalog.handshake(Some(&session_id), Some(chosen)),
                     next_id,
                     Duration::from_secs(10),
@@ -2135,20 +2197,29 @@ impl AcpSession {
                 }
                 next_id += 1;
             }
-            if let Some((set_method, set_params)) = mode_set_rpc(&session_id, &result, mode) {
+            let required_mode = antigravity && matches!(mode, Some("plan" | "accept-edits"));
+            let selected = mode_set_rpc(&session_id, &result, mode);
+            let rpc = if required_mode {
+                selected?
+            } else {
+                selected.unwrap_or(None)
+            };
+            if let Some((set_method, set_params)) = rpc {
                 write_rpc(&mut stdin, next_id, set_method, set_params)
                     .await
                     .map_err(|e| format!("session-new: {e}"))?;
-                // An ignored mode keeps the CLI default.
-                let _ = acp_read_until_id(
+                let selected = acp_read_until_id(
                     &mut reader,
                     &mut stdin,
-                    Some(&mut terminals),
+                    terminals.as_mut(),
                     model_catalog.handshake(Some(&session_id), None),
                     next_id,
                     Duration::from_secs(10),
                 )
                 .await?;
+                if required_mode {
+                    selected.into_result()?;
+                }
                 next_id += 1;
             }
 
@@ -2185,7 +2256,11 @@ impl AcpSession {
                 model_catalog,
             )) => {
                 // Config options report the applied level; launch-flag effort is already in argv.
-                let current_reasoning = if reasoning_config_id.is_some() {
+                // Antigravity's model selection also sets its thought level. Its
+                // selector has no "default" value to send for an unset override.
+                let current_reasoning = if antigravity && normalize_opt(reasoning).is_none() {
+                    None
+                } else if reasoning_config_id.is_some() {
                     current_reasoning
                 } else {
                     normalize_opt(reasoning)
@@ -2196,6 +2271,7 @@ impl AcpSession {
                     reader,
                     session_id,
                     trailing_usage_update,
+                    permission_fallback: PermissionFallback::for_agent(agent_id),
                     supports_load,
                     next_id,
                     stderr_tail,
@@ -2209,6 +2285,11 @@ impl AcpSession {
             }
             Err(msg) => {
                 let tail = join_tail(&mut child, stderr_tail).await;
+                if antigravity
+                    && msg == crate::external_agents::providers::antigravity::MISSING_RESUME_TARGET
+                {
+                    return Err(msg);
+                }
                 Err(fold_stderr(msg, &tail))
             }
         }
@@ -2244,7 +2325,9 @@ impl AcpSession {
         turn_cancelled: Option<&tokio_util::sync::CancellationToken>,
         delivery: &TurnDelivery,
     ) -> Result<(), String> {
-        self.terminals.set_extra_roots(extra_writable_roots);
+        if let Some(host) = &mut self.terminals {
+            host.set_extra_roots(extra_writable_roots);
+        }
         // Apply mid-session config changes before sending the prompt (N3).
         let desired_model = normalize_opt(model);
         if desired_model != self.current_model {
@@ -2257,7 +2340,7 @@ impl AcpSession {
                 let selected = acp_read_until_id(
                     &mut self.reader,
                     &mut self.stdin,
-                    Some(&mut self.terminals),
+                    self.terminals.as_mut(),
                     self.model_catalog
                         .handshake(Some(&self.session_id), Some(chosen)),
                     id,
@@ -2294,7 +2377,7 @@ impl AcpSession {
                 acp_read_until_id(
                     &mut self.reader,
                     &mut self.stdin,
-                    Some(&mut self.terminals),
+                    self.terminals.as_mut(),
                     self.model_catalog.handshake(Some(&self.session_id), None),
                     id,
                     Duration::from_secs(10),
@@ -2322,10 +2405,11 @@ impl AcpSession {
         acp_read_prompt(
             &mut self.reader,
             &mut self.stdin,
-            &mut self.terminals,
+            self.terminals.as_mut(),
             prompt_id,
             &self.session_id,
             self.trailing_usage_update,
+            self.permission_fallback,
             &mut self.model_catalog,
             events,
             control,
@@ -2335,8 +2419,10 @@ impl AcpSession {
     }
 
     pub async fn close(mut self) {
-        self.terminals.close_all_and_wait().await;
-        let _ = flush_terminal_side_effects(&mut self.stdin, &mut self.terminals).await;
+        if let Some(host) = &mut self.terminals {
+            host.close_all_and_wait().await;
+            let _ = flush_terminal_side_effects(&mut self.stdin, host).await;
+        }
         let _ = self.stdin.shutdown().await;
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
@@ -2348,16 +2434,19 @@ impl AcpSession {
 async fn acp_read_prompt(
     reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>,
     stdin: &mut (impl AsyncWrite + Unpin),
-    terminals: &mut AcpTerminalHost,
+    mut terminals: Option<&mut AcpTerminalHost>,
     prompt_id: u64,
     session_id: &str,
     trailing_usage_update: bool,
+    permission_fallback: Option<PermissionFallback>,
     model_catalog: &mut AcpModelCatalog,
     events: &mpsc::Sender<UnifiedAgentEvent>,
     control: &mut mpsc::Receiver<SessionCommand>,
     mut approvals: Option<&mut ApprovalBridge>,
 ) -> Result<(), String> {
     let mut update_state = AcpUpdateState::default();
+    let mut hermes_questions = matches!(permission_fallback, Some(PermissionFallback::Hermes))
+        .then(hermes_questions::PendingClarifications::default);
     let mut usage_deadline = None;
     loop {
         match control.try_recv() {
@@ -2377,7 +2466,9 @@ async fn acp_read_prompt(
                 return Err("control channel closed".to_string());
             }
         }
-        flush_terminal_side_effects(stdin, terminals).await?;
+        if let Some(host) = terminals.as_deref_mut() {
+            flush_terminal_side_effects(stdin, host).await?;
+        }
         let next = if let Some(deadline) = usage_deadline {
             // The prompt already succeeded. Missing optional telemetry must not fail it.
             match tokio::time::timeout_at(deadline, acp_next_message(reader)).await {
@@ -2388,8 +2479,48 @@ async fn acp_read_prompt(
             acp_next_message(reader).await?
         };
         match next {
-            AcpNext::Frame(AcpFrame::Request { id, method, params }) => {
-                if method.starts_with("cursor/")
+            AcpNext::Frame(AcpFrame::Request {
+                id,
+                method,
+                mut params,
+            }) => {
+                if method == "elicitation/create"
+                    && params["sessionId"].as_str() == Some(session_id)
+                {
+                    if let Some(pending) = &mut hermes_questions {
+                        pending.bind(&mut params);
+                    }
+                }
+                let question = if let Some(fallback) =
+                    permission_fallback.filter(|_| method == "session/request_permission")
+                {
+                    if params["sessionId"].as_str() != Some(session_id) {
+                        write_rpc_result(stdin, &id, cursor_cancelled_result()).await?;
+                        continue;
+                    }
+                    match fallback.question_form(&params) {
+                        Ok(Some(form)) => Some(form),
+                        Ok(None) => {
+                            handle_agent_to_client_request(
+                                stdin,
+                                terminals.as_deref_mut(),
+                                &id,
+                                &method,
+                                &params,
+                            )
+                            .await?;
+                            continue;
+                        }
+                        Err(()) => {
+                            write_rpc_result(stdin, &id, cursor_cancelled_result()).await?;
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                if question.is_some()
+                    || method.starts_with("cursor/")
                     || (approvals.is_some() && cursor_extension_is_blocking(&method))
                 {
                     handle_cursor_extension(
@@ -2401,11 +2532,18 @@ async fn acp_read_prompt(
                         control,
                         approvals.as_deref_mut(),
                         session_id,
+                        question,
                     )
                     .await?;
                 } else {
-                    handle_agent_to_client_request(stdin, Some(terminals), &id, &method, &params)
-                        .await?;
+                    handle_agent_to_client_request(
+                        stdin,
+                        terminals.as_deref_mut(),
+                        &id,
+                        &method,
+                        &params,
+                    )
+                    .await?;
                 }
             }
             AcpNext::Frame(AcpFrame::Notification { method, params }) => {
@@ -2425,10 +2563,13 @@ async fn acp_read_prompt(
                             acp_apply_session_update_ex(
                                 update,
                                 &mut update_state,
-                                Some(terminals),
+                                terminals.as_deref(),
                                 &mut |event| buffer.push(event),
                             );
                             for mut event in buffer {
+                                if let Some(pending) = &mut hermes_questions {
+                                    pending.observe(&event);
+                                }
                                 if let UnifiedAgentEvent::Usage { usage } = &mut event {
                                     usage.context_window_tokens = update_state
                                         .context_window
@@ -2570,6 +2711,51 @@ async fn acp_read_until_id(
             AcpNext::Eof => return Err("ACP agent exited during handshake".to_string()),
             _ => {}
         }
+    }
+}
+
+async fn confirm_antigravity_session(
+    reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>,
+    stdin: &mut (impl AsyncWrite + Unpin),
+    session_id: &str,
+    next_id: &mut u64,
+) -> Result<(), String> {
+    let mut seen_cursors = HashSet::new();
+    let mut params = json!({});
+    let started = std::time::Instant::now();
+    loop {
+        let id = *next_id;
+        *next_id += 1;
+        write_rpc(stdin, id, "session/list", params.clone()).await?;
+        let remaining = ACP_SESSION_NEW_TIMEOUT.saturating_sub(started.elapsed());
+        let page = acp_read_until_id(reader, stdin, None, None, id, remaining)
+            .await?
+            .into_result()?;
+        let sessions = page["sessions"]
+            .as_array()
+            .ok_or("Invalid ACP session/list result")?;
+        for item in sessions {
+            let listed = item["sessionId"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or("Invalid sessionId in ACP session/list")?;
+            if listed == session_id {
+                return Ok(());
+            }
+        }
+        if page["nextCursor"].is_null() {
+            return Err(
+                crate::external_agents::providers::antigravity::MISSING_RESUME_TARGET.into(),
+            );
+        }
+        let cursor = page["nextCursor"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or("Invalid cursor in ACP session/list")?;
+        if !seen_cursors.insert(cursor.to_string()) {
+            return Err("Repeated cursor in ACP session/list".into());
+        }
+        params["cursor"] = json!(cursor);
     }
 }
 
@@ -2815,6 +3001,111 @@ fn acp_permission_result(params: &Value, approved: bool, always: bool) -> Value 
     }
 }
 
+#[derive(Clone, Copy)]
+enum PermissionFallback {
+    Kimi,
+    Hermes,
+}
+
+impl PermissionFallback {
+    fn for_agent(id: &str) -> Option<Self> {
+        match id {
+            "kimi" => Some(Self::Kimi),
+            "hermes" => Some(Self::Hermes),
+            _ => None,
+        }
+    }
+
+    fn marks_question(self, tool: &Value) -> bool {
+        match self {
+            Self::Kimi => tool["title"] == "AskUserQuestion",
+            Self::Hermes => tool["toolCallId"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("clarify-")),
+        }
+    }
+
+    /// Some ACP clients encode a single-choice question as several allow-once options.
+    /// An unfamiliar question must never fall through to the ordinary first-allow policy.
+    fn question_form(self, params: &Value) -> Result<Option<Value>, ()> {
+        let tool = &params["toolCall"];
+        let options = params["options"].as_array().ok_or(())?;
+        let (prefix, skip) = match self {
+            Self::Kimi => ("q0_opt_", "q0_skip"),
+            Self::Hermes => ("choice-", "skip"),
+        };
+        if !self.marks_question(tool) {
+            if options.iter().any(|o| {
+                o["optionId"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with(prefix))
+            }) || options.iter().filter(|o| o["kind"] == "allow_once").count() > 1
+            {
+                return Err(());
+            }
+            return Ok(None);
+        }
+        let prompt = match self {
+            Self::Kimi => tool["content"].as_array().and_then(|blocks| {
+                blocks.iter().find_map(|b| {
+                    if b["type"] == "content" && b["content"]["type"] == "text" {
+                        b["content"]["text"].as_str()
+                    } else {
+                        None
+                    }
+                })
+            }),
+            Self::Hermes => tool.pointer("/rawInput/question").and_then(Value::as_str),
+        }
+        .filter(|text| !text.trim().is_empty())
+        .ok_or(())?;
+        let mut choices = Vec::new();
+        let mut has_skip = false;
+        for opt in options {
+            let id = opt["optionId"].as_str().ok_or(())?;
+            if id == skip && opt["kind"] == "reject_once" && !has_skip {
+                has_skip = true;
+                continue;
+            }
+            let label = opt["name"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or(())?;
+            if opt["kind"] != "allow_once" || id != format!("{prefix}{}", choices.len()) {
+                return Err(());
+            }
+            choices.push(json!({"const":id,"title":label}));
+        }
+        if choices.is_empty() || !has_skip {
+            return Err(());
+        }
+        Ok(Some(json!({
+            "mode":"form", "message":prompt, "toolCallId":tool["toolCallId"],
+            "requestedSchema":{"type":"object","properties":{"answer":{"type":"string",
+                "title":prompt,"oneOf":choices}},"required":["answer"]}
+        })))
+    }
+}
+
+fn permission_question_result(params: &Value, decision: &ApprovalDecision) -> Value {
+    let selected = decision
+        .updated_input
+        .as_ref()
+        .filter(|result| decision.approved && result["action"] == "accept")
+        .and_then(|result| result.pointer("/content/answer")?.as_str());
+    if let Some(id) = selected.filter(|id| {
+        params["options"].as_array().is_some_and(|options| {
+            options
+                .iter()
+                .any(|o| o["kind"] == "allow_once" && o["optionId"].as_str() == Some(*id))
+        })
+    }) {
+        json!({"outcome":{"outcome":"selected","optionId":id}})
+    } else {
+        cursor_cancelled_result()
+    }
+}
+
 async fn handle_cursor_extension(
     stdin: &mut (impl AsyncWrite + Unpin),
     id: &Value,
@@ -2824,7 +3115,15 @@ async fn handle_cursor_extension(
     control: &mut mpsc::Receiver<SessionCommand>,
     approvals: Option<&mut ApprovalBridge>,
     session_id: &str,
+    question: Option<Value>,
 ) -> Result<(), String> {
+    if cursor_extension_is_blocking(method)
+        && params
+            .get("sessionId")
+            .is_some_and(|id| id.as_str() != Some(session_id))
+    {
+        return write_rpc_result(stdin, id, host_request_declined_result(method)).await;
+    }
     for event in cursor_extension_events(method, params) {
         let _ = events.send(event).await;
     }
@@ -2843,7 +3142,8 @@ async fn handle_cursor_extension(
         .or_else(|| acp_json_str(params, "elicitation_id"))
         .map(str::to_string)
         .unwrap_or_else(|| format!("cursor-{}", jsonrpc_id_key(id)));
-    let tool_name = if method == "elicitation/create" {
+    let is_question = question.is_some();
+    let tool_name = if method == "elicitation/create" || is_question {
         "elicitation/create"
     } else if permission {
         acp_json_str(tool, "title").unwrap_or("ACP tool")
@@ -2856,12 +3156,15 @@ async fn handle_cursor_extension(
         interaction_id: interaction_id.clone(),
         tool_call_id,
         tool_name: tool_name.to_string(),
-        input: if permission {
+        input: if let Some(form) = question {
+            form
+        } else if permission {
             tool.clone()
         } else {
             params.clone()
         },
-        requires_user_interaction: method == "cursor/ask_question"
+        requires_user_interaction: is_question
+            || method == "cursor/ask_question"
             || method == "elicitation/create",
         requires_manual_approval: false,
         permission_suggestions: None,
@@ -2895,7 +3198,9 @@ async fn handle_cursor_extension(
         }
         match timeout(Duration::from_millis(200), bridge.decisions.recv()).await {
             Ok(Some(decision)) if decision.interaction_id == interaction_id => {
-                let result = if permission {
+                let result = if is_question {
+                    permission_question_result(params, &decision)
+                } else if permission {
                     acp_permission_result(params, decision.approved, decision.always)
                 } else {
                     cursor_decision_result(method, &decision)
@@ -2931,6 +3236,14 @@ async fn handle_agent_to_client_request(
         return flush_terminal_side_effects(stdin, terminals).await;
     }
     let result = match method {
+        // Handshake and replay have no active turn that can answer these questions.
+        "session/request_permission"
+            if [PermissionFallback::Kimi, PermissionFallback::Hermes]
+                .iter()
+                .any(|provider| provider.marks_question(&params["toolCall"])) =>
+        {
+            cursor_cancelled_result()
+        }
         "session/request_permission" if terminals.is_some() => {
             match choose_permission_outcome(params.get("options")) {
                 Some(option_id) => {
@@ -3063,6 +3376,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn antigravity_confirms_absence_only_after_a_complete_listing() {
+        let missing = crate::external_agents::providers::antigravity::MISSING_RESUME_TARGET;
+        for (last_page, expected) in [
+            (json!({"sessions":[{"sessionId":"target"}]}), Ok(())),
+            (json!({"sessions":[]}), Err(missing)),
+            (
+                json!({"sessions":[{}]}),
+                Err("Invalid sessionId in ACP session/list"),
+            ),
+            (
+                json!({"sessions":[],"nextCursor":"more"}),
+                Err("Repeated cursor in ACP session/list"),
+            ),
+        ] {
+            let (host, agent) = tokio::io::duplex(4096);
+            let (read, mut write) = tokio::io::split(host);
+            let (agent_read, mut agent_write) = tokio::io::split(agent);
+            let mut responses = BufReader::new(read).lines();
+            let mut calls = BufReader::new(agent_read).lines();
+            let mut next_id = 3;
+            let verify =
+                confirm_antigravity_session(&mut responses, &mut write, "target", &mut next_id);
+            let peer = async {
+                for (params, page) in [
+                    (
+                        json!({}),
+                        json!({"sessions":[{"sessionId":"other"}],"nextCursor":"more"}),
+                    ),
+                    (json!({"cursor":"more"}), last_page),
+                ] {
+                    let request: Value =
+                        serde_json::from_str(&calls.next_line().await.unwrap().unwrap()).unwrap();
+                    assert_eq!(request["method"], "session/list");
+                    assert_eq!(request["params"], params);
+                    write_rpc_result(&mut agent_write, &request["id"], page)
+                        .await
+                        .unwrap();
+                }
+            };
+            let (result, ()) = tokio::join!(verify, peer);
+            assert_eq!(
+                result.as_ref().map(|_| ()).map_err(String::as_str),
+                expected
+            );
+            assert_eq!(next_id, 5);
+        }
+    }
+
+    #[tokio::test]
     async fn handshake_declines_elicitation_before_reading_its_target_response() {
         for request_id in [json!(7), json!("elicitation-7")] {
             let (host, agent) = tokio::io::duplex(4096);
@@ -3071,15 +3433,31 @@ mod tests {
             let mut reader = BufReader::new(host_read).lines();
             let mut responses = BufReader::new(agent_read).lines();
             let mut terminals = AcpTerminalHost::new(std::env::temp_dir());
+            let host_terminal = request_id.is_number();
             let handshake = acp_read_until_id(
                 &mut reader,
                 &mut host_write,
-                Some(&mut terminals),
+                host_terminal.then_some(&mut terminals),
                 None,
                 7,
                 Duration::from_secs(2),
             );
             let peer = async {
+                if !host_terminal {
+                    write_rpc_line(
+                        &mut agent_write,
+                        json!({
+                            "jsonrpc":"2.0", "id":8, "method":"session/request_permission",
+                            "params":{"options":[{"kind":"allow_once","optionId":"once"}]}
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(
+                        read_peer_frame(&mut responses).await["result"],
+                        cursor_cancelled_result()
+                    );
+                }
                 write_rpc_line(
                     &mut agent_write,
                     json!({
@@ -3205,10 +3583,11 @@ mod tests {
             acp_read_prompt(
                 &mut reader,
                 &mut write,
-                &mut terminals,
+                Some(&mut terminals),
                 3,
                 "ours",
                 false,
+                None,
                 &mut catalog,
                 &events,
                 &mut control,
@@ -3233,7 +3612,6 @@ mod tests {
         let (host, mut agent) = tokio::io::duplex(4096);
         let (host_read, mut host_write) = tokio::io::split(host);
         let mut reader = BufReader::new(host_read).lines();
-        let mut terminals = AcpTerminalHost::new(std::env::temp_dir());
         let (commands, mut control) = mpsc::channel(1);
         let (events, mut output) = mpsc::channel(16);
         let (asks, mut requests) = mpsc::channel(1);
@@ -3246,10 +3624,11 @@ mod tests {
         let live = acp_read_prompt(
             &mut reader,
             &mut host_write,
-            &mut terminals,
+            None,
             7,
             "ours",
             true,
+            None,
             &mut catalog,
             &events,
             &mut control,
@@ -3258,6 +3637,18 @@ mod tests {
         let peer = async {
             let (agent_read, mut agent_write) = tokio::io::split(&mut agent);
             let mut responses = BufReader::new(agent_read).lines();
+            write_rpc_line(
+                &mut agent_write,
+                json!({
+                    "jsonrpc":"2.0", "id":29, "method":"terminal/create", "params":{}
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                read_peer_frame(&mut responses).await["error"]["code"],
+                -32601
+            );
             write_rpc_error(&mut agent_write, &json!(6), -32601, "stale")
                 .await
                 .unwrap();
@@ -3324,6 +3715,39 @@ mod tests {
                 assert_eq!(
                     response["result"]["outcome"]["outcome"],
                     if approved { "selected" } else { "cancelled" }
+                );
+            }
+            for session in ["other", "ours"] {
+                write_rpc_line(
+                    &mut agent_write,
+                    json!({
+                        "jsonrpc": "2.0", "id": "1", "method": "elicitation/create",
+                        "params": { "sessionId": session, "toolCallId": "color", "mode": "form",
+                            "requestedSchema": { "type": "object", "properties": {
+                                "q1": {"type": "string", "oneOf": [{"const": "2", "title": "Blue"}]}
+                            }}
+                        }
+                    }),
+                )
+                .await
+                .unwrap();
+                let expected = if session == "ours" {
+                    let ask = requests.recv().await.unwrap();
+                    assert_eq!(ask.tool_call_id, "color");
+                    assert_eq!(ask.tool_name, "elicitation/create");
+                    assert!(ask.requires_user_interaction);
+                    let answer = json!({"action":"accept","content":{"q1":"2"}});
+                    let mut decision = permission_decision(ask.interaction_id, true);
+                    decision.updated_input = Some(answer.clone());
+                    decisions.send(decision).await.unwrap();
+                    answer
+                } else {
+                    json!({"action":"decline"})
+                };
+                let line = responses.next_line().await.unwrap().unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&line).unwrap(),
+                    json!({"jsonrpc": "2.0", "id":"1", "result":expected})
                 );
             }
             write_rpc_line(&mut agent_write, session_update_frame("ours", "visible"))
@@ -3407,10 +3831,11 @@ mod tests {
                 acp_read_prompt(
                     &mut reader,
                     &mut host_write,
-                    &mut terminals,
+                    Some(&mut terminals),
                     7,
                     "ours",
                     false,
+                    None,
                     &mut AcpModelCatalog::default(),
                     &events,
                     &mut control,
@@ -3438,10 +3863,11 @@ mod tests {
             acp_read_prompt(
                 &mut reader,
                 &mut host_write,
-                &mut terminals,
+                Some(&mut terminals),
                 7,
                 "ours",
                 false,
+                None,
                 &mut AcpModelCatalog::default(),
                 &events,
                 &mut control,
@@ -3634,6 +4060,7 @@ mod tests {
                     &mut control,
                     cancel.then_some(&mut bridge),
                     "session-1",
+                    None,
                 ),
             )
             .await
@@ -3654,6 +4081,115 @@ mod tests {
                     })
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn native_question_permissions_round_trip_choices_without_changing_ordinary_permissions()
+    {
+        for (agent, tool, prefix, skip) in [
+            (
+                "kimi",
+                json!({"toolCallId":"ask-1","title":"AskUserQuestion",
+                "content":[{"type":"content","content":{"type":"text","text":"Which drink?"}}]}),
+                "q0_opt_",
+                "q0_skip",
+            ),
+            (
+                "hermes",
+                json!({"toolCallId":"clarify-test","title":"Which drink?","kind":"other",
+                "rawInput":{"question":"Which drink?","choices":["Water","Tea"]}}),
+                "choice-",
+                "skip",
+            ),
+        ] {
+            let (host, peer) = tokio::io::duplex(8192);
+            let (read, mut write) = tokio::io::split(host);
+            let mut reader = BufReader::new(read).lines();
+            let (read, mut out) = tokio::io::split(peer);
+            let mut replies = BufReader::new(read).lines();
+            let (requests, mut asks) = mpsc::channel(1);
+            let (decisions, decision_rx) = mpsc::channel(1);
+            let mut bridge = ApprovalBridge {
+                requests,
+                decisions: decision_rx,
+            };
+            let (_commands, mut control) = mpsc::channel(1);
+            let (events, _output) = mpsc::channel(8);
+            let mut catalog = AcpModelCatalog::default();
+            let mut terminal = AcpTerminalHost::new(std::env::temp_dir());
+            let live = acp_read_prompt(
+                &mut reader,
+                &mut write,
+                Some(&mut terminal),
+                7,
+                "ours",
+                false,
+                PermissionFallback::for_agent(agent),
+                &mut catalog,
+                &events,
+                &mut control,
+                Some(&mut bridge),
+            );
+            let peer = async {
+                let second = format!("{prefix}1");
+                let params = json!({"sessionId":"ours","toolCall":tool,"options":[
+                    {"optionId":format!("{prefix}0"),"kind":"allow_once","name":"Water"},
+                    {"optionId":second,"kind":"allow_once","name":"Tea"},
+                    {"optionId":skip,"kind":"reject_once","name":"Skip"}
+                ]});
+                for (id, session, ordinary, choice) in [
+                    (1, "foreign", false, None),
+                    (2, "foreign", true, None),
+                    (3, "ours", true, None),
+                    (4, "ours", false, Some(second.as_str())),
+                    (5, "ours", false, Some("forged")),
+                    (6, "ours", false, Some(skip)),
+                ] {
+                    let mut request = if ordinary {
+                        json!({"toolCall":{"title":"Run test"},
+                        "options":[{"optionId":"once","kind":"allow_once"}]})
+                    } else {
+                        params.clone()
+                    };
+                    request["sessionId"] = json!(session);
+                    write_rpc_line(
+                        &mut out,
+                        json!({"jsonrpc":"2.0","id":id,
+                        "method":"session/request_permission","params":request}),
+                    )
+                    .await
+                    .unwrap();
+                    if let Some(choice) = choice {
+                        let ask = asks.recv().await.unwrap();
+                        let codec =
+                            crate::external_agents::ask_user::codec_for(agent, &ask.tool_name)
+                                .unwrap();
+                        let card = (codec.parse)(&ask.input).unwrap();
+                        assert!(card.questions[0].prompt.contains("Which drink?"));
+                        assert_eq!(card.questions[0].options[1].label, "Tea");
+                        let mut decision = permission_decision(ask.interaction_id, true);
+                        decision.updated_input =
+                            Some(json!({"action":"accept","content":{"answer":choice}}));
+                        decisions.send(decision).await.unwrap();
+                    }
+                    let result = read_peer_frame(&mut replies).await;
+                    let expected = match id {
+                        3 => json!({"outcome":{"outcome":"selected","optionId":"once"}}),
+                        4 => json!({"outcome":{"outcome":"selected","optionId":second}}),
+                        _ => cursor_cancelled_result(),
+                    };
+                    assert_eq!(result["result"], expected, "{agent} request {id}");
+                    assert!(asks.try_recv().is_err());
+                }
+                write_rpc_result(&mut out, &json!(7), json!({"stopReason":"end_turn"}))
+                    .await
+                    .unwrap();
+            };
+            let (result, ()) = timeout(Duration::from_secs(3), async { tokio::join!(live, peer) })
+                .await
+                .unwrap();
+            result.unwrap();
         }
     }
 
@@ -3701,24 +4237,24 @@ mod tests {
         ]});
         assert_eq!(
             mode_set_rpc("s", &opencode, Some("plan")),
-            Some((
+            Ok(Some((
                 "session/set_config_option",
                 json!({"sessionId": "s", "configId": "mode", "value": "plan"})
-            ))
+            )))
         );
-        assert_eq!(mode_set_rpc("s", &opencode, Some("build")), None);
-        assert_eq!(mode_set_rpc("s", &opencode, Some("ask")), None);
-        assert_eq!(mode_set_rpc("s", &opencode, None), None);
+        assert_eq!(mode_set_rpc("s", &opencode, Some("build")), Ok(None));
+        assert!(mode_set_rpc("s", &opencode, Some("ask")).is_err());
+        assert_eq!(mode_set_rpc("s", &opencode, None), Ok(None));
         let v1 = json!({"modes": {"currentModeId": "default",
             "availableModes": [{"id": "default"}, {"id": "plan"}]}});
         assert_eq!(
             mode_set_rpc("s", &v1, Some("plan")),
-            Some((
+            Ok(Some((
                 "session/set_mode",
                 json!({"sessionId": "s", "modeId": "plan"})
-            ))
+            )))
         );
-        assert_eq!(mode_set_rpc("s", &json!({}), Some("plan")), None);
+        assert!(mode_set_rpc("s", &json!({}), Some("plan")).is_err());
     }
 
     #[test]
@@ -3727,19 +4263,19 @@ mod tests {
             "id": "wrong", "category": "mode", "type": "boolean",
             "currentValue": "build", "options": [{"value": "plan"}]
         }]});
-        assert_eq!(mode_set_rpc("s", &result, Some("plan")), None);
+        assert!(mode_set_rpc("s", &result, Some("plan")).is_err());
         result["configOptions"][0]["type"] = Value::Null;
-        assert_eq!(mode_set_rpc("s", &result, Some("plan")), None);
+        assert!(mode_set_rpc("s", &result, Some("plan")).is_err());
         result["configOptions"].as_array_mut().unwrap().push(json!({
             "id": "mode", "category": "mode", "type": "select",
             "currentValue": "build", "options": [{"value": "plan"}]
         }));
         assert_eq!(
             mode_set_rpc("s", &result, Some("plan")),
-            Some((
+            Ok(Some((
                 "session/set_config_option",
                 json!({"sessionId": "s", "configId": "mode", "value": "plan"})
-            ))
+            )))
         );
         result["configOptions"].as_array_mut().unwrap().pop();
         result["modes"] = json!({
@@ -3747,10 +4283,10 @@ mod tests {
         });
         assert_eq!(
             mode_set_rpc("s", &result, Some("plan")),
-            Some((
+            Ok(Some((
                 "session/set_mode",
                 json!({"sessionId": "s", "modeId": "plan"})
-            ))
+            )))
         );
     }
 
@@ -4054,7 +4590,7 @@ mod tests {
 
     #[test]
     fn live_handshake_advertises_terminal_capability() {
-        let params = acp_initialize_params(true);
+        let params = acp_initialize_params(AcpClientMode::live("grok"));
         assert_eq!(params["clientCapabilities"]["terminal"], json!(true));
         assert!(params["clientCapabilities"]["elicitation"]["form"].is_object());
         assert_eq!(params["protocolVersion"], json!(ACP_PROTOCOL_VERSION));
@@ -4064,7 +4600,12 @@ mod tests {
             params["clientInfo"]["version"],
             json!(env!("CARGO_PKG_VERSION"))
         );
-        let probe = acp_initialize_params(false);
+        let agy = acp_initialize_params(AcpClientMode::live("antigravity"));
+        assert_eq!(
+            agy["clientCapabilities"],
+            json!({"terminal":false, "elicitation":{"form":{}}})
+        );
+        let probe = acp_initialize_params(AcpClientMode::Probe);
         assert_eq!(probe["clientCapabilities"]["terminal"], json!(false));
         assert!(probe["clientCapabilities"].get("elicitation").is_none());
     }
@@ -4280,6 +4821,7 @@ mod tests {
         let bin = which_bin("cursor-agent").expect("cursor-agent on PATH");
         let cwd = std::env::temp_dir();
         let session = AcpSession::connect(
+            "cursor",
             &bin,
             &["acp".to_string()],
             &cwd,
@@ -5524,6 +6066,7 @@ mod tests {
             UnifiedAgentEvent::TextItemDelta { .. } => "TextItemDelta",
             UnifiedAgentEvent::TextItemCompleted { .. } => "TextItemCompleted",
             UnifiedAgentEvent::InteractionResolved { .. } => "InteractionResolved",
+            UnifiedAgentEvent::QuestionResolved { .. } => "QuestionResolved",
             UnifiedAgentEvent::ThinkingDelta { .. } => "ThinkingDelta",
             UnifiedAgentEvent::ToolUse { .. } => "ToolUse",
             UnifiedAgentEvent::ToolInputUpdated { .. } => "ToolInputUpdated",
@@ -5559,6 +6102,7 @@ mod tests {
         };
         let cwd = std::env::temp_dir();
         let session = match AcpSession::connect(
+            "cursor",
             &bin,
             &["acp".to_string()],
             &cwd,
@@ -5697,6 +6241,7 @@ mod tests {
         let cwd = std::env::temp_dir();
         // 走生产用的常驻 actor（此前驱动的是只被真机测试吊着命的一次性 `run_acp_session`）。
         let session = match AcpSession::connect(
+            "opencode",
             &bin,
             &["acp".to_string()],
             &cwd,
@@ -5898,9 +6443,14 @@ pub async fn probe_acp_sessions(
     let deadline = Duration::from_secs(timeout_secs);
     let started = std::time::Instant::now();
 
-    write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(false))
-        .await
-        .ok()?;
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        acp_initialize_params(AcpClientMode::Probe),
+    )
+    .await
+    .ok()?;
 
     let init = read_rpc_response(&mut reader, &mut stdin, 1, started, deadline).await?;
     validate_initialize_result(&init).ok()?;
@@ -6034,9 +6584,14 @@ async fn read_acp_session_history(
 ) -> Option<Vec<Value>> {
     let started = std::time::Instant::now();
 
-    write_rpc(stdin, 1, "initialize", acp_initialize_params(false))
-        .await
-        .ok()?;
+    write_rpc(
+        stdin,
+        1,
+        "initialize",
+        acp_initialize_params(AcpClientMode::Probe),
+    )
+    .await
+    .ok()?;
     let init = read_rpc_response(reader, stdin, 1, started, deadline).await?;
     validate_initialize_result(&init).ok()?;
 

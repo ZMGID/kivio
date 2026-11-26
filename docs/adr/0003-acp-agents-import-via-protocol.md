@@ -19,7 +19,9 @@ opencode 和 kimi 在 Kivio 里是 ACP 代理。导入它们的会话时，用 A
 
 ## Antigravity CLI
 
-Antigravity CLI 通过 `agy acp` 枚举并读取原生会话，续聊使用 `agy --conversation <id>`。Kivio 解码返回的文件 URI，并按真实工作目录筛选。Windows 上代理可能返回其他项目的会话，因此目录校验以返回的路径为准。
+Antigravity CLI 的导入与聊天都使用 `agy acp`。导入时，Kivio 解码返回的文件 URI，并按真实工作目录筛选。Windows 上代理可能返回其他项目的会话，因此目录校验以返回的路径为准。
+
+聊天通过 `elicitation/create` 等待用户回答。Kivio 在提问卡片中显示选项标题，并按 CLI 给出的选项值回传答案。旧版 `stream-json` 创建的对话沿用原生会话 ID，重开时优先使用 CLI 声明支持的 `session/resume`。在 1.5.10 上，`session/load` 会接受不存在的 ID，因此回退到该方法前，Kivio 先通过 `session/list` 核对绑定。只有查完整份列表仍找不到原 ID 时才按已有规则恢复可见历史。见[回退与恢复约定](./0006-rewind-realigns-external-cli-sessions.md)。
 
 已在 1.5.10 验证枚举、短会话重放和按 ID 续接。1.5.15 修复了长历史重放可能被提前截断的问题。 [官方发布记录](https://antigravity.google/docs/changelog)
 

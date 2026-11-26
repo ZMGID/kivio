@@ -4,21 +4,38 @@ use super::super::types::{
     StreamFormat,
 };
 
+pub(crate) const MISSING_RESUME_TARGET: &str = "Antigravity native conversation not found";
+
 pub fn build_antigravity_args(
     ctx: &RuntimeContext,
     options: &RuntimeBuildOptions,
     _prompt: Option<&str>,
 ) -> Vec<String> {
-    let mut args = vec![
-        "--input-format".into(),
-        "stream-json".into(),
-        "--output-format".into(),
-        "stream-json".into(),
-    ];
-    // Resume is supplied by the persisted live handle in connect(), never --continue.
-    // agy allocates its own conversation id; a Kivio-generated UUID is not a new-session flag.
-    // Catalog variants own their effort; never let a stale session override it.
-    let model_has_effort = options.model.as_deref().is_some_and(|model| {
+    let mut args = vec!["acp".into()];
+    append_launch_settings(&mut args, ctx, options);
+    args
+}
+
+fn append_launch_settings(
+    args: &mut Vec<String>,
+    ctx: &RuntimeContext,
+    options: &RuntimeBuildOptions,
+) {
+    match options.sandbox.as_deref() {
+        Some("sandbox") => args.push("--sandbox".into()),
+        Some("always-proceed") => args.push("--dangerously-skip-permissions".into()),
+        _ => {}
+    }
+    for dir in &ctx.extra_allowed_dirs {
+        args.extend(["--add-dir".into(), dir.clone()]);
+    }
+}
+
+pub(crate) fn effective_reasoning<'a>(
+    model: Option<&str>,
+    reasoning: Option<&'a str>,
+) -> Option<&'a str> {
+    let model_has_effort = model.is_some_and(|model| {
         model.trim().rsplit_once('-').is_some_and(|(_, suffix)| {
             matches!(
                 suffix.to_ascii_lowercase().as_str(),
@@ -26,30 +43,31 @@ pub fn build_antigravity_args(
             )
         })
     });
-    for (flag, value) in [
-        ("--model", &options.model),
-        ("--effort", &options.reasoning),
-    ] {
-        if flag == "--effort" && model_has_effort {
-            continue;
-        }
-        if let Some(value) = value
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty() && *v != "default")
-        {
-            args.extend([flag.into(), value.into()]);
-        }
+    reasoning
+        .map(str::trim)
+        .filter(|value| !model_has_effort && !value.is_empty() && *value != "default")
+}
+
+pub(crate) fn antigravity_report_settings(
+    ctx: &RuntimeContext,
+    options: &RuntimeBuildOptions,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    let model = options
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "default");
+    if let Some(model) = model {
+        args.extend(["--model".into(), model.into()]);
     }
-    match options.sandbox.as_deref() {
-        Some(mode @ ("plan" | "accept-edits")) => args.extend(["--mode".into(), mode.into()]),
-        Some("sandbox") => args.push("--sandbox".into()),
-        Some("always-proceed") => args.push("--dangerously-skip-permissions".into()),
-        _ => {} // Inherit native permissions; do not silently bypass them.
+    if let Some(reasoning) = effective_reasoning(model, options.reasoning.as_deref()) {
+        args.extend(["--effort".into(), reasoning.into()]);
     }
-    for dir in &ctx.extra_allowed_dirs {
-        args.extend(["--add-dir".into(), dir.clone()]);
+    if let Some(mode @ ("plan" | "accept-edits")) = options.sandbox.as_deref() {
+        args.extend(["--mode".into(), mode.into()]);
     }
+    append_launch_settings(&mut args, ctx, options);
     args
 }
 
@@ -111,17 +129,15 @@ pub const ANTIGRAVITY_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     },
     run: super::super::types::AgentRunPolicy {
         additional_dirs: super::super::types::AdditionalDirsStrategy::Effective,
-        model_selection: super::super::types::ModelSelectionStrategy::Direct,
-        regenerate: super::super::types::RegenerateStrategy::None,
-        approval: super::super::types::ApprovalStrategy::Default,
         retry: super::super::types::RetryStrategy::NeverReplay,
+        ..super::super::types::AgentRunPolicy::STANDARD
     },
     slash_strategy: SlashStrategy::Antigravity,
     env: &[],
     max_prompt_arg_bytes: None,
     prompt_via_stdin: true,
     prompt_input_format: PromptInputFormat::Text,
-    stream_format: StreamFormat::AntigravityStreamJson,
+    stream_format: StreamFormat::AntigravityAcp,
     resumes_session_via_cli: true,
     image_input: CapabilitySupport::Fallback,
     steering: CapabilitySupport::Unavailable,
@@ -160,19 +176,10 @@ mod tests {
             sandbox: None,
         };
         let args = build_antigravity_args(&ctx, &options, Some("must go to stdin"));
-        assert!(args
-            .windows(2)
-            .any(|w| w == ["--add-dir", r"C:\my project"]));
-        assert!(args.windows(2).any(|w| w == ["--model", "my-model"]));
-        assert!(args.windows(2).any(|w| w == ["--effort", "high"]));
-        assert!(!args.iter().any(|v| [
-            "old",
-            "new",
-            "--continue",
-            "--dangerously-skip-permissions",
-            "must go to stdin"
-        ]
-        .contains(&v.as_str())));
+        assert_eq!(args, ["acp", "--add-dir", r"C:\my project"]);
+        let report = antigravity_report_settings(&ctx, &options);
+        assert!(report.windows(2).any(|w| w == ["--model", "my-model"]));
+        assert!(report.windows(2).any(|w| w == ["--effort", "high"]));
         options.sandbox = Some("always-proceed".into());
         assert!(build_antigravity_args(&ctx, &options, None)
             .contains(&"--dangerously-skip-permissions".into()));
@@ -198,7 +205,11 @@ mod tests {
                 reasoning: Some("high".into()),
                 sandbox: None,
             };
-            let args = build_antigravity_args(&ctx, &options, None);
+            assert_eq!(
+                effective_reasoning(Some(model), options.reasoning.as_deref()),
+                None
+            );
+            let args = antigravity_report_settings(&ctx, &options);
             assert!(args.windows(2).any(|w| w == ["--model", model]));
             assert!(!args.iter().any(|v| v == "--effort"));
         }

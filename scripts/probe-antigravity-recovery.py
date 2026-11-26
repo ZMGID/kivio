@@ -115,6 +115,7 @@ def run(binary, home):
     # The live resume reference is stale. Keep the old native transcript and ordinary binding intact.
     missing = str(uuid.uuid4())
     binding = read_json(handle)
+    binding["protocol"] = "antigravity_stream_json"
     binding["native_id"] = missing
     handle.write_text(json.dumps(binding))
 
@@ -123,10 +124,7 @@ def run(binary, home):
     assert answer == f"receipt {replacement}/1"
     starts = peer.parent / "starts.jsonl"
     connections = read_lines(starts)
-    mismatched = [s["native"] for s in connections if s["requested"] == missing and s["native"] != missing]
-    assert mismatched, "Kivio did not try to resume the bound native session"
-    for native in mismatched:
-        assert not (peer.parent / f"{native}.jsonl").exists(), "Sent a prompt on mismatched resume"
+    assert {"requested": missing, "native": None} in connections, "Kivio did not attempt the previous protocol's binding"
 
     assert turn("reopen", followup)[:2] == (replacement, f"receipt {replacement}/2")
     reopened = read_lines(starts)[len(connections):]

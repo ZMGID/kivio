@@ -36,6 +36,7 @@ use tokio::{
 
 use crate::html_render;
 
+pub(crate) mod gemini_questions;
 #[cfg(test)]
 mod voice_tests;
 
@@ -69,6 +70,7 @@ fn server_info(version: &str) -> Value {
 #[derive(Clone, Copy)]
 pub(crate) enum ToolScope {
     Chat,
+    GeminiChat,
     Voice,
 }
 
@@ -78,6 +80,12 @@ impl ToolScope {
 
         match self {
             Self::Chat => html_render::tool_definitions(),
+            Self::GeminiChat => {
+                let mut tools = html_render::tool_definitions();
+                let ask = crate::chat::ask_user::ask_user_tool();
+                tools.push(json!({"name": gemini_questions::TOOL, "description": ask.description, "inputSchema": ask.input_schema}));
+                tools
+            }
             Self::Voice => [
                 types::native_kivio_list_agents_tool(),
                 types::native_kivio_list_projects_tool(),
@@ -101,14 +109,14 @@ impl ToolScope {
 
     fn body_limit(self) -> usize {
         match self {
-            Self::Chat => MAX_CHAT_BODY,
+            Self::Chat | Self::GeminiChat => MAX_CHAT_BODY,
             Self::Voice => MAX_BODY,
         }
     }
 
     fn timeout_message(self) -> &'static str {
         match self {
-            Self::Chat => CHAT_TIMEOUT_MESSAGE,
+            Self::Chat | Self::GeminiChat => CHAT_TIMEOUT_MESSAGE,
             Self::Voice => "Voice tool timed out; its outcome may be unknown",
         }
     }
@@ -328,6 +336,7 @@ pub(crate) enum AppBackend {
     Chat {
         app: AppHandle,
         conversation_id: String,
+        gemini_questions: Option<gemini_questions::GeminiQuestions>,
     },
     Voice {
         app: AppHandle,
@@ -364,6 +373,10 @@ impl Backend for AppBackend {
     fn scope(&self) -> ToolScope {
         match self {
             Self::Voice { .. } => ToolScope::Voice,
+            Self::Chat {
+                gemini_questions: Some(_),
+                ..
+            } => ToolScope::GeminiChat,
             Self::Chat { .. } => ToolScope::Chat,
             #[cfg(test)]
             Self::Test { scope } => *scope,
@@ -380,8 +393,15 @@ impl Backend for AppBackend {
                     .map(ToolOutput::from)
             }
             Self::Chat {
+                gemini_questions: Some(questions),
+                ..
+            } if name == gemini_questions::TOOL => {
+                questions.ask(arguments.clone()).await.map(Into::into)
+            }
+            Self::Chat {
                 app,
                 conversation_id,
+                ..
             } => html_render::call_tool(app, conversation_id, name, arguments)
                 .await
                 .map(Into::into),
@@ -490,11 +510,13 @@ impl KivioServer {
 pub(crate) async fn issue_chat_credential(
     app: &AppHandle,
     conversation_id: &str,
+    gemini_questions: Option<gemini_questions::GeminiQuestions>,
 ) -> Result<McpCredential, String> {
     app.state::<KivioServer>()
         .issue(AppBackend::Chat {
             app: app.clone(),
             conversation_id: conversation_id.to_string(),
+            gemini_questions,
         })
         .await
 }
@@ -1239,6 +1261,24 @@ mod tests {
             );
         }
         assert!(server.owner.state.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_gemini_receives_the_question_tool() {
+        let names = |scope: ToolScope| {
+            scope
+                .tools()
+                .into_iter()
+                .map(|t| t["name"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let mut expected = names(ToolScope::Chat);
+        assert!(!expected.iter().any(|name| name == gemini_questions::TOOL));
+        assert!(!names(ToolScope::Voice)
+            .iter()
+            .any(|name| name == gemini_questions::TOOL));
+        expected.push(gemini_questions::TOOL.into());
+        assert_eq!(names(ToolScope::GeminiChat), expected);
     }
 
     #[tokio::test]

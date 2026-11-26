@@ -352,6 +352,8 @@ export type AskUserOption = {
 }
 
 export type AskUserQuestion = {
+  isSecret?: boolean
+  is_secret?: boolean
   id: string
   prompt: string
   required?: boolean
