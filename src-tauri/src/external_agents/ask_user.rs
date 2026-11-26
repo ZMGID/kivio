@@ -1172,7 +1172,6 @@ mod tests {
         assert_eq!(updated["questions"], input["questions"]);
     }
 
-    /// 用户填的自定义文本优先于预设项 —— 那是他真正想说的话。
     #[test]
     fn claude_custom_text_wins_over_selected_options() {
         let input = serde_json::json!({
@@ -1194,6 +1193,24 @@ mod tests {
             updated["answers"]["怎么做？"],
             serde_json::json!("都不要，换个思路")
         );
+    }
+
+    #[test]
+    fn claude_multiple_choices_and_custom_text_reach_the_same_answer() {
+        let input = serde_json::json!({"questions":[{
+            "question":"Drinks?", "multiSelect":true,
+            "options":[{"label":"Coffee"},{"label":"Juice"}]
+        }]});
+        let prompt = parse_claude(&input).unwrap();
+        let answered = AskUserResponseResult {
+            phase: ASK_USER_PHASE_ANSWERED.into(),
+            answers: HashMap::from([("0".into(), AskUserAnswer {
+                selected_option_ids: vec!["0".into(), "1".into()],
+                custom_text: Some("Soda".into()),
+            })]),
+        };
+        assert_eq!(encode_claude(&input, &prompt, &answered)["answers"]["Drinks?"],
+            "Coffee, Juice, Soda");
     }
 
     /// `updatedInput` **整个替换**这次调用的入参，所以原入参里我们不认识的字段必须原样带回。
