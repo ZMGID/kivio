@@ -261,6 +261,18 @@ fn invalidate_discarded_summary(conversation: &mut Conversation) -> Result<(), S
     let Some(previous) = state.archived_branches.last() else {
         return Ok(());
     };
+    invalidate_summary_discarded_at(conversation, previous.leaf)
+}
+
+/// A compaction that lived only on the discarded path no longer describes the active history.
+fn invalidate_summary_discarded_at(
+    conversation: &mut Conversation,
+    previous_leaf: Option<EntryId>,
+) -> Result<(), String> {
+    let state = conversation
+        .builtin_history
+        .as_ref()
+        .ok_or("Missing canonical history")?;
     let current: HashSet<_> = state
         .snapshot
         .history()
@@ -269,7 +281,7 @@ fn invalidate_discarded_summary(conversation: &mut Conversation) -> Result<(), S
         .map(|entry| entry.id)
         .collect();
     let mut history = state.snapshot.clone().into_history();
-    history.switch_branch(previous.leaf)?;
+    history.switch_branch(previous_leaf)?;
     if history.active_path().iter().any(|entry| {
         matches!(entry.kind, SessionEntryKind::Compaction { .. }) && !current.contains(&entry.id)
     }) {
@@ -800,6 +812,45 @@ pub(crate) fn archive_branch(conversation: &mut Conversation) -> Result<(), Stri
     Ok(())
 }
 
+/// Rewind and retry discard the tail of the active branch. The old branch is only worth keeping
+/// when that tail holds something the user cannot get back otherwise; a turn that ended in a
+/// failure (429, network error) or produced nothing would just be a dead branch in the picker.
+fn discarded_tail_worth_archiving(discarded: &[ChatMessage]) -> bool {
+    discarded.iter().any(|message| {
+        let failed_or_empty = message.stream_outcome.as_deref() == Some("error")
+            || (message.content.trim().is_empty()
+                && message
+                    .reasoning
+                    .as_deref()
+                    .is_none_or(|text| text.trim().is_empty()));
+        message.role != "assistant"
+            || !message.tool_calls.is_empty()
+            || !message.artifacts.is_empty()
+            || !failed_or_empty
+    })
+}
+
+/// Archive the active branch before discarding `discarded`, unless the tail is only failures.
+/// Returns the leaf the discarded path ended at, for summary invalidation.
+fn archive_discarded_tail(
+    conversation: &mut Conversation,
+    discarded_from: usize,
+    keep_anyway: bool,
+) -> Result<Option<EntryId>, String> {
+    let previous_leaf = conversation
+        .builtin_history
+        .as_ref()
+        .ok_or("External conversation")?
+        .snapshot
+        .active_leaf();
+    if keep_anyway || discarded_tail_worth_archiving(&conversation.messages[discarded_from..]) {
+        archive_branch(conversation)?;
+    } else {
+        clear_legacy(conversation);
+    }
+    Ok(previous_leaf)
+}
+
 /// A parked SDK tree remains available when the user returns to Kivio. Only the active SDK
 /// runtime can expose or select its branches; a CLI continues its own bound native history.
 pub(crate) fn branch_history(conversation: &Conversation) -> Option<&BuiltinHistory> {
@@ -1231,7 +1282,8 @@ pub(crate) fn truncate_before(conversation: &mut Conversation, ui_id: &str) -> R
         .flatten()
         .ok_or("User message has no model entry")?;
     history.rewind(range.first)?;
-    archive_branch(&mut candidate)?;
+    // 提问原文回到输入框，只看它之后丢掉的部分。
+    let previous_leaf = archive_discarded_tail(&mut candidate, index + 1, false)?;
     candidate.messages.truncate(index);
     let retained: HashSet<_> = candidate.messages.iter().map(|m| m.id.clone()).collect();
     candidate
@@ -1241,7 +1293,7 @@ pub(crate) fn truncate_before(conversation: &mut Conversation, ui_id: &str) -> R
     state.snapshot = history.snapshot()?;
     state.bindings.retain(|id, _| retained.contains(id));
     super::commands::context::mark_summary_stale_if_needed(&mut candidate, index);
-    invalidate_discarded_summary(&mut candidate)?;
+    invalidate_summary_discarded_at(&mut candidate, previous_leaf)?;
     *conversation = candidate;
     Ok(())
 }
@@ -1303,7 +1355,8 @@ pub(crate) fn prepare_regenerate(
             .map(|facts| (message.id.clone(), facts))
         })
         .collect::<Result<_, _>>()?;
-    archive_branch(&mut candidate)?;
+    // 改写提问会覆盖原文，旧分支是找回它的唯一途径。
+    let previous_leaf = archive_discarded_tail(&mut candidate, keep, new_content.is_some())?;
     candidate.messages.truncate(keep);
     let state = candidate.builtin_history.as_mut().expect("Migrated");
     if let Some(content) = new_content {
@@ -1342,7 +1395,7 @@ pub(crate) fn prepare_regenerate(
     } else {
         index
     });
-    invalidate_discarded_summary(&mut candidate)?;
+    invalidate_summary_discarded_at(&mut candidate, previous_leaf)?;
     *conversation = candidate;
     Ok(())
 }
@@ -1621,6 +1674,52 @@ mod tests {
             "missing.png"
         );
         assert!(texts(&conversation).is_empty());
+    }
+
+    #[test]
+    fn rewinding_or_retrying_a_failed_turn_does_not_leave_a_dead_branch() {
+        let mut failed = message("e", "assistant", "上游返回 429");
+        failed["stream_outcome"] = json!("error");
+        let turns = json!([
+            message("u1", "user", "first"),
+            message("a1", "assistant", "answer"),
+            message("u2", "user", "second"),
+            failed,
+        ]);
+        let archived = |conversation: &Conversation| {
+            conversation
+                .builtin_history
+                .as_ref()
+                .unwrap()
+                .archived_branches
+                .len()
+        };
+
+        let mut rewound = conversation(turns.clone());
+        truncate_before(&mut rewound, "u2").unwrap();
+        assert_eq!(texts(&rewound), ["first", "answer"]);
+        assert_eq!(archived(&rewound), 0);
+
+        // 429 没落下任何回答时，会话里只剩那条提问。
+        let mut unanswered = conversation(json!([
+            message("u1", "user", "first"),
+            message("a1", "assistant", "answer"),
+            message("u2", "user", "second"),
+        ]));
+        truncate_before(&mut unanswered, "u2").unwrap();
+        assert_eq!(archived(&unanswered), 0);
+
+        let mut retried = conversation(turns.clone());
+        prepare_regenerate(&mut retried, "u2", None).unwrap();
+        assert_eq!(texts(&retried), ["first", "answer", "second"]);
+        assert_eq!(archived(&retried), 0);
+
+        // 改写提问会丢掉原文，仍保留旧分支；回到有回答的轮次也照旧保留。
+        let mut edited = conversation(turns);
+        prepare_regenerate(&mut edited, "u2", Some("changed")).unwrap();
+        assert_eq!(archived(&edited), 1);
+        truncate_before(&mut edited, "u1").unwrap();
+        assert_eq!(archived(&edited), 2);
     }
 
     #[test]
