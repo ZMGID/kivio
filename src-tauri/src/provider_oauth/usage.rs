@@ -246,7 +246,13 @@ fn glm_window(item: &Value, label: String, fetched: i64) -> UsageWindow {
         used: used.filter(|_| limit.is_some()),
         limit: limit.filter(|_| used.is_some()),
         resets_at: number(&item["nextResetTime"])
-            .map(|n| if n > 1e12 { (n / 1000.0) as i64 } else { n as i64 })
+            .map(|n| {
+                if n > 1e12 {
+                    (n / 1000.0) as i64
+                } else {
+                    n as i64
+                }
+            })
             .filter(|t| *t > fetched),
         reset_hint: None,
     }
@@ -308,24 +314,28 @@ fn is_opencode_go(base_url: &str) -> bool {
 }
 
 fn parse_opencode_go_usage(value: &Value, fetched: i64) -> AccountUsage {
-    let windows = [("rolling", "5h"), ("weekly", "Weekly"), ("monthly", "Monthly")]
-        .into_iter()
-        .filter(|(key, _)| value["usage"][*key].is_object())
-        .map(|(key, label)| {
-            let row = &value["usage"][key];
-            let limited = row["status"].as_str() == Some("rate-limited");
-            UsageWindow {
-                label: label.into(),
-                used_percent: number(&row["percent"])
-                    .or(limited.then_some(100.0))
-                    .map(|n| n.clamp(0.0, 100.0)),
-                used: None,
-                limit: None,
-                resets_at: reset(row, fetched),
-                reset_hint: None,
-            }
-        })
-        .collect();
+    let windows = [
+        ("rolling", "5h"),
+        ("weekly", "Weekly"),
+        ("monthly", "Monthly"),
+    ]
+    .into_iter()
+    .filter(|(key, _)| value["usage"][*key].is_object())
+    .map(|(key, label)| {
+        let row = &value["usage"][key];
+        let limited = row["status"].as_str() == Some("rate-limited");
+        UsageWindow {
+            label: label.into(),
+            used_percent: number(&row["percent"])
+                .or(limited.then_some(100.0))
+                .map(|n| n.clamp(0.0, 100.0)),
+            used: None,
+            limit: None,
+            resets_at: reset(row, fetched),
+            reset_hint: None,
+        }
+    })
+    .collect();
     AccountUsage {
         plan: None,
         windows,
@@ -339,7 +349,13 @@ fn parse_opencode_go_usage(value: &Value, fetched: i64) -> AccountUsage {
 /// Status 3 is a window the plan lacks, status 2 is used up. A pay-as-you-go key has no
 /// buckets, which yields no windows rather than an error.
 fn parse_minimax_usage(value: &Value, fetched: i64) -> AccountUsage {
-    let at = |n: f64| if n > 1e12 { (n / 1000.0) as i64 } else { n as i64 };
+    let at = |n: f64| {
+        if n > 1e12 {
+            (n / 1000.0) as i64
+        } else {
+            n as i64
+        }
+    };
     let mut windows = Vec::new();
     let mut extras = Vec::new();
     for bucket in value["model_remains"].as_array().into_iter().flatten() {
@@ -349,15 +365,31 @@ fn parse_minimax_usage(value: &Value, fetched: i64) -> AccountUsage {
         }
         let general = name.eq_ignore_ascii_case("general");
         for (left, status, start, end, week) in [
-            ("current_interval_remaining_percent", "current_interval_status", "start_time", "end_time", false),
-            ("current_weekly_remaining_percent", "current_weekly_status", "weekly_start_time", "weekly_end_time", true),
+            (
+                "current_interval_remaining_percent",
+                "current_interval_status",
+                "start_time",
+                "end_time",
+                false,
+            ),
+            (
+                "current_weekly_remaining_percent",
+                "current_weekly_status",
+                "weekly_start_time",
+                "weekly_end_time",
+                true,
+            ),
         ] {
             let status = number(&bucket[status]).map(|n| n as i64);
             let left = number(&bucket[left]);
             if status == Some(3) || (left.is_none() && status != Some(2)) {
                 continue;
             }
-            let used = if status == Some(2) { 100.0 } else { 100.0 - left.unwrap_or(0.0) };
+            let used = if status == Some(2) {
+                100.0
+            } else {
+                100.0 - left.unwrap_or(0.0)
+            };
             let (start, end) = (number(&bucket[start]).map(at), number(&bucket[end]).map(at));
             let span = match (week, start.zip(end).map(|(s, e)| e - s).filter(|s| *s > 0)) {
                 (true, _) => "Weekly".to_owned(),
@@ -383,7 +415,11 @@ fn parse_minimax_usage(value: &Value, fetched: i64) -> AccountUsage {
                 resets_at: end.filter(|t| *t > fetched),
                 reset_hint: None,
             };
-            if general { windows.push(row) } else { extras.push(row) }
+            if general {
+                windows.push(row)
+            } else {
+                extras.push(row)
+            }
         }
     }
     windows.extend(extras);
@@ -411,14 +447,20 @@ fn parse_balance(vendor: Vendor, value: &Value, fetched: i64) -> AccountUsage {
             .into_iter()
             .flatten()
             .filter_map(|row| {
-                balance("Balance", number(&row["total_balance"]), row["currency"].as_str().unwrap_or("CNY"))
+                balance(
+                    "Balance",
+                    number(&row["total_balance"]),
+                    row["currency"].as_str().unwrap_or("CNY"),
+                )
             })
             .collect(),
-        Vendor::Moonshot(currency) => {
-            balance("Balance", number(&value["data"]["available_balance"]), currency)
-                .into_iter()
-                .collect()
-        }
+        Vendor::Moonshot(currency) => balance(
+            "Balance",
+            number(&value["data"]["available_balance"]),
+            currency,
+        )
+        .into_iter()
+        .collect(),
         Vendor::SiliconFlow(currency) => {
             balance("Balance", number(&value["data"]["totalBalance"]), currency)
                 .into_iter()
@@ -462,7 +504,10 @@ fn api_key_vendor(base_url: &str) -> Option<(Vendor, String)> {
         return Some((Vendor::Glm, url.into()));
     }
     if is_opencode_go(base_url) {
-        return Some((Vendor::OpenCodeGo, "https://opencode.ai/inference/go/v1/usage".into()));
+        return Some((
+            Vendor::OpenCodeGo,
+            "https://opencode.ai/inference/go/v1/usage".into(),
+        ));
     }
     let url = url::Url::parse(base_url.trim()).ok()?;
     if url.scheme() != "https" {
@@ -521,7 +566,9 @@ async fn api_key_usage(provider: &ModelProvider) -> Result<AccountUsage, String>
         Vendor::Glm => request
             .header("Authorization", key)
             .header("Accept-Language", "en-US,en"),
-        Vendor::Kimi => request.bearer_auth(key).header("User-Agent", "KimiCLI/1.0.0"),
+        Vendor::Kimi => request
+            .bearer_auth(key)
+            .header("User-Agent", "KimiCLI/1.0.0"),
         _ => request.bearer_auth(key),
     };
     let response = request
@@ -545,7 +592,9 @@ async fn api_key_usage(provider: &ModelProvider) -> Result<AccountUsage, String>
             }
             Ok(parse_glm_usage(&value["data"], fetched))
         }
-        Vendor::OpenCodeGo if value["usage"].is_object() => Ok(parse_opencode_go_usage(&value, fetched)),
+        Vendor::OpenCodeGo if value["usage"].is_object() => {
+            Ok(parse_opencode_go_usage(&value, fetched))
+        }
         Vendor::Kimi if value.is_object() => Ok(parse_usage("kimi", &value, fetched)),
         Vendor::MiniMax => match number(&value["base_resp"]["status_code"]) {
             Some(code) if code == 0.0 => Ok(parse_minimax_usage(&value, fetched)),
@@ -553,9 +602,7 @@ async fn api_key_usage(provider: &ModelProvider) -> Result<AccountUsage, String>
             Some(_) => Err(fail(&value)),
             None => Err("Invalid usage response".into()),
         },
-        Vendor::Moonshot(_) | Vendor::SiliconFlow(_)
-            if value["data"].is_object() =>
-        {
+        Vendor::Moonshot(_) | Vendor::SiliconFlow(_) if value["data"].is_object() => {
             Ok(parse_balance(vendor, &value, fetched))
         }
         Vendor::DeepSeek | Vendor::OpenRouter if value.is_object() => {
