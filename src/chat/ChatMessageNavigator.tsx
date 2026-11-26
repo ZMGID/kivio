@@ -1,12 +1,16 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { createPortal } from 'react-dom'
 import { Boxes, Eraser } from 'lucide-react'
 import { useT } from '../components/i18n'
 import { messageNavigatorProximityWidth, type MessageNavigatorNode } from './messageNavigator'
 
-// The rail has fixed-height ticks, including compaction and clear markers.
-const TICK_HEIGHT = 13
+const TICK_HEIGHT = 11
+const MAX_VISIBLE_TICKS = 25
+const VIEWPORT_STYLE: CSSProperties & { '--message-navigator-tick-height': string } = {
+  '--message-navigator-tick-height': `${TICK_HEIGHT}px`,
+  maxHeight: `min(100%, ${MAX_VISIBLE_TICKS * TICK_HEIGHT}px)`,
+}
 
 interface PreviewAnchor {
   node: MessageNavigatorNode
@@ -77,7 +81,7 @@ function MessageNavigatorBase({
       event.preventDefault()
       event.stopPropagation()
       let delta = event.deltaY
-      if (event.deltaMode === 1) delta *= 13
+      if (event.deltaMode === 1) delta *= TICK_HEIGHT
       else if (event.deltaMode === 2) delta *= el.clientHeight
       if (delta === 0) return
       browsingRailRef.current = true
@@ -145,6 +149,7 @@ function MessageNavigatorBase({
         <div
           ref={viewportRef}
           className="chat-message-navigator-viewport"
+          style={VIEWPORT_STYLE}
           onMouseMove={handlePointerMove}
           onMouseLeave={clearPointerProximity}
         >
