@@ -1,4 +1,5 @@
 import { getComposerDraft, setComposerDraft } from './composerDraft'
+import { restoreImageReferences } from './attachmentPresentation'
 import type { PendingAttachment } from './types'
 
 type Listener = (text: string) => void
@@ -40,15 +41,20 @@ export function insertTextIntoComposer(text: string, attachments: PendingAttachm
   // 当前草稿，使新挂载的 InputBar 也能读到。随后 listener 仍负责即时更新未卸载的输入框。
   if (textDraftKey) {
     const current = getComposerDraft(textDraftKey) ?? { input: '', quotes: [], attachments: [] }
-    const needsSpace = text.length > 0 && current.input.length > 0
+    const restored = restoreImageReferences(text, attachments)
+    const needsSpace = restored.text.length > 0 && current.input.length > 0
       && !current.input.endsWith(' ')
       && !current.input.endsWith('\n')
+    const prefix = needsSpace ? `${current.input} ` : current.input
+    const existing = restored.attachments.some(attachment => attachment.offset !== undefined)
+      ? current.attachments.map(attachment => ({ ...attachment, offset: Math.min(attachment.offset ?? current.input.length, current.input.length) }))
+      : current.attachments
     setComposerDraft(textDraftKey, {
       ...current,
-      input: `${current.input}${needsSpace ? ' ' : ''}${text}`,
-      attachments: [...current.attachments, ...attachments.filter(
-        attachment => !current.attachments.some(existing => existing.path === attachment.path),
-      )],
+      input: prefix + restored.text,
+      attachments: [...existing, ...restored.attachments
+        .filter(attachment => !current.attachments.some(existing => existing.path === attachment.path))
+        .map(attachment => attachment.offset === undefined ? attachment : { ...attachment, offset: prefix.length + attachment.offset })],
     })
   }
   active?.listener(text)

@@ -1186,6 +1186,8 @@ pub(crate) struct InspectedAttachment {
     pub name: String,
     #[serde(rename = "type")]
     pub attachment_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
 }
 
 pub(crate) fn inspect_attachment_sources<I, S>(paths: I) -> Vec<InspectedAttachment>
@@ -1205,9 +1207,10 @@ fn inspect_attachment_source(source_path: &Path) -> Option<InspectedAttachment> 
         .and_then(|name| name.to_str())
         .unwrap_or("attachment")
         .to_string();
-    let attachment_type = if source_path.is_dir() {
+    let metadata = source_path.metadata().ok()?;
+    let attachment_type = if metadata.is_dir() {
         "folder".to_string()
-    } else if source_path.is_file() {
+    } else if metadata.is_file() {
         if !is_attachable_file_name(&original_name) {
             return None;
         }
@@ -1219,6 +1222,7 @@ fn inspect_attachment_source(source_path: &Path) -> Option<InspectedAttachment> 
         path: source_path.to_string_lossy().into_owned(),
         name: original_name,
         attachment_type,
+        size_bytes: metadata.is_file().then(|| metadata.len()),
     })
 }
 
@@ -1860,7 +1864,9 @@ mod tests {
         assert_eq!(inspected.len(), 2);
         assert_eq!(inspected[0].attachment_type, "folder");
         assert_eq!(inspected[0].name, "testend");
+        assert_eq!(inspected[0].size_bytes, None);
         assert_eq!(inspected[1].attachment_type, "file");
+        assert_eq!(inspected[1].size_bytes, Some(1));
     }
 
     #[test]

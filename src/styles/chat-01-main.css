@@ -584,21 +584,56 @@
 }
 .chat-composer-attachment-label {
   display: inline-block;
-  max-inline-size: calc(100% - 0.35em);
+  max-inline-size: calc(100% - 0.4em);
   margin-inline: 0.2em;
   padding-inline: 0.4em;
   border: 1px solid var(--theme-surface-border);
   border-radius: 0.5em;
   background: var(--theme-surface-muted);
   color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.35;
-  vertical-align: middle;
-  overflow: hidden;
+  line-height: normal;
+  vertical-align: baseline;
+  overflow: clip;
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: none;
 }
+.chat-composer-attachment-label.is-image {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2em;
+  padding: 0;
+  border: 0;
+  border-radius: 0.25em;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 500;
+}
+.chat-composer-attachment-preview {
+  inline-size: 1em;
+  block-size: 1em;
+  flex: none;
+  align-self: center;
+  border-radius: 0.2em;
+  background: var(--theme-surface-muted);
+  overflow: hidden;
+}
+.chat-composer-attachment-preview > img {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+}
+.chat-composer-attachment-name {
+  min-inline-size: 0;
+  max-inline-size: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-composer-attachment-size {
+  flex: none;
+  font-size: 0.72em;
+}
+.chat-composer-attachment-size:empty { display: none; }
 .chat-composer-attachment-label.ProseMirror-selectednode,
 .chat-composer-attachment-label.is-selected {
   outline: 1px solid var(--accent);

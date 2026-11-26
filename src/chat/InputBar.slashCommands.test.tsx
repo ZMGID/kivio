@@ -2,11 +2,11 @@ import { render } from '../test/renderWithNotices'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'
-import { getComposerDraft } from './composerDraft'
+import { getComposerDraft, setComposerDraft } from './composerDraft'
 import { dockApi } from './dock/api'
 import type { ExternalCliSlashCommandDto } from './externalCliSlashCommands'
 import { useState } from 'react'
-import type { AgentPlanMode } from './types'
+import type { AgentPlanMode, PendingAttachment } from './types'
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }) }))
@@ -161,6 +161,18 @@ describe('InputBar with real command editor', () => {
     expect(chip?.querySelector('svg, img')).toBeNull()
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
     await waitFor(() => expect(send).toHaveBeenCalledWith(`请执行/${command}`, [], expect.anything()))
+  })
+
+  it('keeps a native goal command verbatim when an image chip precedes it', async () => {
+    const conversationId = 'native-goal-image'
+    const input = '/goal 按截图修复'
+    const image: PendingAttachment = { id: 'goal-image', type: 'image', name: 'goal.png', path: 'C:/chat/goal.png' }
+    setComposerDraft(conversationId, { input, quotes: [], attachments: [{ ...image, offset: 0 }] })
+    const send = vi.fn()
+    render(<InputBar onSend={send} conversationId={conversationId} usesExternalRuntime externalAgentName="codex" />)
+    expect(screen.getByRole('textbox')).toHaveTextContent('goal.png/goal 按截图修复')
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(send).toHaveBeenCalledWith(input, [image], expect.anything()))
   })
 
   it.each(['compact', 'reload'] as const)('restores a failed %s action to its original draft even after navigation', async (command) => {

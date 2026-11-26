@@ -2561,7 +2561,7 @@ export const api = {
   chatSavePastedAttachment: (name: string, dataBase64: string) =>
     invoke<ChatPastedImageResult>('chat_save_pasted_attachment', { name, dataBase64 }),
   chatInspectAttachmentPaths: (paths: string[]) =>
-    invoke<Array<{ path: string; name: string; type: 'image' | 'file' | 'video' | 'folder' }>>(
+    invoke<Array<{ path: string; name: string; type: 'image' | 'file' | 'video' | 'folder'; sizeBytes?: number }>>(
       'chat_inspect_attachment_paths',
       { paths },
     ),

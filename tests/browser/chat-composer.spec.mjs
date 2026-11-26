@@ -38,7 +38,7 @@ test('keeps the empty chat centered when the window gets shorter', async ({ page
   }
 })
 
-test('shows attachment labels in the draft and sends the original text with the remaining files', async ({ page }) => {
+test('sends the renumbered image reference with the remaining files', async ({ page }) => {
   await page.addInitScript(() => {
     const paths = ['C:/screenshots/first.png', 'C:/screenshots/second.png', 'C:/screenshots/notes.pdf']
     const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII='
@@ -51,7 +51,7 @@ test('shows attachment labels in the draft and sends the original text with the 
           success: true, files: [{ path: paths[2] }],
         })
         if (command === 'chat_inspect_attachment_paths') return Promise.resolve(args.paths.map(path => ({
-          path, name: path.split('/').at(-1), type: path.endsWith('.png') ? 'image' : 'file',
+          path, name: path.split('/').at(-1), type: path.endsWith('.png') ? 'image' : 'file', sizeBytes: 2048,
         })))
         if (command === 'chat_read_attachment') return Promise.resolve({ success: true, data: image })
         return Promise.resolve(1)
@@ -65,23 +65,25 @@ test('shows attachment labels in the draft and sends the original text with the 
   await page.getByRole('button', { name: '添加', exact: true }).click()
   await page.getByRole('button', { name: '添加附件', exact: true }).click()
   await expect(page.getByRole('button', { name: '预览图片' })).toHaveCount(2)
-  await expect(composer.getByText('图片 #1')).toHaveAttribute('title', 'first.png')
-  await expect(composer.getByText('图片 #2')).toHaveAttribute('title', 'second.png')
+  const composerFontSize = await composer.evaluate(element => getComputedStyle(element).fontSize)
+  await expect(composer.getByTitle('first.png', { exact: true })).toHaveText('first.png 2.0 KB')
+  await expect(composer.getByText('first.png', { exact: true })).toHaveCSS('font-size', composerFontSize)
+  await expect(composer.getByTitle('second.png', { exact: true })).toHaveText('second.png 2.0 KB')
   await expect(composer.getByText('notes.pdf')).toBeVisible()
   await expect(page.getByText('#2', { exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: '移除', exact: true }).first().click()
-  await expect(composer.getByText('图片 #1')).toHaveAttribute('title', 'second.png')
-  await expect(composer.getByText('图片 #2')).toHaveCount(0)
+  await expect(composer.getByTitle('second.png', { exact: true })).toBeVisible()
+  await expect(composer.getByTitle('first.png', { exact: true })).toHaveCount(0)
 
   await composer.focus()
   await page.keyboard.press('End')
   await page.keyboard.insertText(' 看这张')
   await page.getByRole('button', { name: '发送', exact: true }).click()
   const sent = await page.evaluate(() => window.chatComposerSent)
-  expect(sent.content).toBe('123 看这张')
+  expect(sent.content).toBe('123[图片 #1] 看这张')
   expect(sent.attachments.map(attachment => attachment.name)).toEqual(['second.png', 'notes.pdf'])
-  await expect(composer.getByText('图片 #1')).toHaveCount(0)
+  await expect(composer.getByTitle('second.png', { exact: true })).toHaveCount(0)
 
   await composer.click()
   await composer.fill('甲乙')
@@ -135,16 +137,90 @@ test('arrow keys move through wrapped text before browsing prompt history', asyn
   await expect(composer).toHaveText(draft)
 })
 
-test('pastes a selectable attachment at the caret and supports editing on both sides', async ({ page }) => {
+test('pastes over the captured selection and keeps later typing after a pending image', async ({ page }) => {
   await page.addInitScript(() => {
+    const pending = new Map()
+    window.hasPendingImagePaste = name => pending.has(name)
+    window.finishImagePaste = name => pending.get(name)()
     window.__TAURI_INTERNALS__ = {
       metadata: { currentWindow: { label: 'chat' }, currentWebview: { label: 'chat' } },
       transformCallback: () => 1,
-      invoke(command) {
+      invoke(command, args) {
         if (command === 'chat_read_clipboard_files') return Promise.resolve({ success: true, files: [] })
-        if (command === 'chat_save_pasted_image') return new Promise(resolve => {
-          window.finishImagePaste = () => resolve({ success: true, path: 'C:/screenshots/pasted.png', name: 'pasted.png' })
-        })
+        if (command === 'chat_save_pasted_image') {
+          return new Promise(resolve => {
+            pending.set(args.name, () => {
+              pending.delete(args.name)
+              resolve({ success: true, name: args.name, path: `C:/screenshots/${args.name}` })
+            })
+          })
+        }
+        return Promise.resolve(1)
+      },
+    }
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} }
+  })
+  await page.goto('/scripts/fixtures/chat-composer.html')
+  const composer = page.getByRole('textbox')
+  const paste = async name => {
+    await composer.evaluate((editor, name) => {
+      const clipboardData = new DataTransfer()
+      clipboardData.items.add(new File(['image'], name, { type: 'image/png' }))
+      editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+    }, name)
+    await expect.poll(() => page.evaluate(name => window.hasPendingImagePaste(name), name)).toBe(true)
+  }
+  const finish = name => page.evaluate(name => window.finishImagePaste(name), name)
+
+  await composer.fill('前删后')
+  await page.keyboard.press('Home')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('Shift+ArrowRight')
+  await paste('selection.png')
+  await finish('selection.png')
+  await expect(composer).toHaveText('前selection.png 5 B后')
+
+  await page.keyboard.press('End')
+  await paste('pending-first.png')
+  await paste('pending-second.png')
+  await page.keyboard.insertText('续写')
+  await finish('pending-second.png')
+  await expect(composer.getByTitle('pending-second.png', { exact: true })).toBeVisible()
+  await finish('pending-first.png')
+  await expect(composer).toHaveText('前selection.png 5 B后pending-first.png 5 Bpending-second.png 5 B续写')
+
+  await page.keyboard.press('End')
+  await page.keyboard.press('Shift+ArrowLeft')
+  await paste('edited-selection.png')
+  await page.keyboard.insertText('写的内容')
+  await finish('edited-selection.png')
+  await expect(composer).toHaveText('前selection.png 5 B后pending-first.png 5 Bpending-second.png 5 B续edited-selection.png 5 B写的内容')
+})
+
+test('pastes a selectable attachment at the caret and supports editing on both sides', async ({ page }) => {
+  await page.addInitScript(() => {
+    const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII='
+    const thumbnailReads = new Map()
+    window.thumbnailReadCount = name => thumbnailReads.get(`C:/screenshots/${name}`) ?? 0
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: 'chat' }, currentWebview: { label: 'chat' } },
+      transformCallback: () => 1,
+      invoke(command, args) {
+        if (command === 'chat_read_clipboard_files') return Promise.resolve({ success: true, files: [] })
+        if (command === 'chat_read_attachment' && args.thumbnail) {
+          const reads = thumbnailReads.get(args.path) ?? 0
+          thumbnailReads.set(args.path, reads + 1)
+          const result = { success: true, data: image }
+          if (reads === 0 && args.path.endsWith('/pasted.png')) {
+            return new Promise(resolve => { window.finishThumbnail = () => resolve(result) })
+          }
+          return Promise.resolve(result)
+        }
+        if (command === 'chat_save_pasted_image') {
+          const saved = { success: true, path: 'C:/screenshots/' + args.name, name: args.name }
+          if (args.name !== 'pasted.png') return Promise.resolve(saved)
+          return new Promise(resolve => { window.finishImagePaste = () => resolve(saved) })
+        }
         return Promise.resolve(1)
       },
     }
@@ -170,20 +246,38 @@ test('pastes a selectable attachment at the caret and supports editing on both s
   await expectTextCaret(composer, 3)
   await page.keyboard.insertText('续')
   await page.evaluate(() => window.finishImagePaste())
-  const chip = composer.getByText('图片 #1')
-  await expect(composer).toHaveText('新前图片 #1后续')
+  const chip = composer.getByTitle('pasted.png', { exact: true })
+  await expect(composer).toHaveText('新前pasted.png 5 B后续')
+  const inlinePreview = chip.locator('.chat-composer-attachment-preview')
+  const inlineThumbnail = inlinePreview.locator('img')
+  const fontSize = await composer.evaluate(element => getComputedStyle(element).fontSize)
+  await expect(inlinePreview).toHaveCSS('width', fontSize)
+  await expect(inlineThumbnail).toBeHidden()
+  const chipBeforePreview = await chip.boundingBox()
+  await expect.poll(() => page.evaluate(() => typeof window.finishThumbnail)).toBe('function')
+  await page.evaluate(() => window.finishThumbnail())
+  const preview = page.getByRole('button', { name: '预览图片' }).locator('img')
+  await expect(preview).toBeVisible()
+  const thumbnailSource = await preview.getAttribute('src')
+  await expect(inlineThumbnail).toBeVisible()
+  await expect(inlineThumbnail).toHaveJSProperty('naturalWidth', 1)
+  expect(await chip.boundingBox()).toEqual(chipBeforePreview)
 
   await page.keyboard.press('Home')
   await page.keyboard.press('ArrowRight')
   await page.keyboard.press('ArrowRight')
   await expectTextCaret(composer, 2)
   await page.keyboard.insertText('左')
-  await expect(composer).toHaveText('新前左图片 #1后续')
+  await expect(composer).toHaveText('新前左pasted.png 5 B后续')
+  await expect(preview).toHaveAttribute('src', thumbnailSource)
+  await expect(inlineThumbnail).toHaveAttribute('src', thumbnailSource)
+  await expect(inlineThumbnail).toHaveCSS('width', fontSize)
+  expect(await page.evaluate(() => window.thumbnailReadCount('pasted.png'))).toBe(1)
   await chip.click()
   await expect(chip).toHaveClass(/ProseMirror-selectednode/)
   await page.keyboard.press('ArrowRight')
   await page.keyboard.insertText('右')
-  await expect(composer).toHaveText('新前左图片 #1右后续')
+  await expect(composer).toHaveText('新前左pasted.png 5 B右后续')
 
   await page.keyboard.press('ArrowLeft')
   await page.keyboard.press('Shift+ArrowLeft')
@@ -195,10 +289,21 @@ test('pastes a selectable attachment at the caret and supports editing on both s
   await expect(chip).toHaveCount(0)
   await expect(page.getByRole('button', { name: '预览图片' })).toHaveCount(0)
   await page.keyboard.press('ControlOrMeta+z')
-  await expect(composer).toHaveText('新前左图片 #1右后续')
+  await expect(composer).toHaveText('新前左pasted.png 5 B右后续')
 
+  await page.keyboard.press('End')
+  await page.keyboard.insertText(' 对比图1和图2')
+  await page.keyboard.press('Home')
+  await expectTextCaret(composer, 0)
+  await composer.evaluate(editor => {
+    const clipboardData = new DataTransfer()
+    clipboardData.items.add(new File(['image'], 'inserted-first.png', { type: 'image/png' }))
+    editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+  })
+  await expect(composer.getByTitle('inserted-first.png', { exact: true })).toHaveText('inserted-first.png 5 B')
+  await expect(composer.getByTitle('pasted.png', { exact: true })).toHaveText('pasted.png 5 B')
   await page.getByRole('button', { name: '发送', exact: true }).click()
   const sent = await page.evaluate(() => window.chatComposerSent)
-  expect(sent.content).toBe('新前左右后续')
-  expect(sent.attachments.map(attachment => attachment.name)).toEqual(['pasted.png'])
+  expect(sent.content).toBe('[图片 #1]新前左[图片 #2]右后续 对比图1和图2')
+  expect(sent.attachments.map(attachment => attachment.name)).toEqual(['inserted-first.png', 'pasted.png'])
 })

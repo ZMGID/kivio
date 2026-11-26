@@ -7,7 +7,7 @@ import { keymap } from '@milkdown/prose/keymap'
 import { deleteSelection, selectAll } from '@milkdown/prose/commands'
 import { composerCaret } from './composerCaret'
 import { findComposerCommands, type SlashCommandDefinition } from './slashCommands'
-import { imageAttachmentNumbers } from './attachmentPresentation'
+import { formatBytes } from '../utils/formatBytes'
 import type { ComposerAttachment } from './composerDraft'
 import type { PendingAttachment } from './types'
 
@@ -142,6 +142,32 @@ export type AttachmentInsertion = {
   release: () => void
 }
 
+type AttachmentInsertionAnchor = { from: number; to: number }
+
+const attachmentInsertionMeta = 'composerAttachmentInsertion'
+
+function mapAttachmentInsertions(tr: Transaction, pending: ReadonlySet<AttachmentInsertionAnchor>) {
+  const inserted: unknown = tr.getMeta(attachmentInsertionMeta)
+  let followsInsertion = false
+  for (const anchor of pending) {
+    if (anchor === inserted) {
+      followsInsertion = true
+      continue
+    }
+    for (const map of tr.mapping.maps) {
+      const { from, to } = anchor
+      let replaceSelection = from < to
+      // Keep later typing, including edits that reuse part of the selected text.
+      if (replaceSelection) map.forEach((start, end) => {
+        if (start <= to && end >= from) replaceSelection = false
+      })
+      // Stay before typing at the paste point and after earlier pastes there.
+      anchor.from = map.map(from, from < to || followsInsertion ? 1 : -1)
+      anchor.to = replaceSelection ? map.map(to, -1) : anchor.from
+    }
+  }
+}
+
 export interface ComposerEditorHandle {
   readonly dom: HTMLElement
   readonly value: string
@@ -153,7 +179,7 @@ export interface ComposerEditorHandle {
   setSelectionRange: (start: number, end: number) => void
   select: () => void
   replaceText: (start: number, end: number, text: string) => void
-  captureAttachmentInsertion: () => AttachmentInsertion | undefined
+  captureAttachmentInsertion: (options?: { replaceSelection: boolean }) => AttachmentInsertion | undefined
   undo: () => void
   redo: () => void
   readonly canUndo: boolean
@@ -167,7 +193,7 @@ type Props = {
   scopeKey: string
   commands: readonly SlashCommandDefinition[]
   attachments?: readonly ComposerAttachment[]
-  imageReferenceLabel?: string
+  imageThumbnails?: ReadonlyMap<string, string>
   readOnly?: boolean
   busy?: boolean
   placeholder: string
@@ -187,7 +213,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
   const current = useRef(props)
   current.current = props
   const scope = useRef(props.scopeKey)
-  const pendingInsertions = useRef(new Set<{ position: number }>())
+  const pendingInsertions = useRef(new Set<AttachmentInsertionAnchor>())
   const [, finishComposition] = useState(0)
 
   useImperativeHandle(ref, () => {
@@ -226,23 +252,36 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
         view.dispatch(closeHistory(tr).scrollIntoView())
         view.dispatch(closeHistory(view.state.tr))
       },
-      captureAttachmentInsertion() {
+      captureAttachmentInsertion({ replaceSelection } = { replaceSelection: false }) {
         const view = viewRef.current
         if (!view) return
         const pending = pendingInsertions.current
+        const { selection } = view.state
         const domSelection = view.dom.ownerDocument.getSelection()
         const focus = domSelection?.focusNode
+        const start = domSelection?.anchorNode
         // A paste can follow a native caret move before ProseMirror observes it.
-        const position = view.hasFocus() && domSelection && focus && view.dom.contains(focus)
-          ? view.posAtDOM(focus, domSelection.focusOffset)
-          : view.state.selection.head
-        const anchor = { position }
+        let head = selection.head
+        let tail = selection.anchor
+        if (view.hasFocus() && domSelection && focus && start && view.dom.contains(focus) && view.dom.contains(start)) {
+          head = view.posAtDOM(focus, domSelection.focusOffset)
+          tail = view.posAtDOM(start, domSelection.anchorOffset)
+        }
+        const from = replaceSelection ? Math.min(head, tail) : head
+        const to = replaceSelection ? Math.max(head, tail) : head
+        const anchor = { from, to }
         pending.add(anchor)
         return {
           insert(attachments) {
             if (!pending.has(anchor) || view.isDestroyed || !view.editable || scope.current !== current.current.scopeKey) return false
             const nodes = attachments.map(attachment => schema.nodes.attachment.create({ attachment }))
-            view.dispatch(view.state.tr.insert(anchor.position, nodes))
+            const { selection } = view.state
+            const { from, to } = anchor
+            const tr = view.state.tr.replaceWith(from, to, nodes).setMeta(attachmentInsertionMeta, anchor)
+            if (selection.from === from && selection.to === to) {
+              tr.setSelection(TextSelection.create(tr.doc, from + nodes.length))
+            }
+            view.dispatch(tr)
             return true
           },
           release() { pending.delete(anchor) },
@@ -278,9 +317,6 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
     if (!mount.current) return
     let compositionJustEnded = false
     let compositionTimer: ReturnType<typeof setTimeout> | undefined
-    const mapInsertions = (tr: Transaction) => {
-      for (const anchor of pendingInsertions.current) anchor.position = tr.mapping.map(anchor.position)
-    }
     const normalize = new Plugin({
       appendTransaction(transactions, _old, state) {
         if (viewRef.current?.composing || !transactions.some(tr => tr.docChanged || tr.getMeta('normalize'))) return null
@@ -308,16 +344,13 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       editable: () => !current.current.readOnly,
       attributes: { role: 'textbox', 'aria-multiline': 'true', spellcheck: 'false' },
       decorations(state) {
-        const numbers = imageAttachmentNumbers(documentAttachments(state.doc))
         const labels: Decoration[] = []
         state.doc.forEach((node, pos) => {
           const attachment = attachmentIn(node)
           if (!attachment) return
-          const number = numbers.get(attachment.id)
-          const label = number === undefined
-            ? attachment.name : current.current.imageReferenceLabel?.replace('{n}', String(number)) ?? attachment.name
           const selected = state.selection.from <= pos && state.selection.to >= pos + node.nodeSize
-          labels.push(Decoration.node(pos, pos + node.nodeSize, selected ? { class: 'is-selected' } : {}, { label }))
+          const thumbnail = current.current.imageThumbnails?.get(attachment.id)
+          labels.push(Decoration.node(pos, pos + node.nodeSize, selected ? { class: 'is-selected' } : {}, { thumbnail }))
         })
         return DecorationSet.create(state.doc, labels)
       },
@@ -374,11 +407,45 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
           const dom = document.createElement('span')
           dom.className = 'chat-composer-attachment-label'
           dom.contentEditable = 'false'
+          const type = attachmentIn(node)?.type
+          const text = document.createTextNode('')
+          const image = type === 'image' ? document.createElement('img') : null
+          const size = image ? document.createElement('span') : null
+          if (image && size) {
+            const preview = document.createElement('span')
+            preview.className = 'chat-composer-attachment-preview'
+            const name = document.createElement('span')
+            name.className = 'chat-composer-attachment-name'
+            name.append(text)
+            size.className = 'chat-composer-attachment-size'
+            dom.classList.add('is-image')
+            image.alt = ''
+            image.draggable = false
+            image.hidden = true
+            image.onload = () => { image.hidden = false }
+            preview.append(image)
+            dom.append(preview, name, size)
+          } else {
+            dom.append(text)
+          }
           const update = (next: ProseNode, labels: readonly Decoration[]) => {
             const attachment = attachmentIn(next)
-            if (!attachment) return false
-            dom.title = attachment.name
-            dom.textContent = labels[0]?.spec.label ?? attachment.name
+            if (!attachment || attachment.type !== type) return false
+            if (dom.title !== attachment.name) dom.title = attachment.name
+            if (text.data !== attachment.name) text.data = attachment.name
+            if (size) {
+              const formatted = formatBytes(attachment.sizeBytes)
+              const label = formatted ? ` ${formatted}` : ''
+              if (size.textContent !== label) size.textContent = label
+            }
+            if (image) {
+              const thumbnail = labels[0]?.spec.thumbnail ?? null
+              if (thumbnail !== image.getAttribute('src')) {
+                image.hidden = true
+                if (thumbnail) image.src = thumbnail
+                else image.removeAttribute('src')
+              }
+            }
             return true
           }
           update(node, decorations)
@@ -403,7 +470,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
           || attachments.some((attachment, index) => attachment.id !== previous[index]?.id))
         if (attachmentChanged) closeHistory(tr)
         const { state: next, transactions } = old.applyTransaction(tr)
-        transactions.forEach(mapInsertions)
+        for (const transaction of transactions) mapAttachmentInsertions(transaction, pendingInsertions.current)
         view.updateState(attachmentChanged ? next.apply(closeHistory(next.tr)) : next)
         if (!next.doc.eq(old.doc)) {
           current.current.onChange(plainText(next.doc), textOffset(next.doc, next.selection.from),
@@ -445,7 +512,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       const tr = updateDocument(view.state.tr, doc)
       if (tr) {
         tr.setMeta('addToHistory', false)
-        for (const anchor of pendingInsertions.current) anchor.position = tr.mapping.map(anchor.position)
+        mapAttachmentInsertions(tr, pendingInsertions.current)
         view.updateState(view.state.apply(tr))
       }
     }

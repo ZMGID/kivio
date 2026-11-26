@@ -231,7 +231,19 @@ describe('InputBar 发送清草稿', () => {
     expect(screen.getByRole('textbox')).toHaveValue(content)
     expect(screen.getAllByRole('button', { name: '移除' })).toHaveLength(2)
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith(content, attachments, expect.any(Object)))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith(`${content}[图片 #1][图片 #2]`, attachments, expect.any(Object)))
+  })
+
+  it('restores message references as image chips and resends them only once', async () => {
+    const image: PendingAttachment = { id: 'restored', type: 'image', name: 'one.png', path: 'C:/chat/att_one.png' }
+    const onSend = vi.fn()
+    render(<RewindFirstMessage conversationId="rewind-image-reference" content="对比[Image #1]的样式"
+      attachments={[image]} onSend={onSend} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '回到这里' }))
+    expect(screen.getByRole('textbox')).toHaveValue('对比的样式')
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('对比[图片 #1]的样式', [image], expect.any(Object)))
   })
 
   it('keeps restored images with their draft when switching conversations', async () => {
@@ -247,7 +259,7 @@ describe('InputBar 发送清草稿', () => {
     expect(screen.getByRole('textbox')).toHaveValue('existing draft restored question')
     expect(screen.getByRole('button', { name: '移除' })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('existing draft restored question', [image], expect.any(Object)))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('existing draft restored question[图片 #1]', [image], expect.any(Object)))
   })
 
   it('上下键遍历用户历史，跳过空文字并恢复未发送草稿', () => {

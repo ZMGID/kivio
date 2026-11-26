@@ -289,6 +289,7 @@ export interface PendingAttachment {
   type: 'image' | 'file' | 'video' | 'folder'
   name: string
   path: string
+  sizeBytes?: number
   /**
    * 内存文本附件（粘贴长文本自动生成的虚拟 txt）：正文只存浏览器内存、不落盘。
    * 存在即视为虚拟附件：点击卡片打开编辑弹窗而非系统打开；提交时随消息传给后端。

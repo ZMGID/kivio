@@ -16,6 +16,7 @@ type ChatAttachmentsProps = {
   conversationId?: string | null
   variant: 'user' | 'assistant' | 'composer'
   onRemove?: (id: string) => void
+  onImageThumbnail?: (id: string, src: string | null) => void
   /** 内存文本附件（粘贴长文本虚拟 txt）点击时回调，用于打开编辑弹窗。 */
   onEditAttachment?: (attachment: DisplayAttachment) => void
 }
@@ -30,13 +31,16 @@ function ImagePreview({
   previewLabel,
   failedLabel,
   onPreview,
+  onThumbnail,
 }: {
   attachment: DisplayAttachment
   conversationId?: string | null
   previewLabel: string
   failedLabel: string
   onPreview?: (src: string, alt: string) => void
+  onThumbnail?: ChatAttachmentsProps['onImageThumbnail']
 }) {
+  const { id, name, path } = attachment
   const [src, setSrc] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
@@ -49,10 +53,12 @@ function ImagePreview({
     setFailed(false)
     setSrc(null)
 
-    void loadAttachmentDataUrl(attachment, conversationId, true).then((dataUrl) => {
+    const image: DisplayAttachment = { id, name, path, type: 'image' }
+    void loadAttachmentDataUrl(image, conversationId, true).then((dataUrl) => {
       if (cancelled) return
       if (dataUrl) {
         setSrc(dataUrl)
+        onThumbnail?.(id, dataUrl)
       } else {
         setFailed(true)
       }
@@ -62,8 +68,9 @@ function ImagePreview({
     return () => {
       cancelled = true
       generation.current += 1
+      onThumbnail?.(id, null)
     }
-  }, [attachment, conversationId])
+  }, [id, name, path, conversationId, onThumbnail])
 
   const showOriginal = async () => {
     const request = ++generation.current
@@ -184,6 +191,7 @@ export function ChatAttachments({
   conversationId,
   variant,
   onRemove,
+  onImageThumbnail,
   onEditAttachment,
 }: ChatAttachmentsProps) {
   const t = useT()
@@ -244,6 +252,7 @@ export function ChatAttachments({
                 previewLabel={t.chatPreviewImage}
                 failedLabel={t.chatImagePreviewFailed}
                 onPreview={(src, alt) => openChatImageViewer({ src, alt, name: attachment.name })}
+                onThumbnail={onImageThumbnail}
               />
             ) : (
               <FileAttachmentCard

@@ -5,6 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { ArrowUp, Check, ChevronDown, Layers, Square, TextQuote, WandSparkles, X } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
+import { textWithImageReferences } from './attachmentPresentation'
 import { PastedTextEditorModal } from './PastedTextEditorModal'
 import { ComposerAddMenu } from './ComposerAddMenu'
 import { useComposerContextMenu, type ComposerPasteTarget } from './useComposerContextMenu'
@@ -432,6 +433,16 @@ export const InputBar = memo(function InputBar({
   }, [input])
   const [quotes, setQuotes] = useState<string[]>(() => getComposerDraft(draftKeyValue)?.quotes ?? [])
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => getComposerDraft(draftKeyValue)?.attachments ?? [])
+  const [imageThumbnails, setImageThumbnails] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const onImageThumbnail = useCallback((id: string, src: string | null) => {
+    setImageThumbnails(previous => {
+      if (previous.get(id) === (src ?? undefined)) return previous
+      const next = new Map(previous)
+      if (src) next.set(id, src)
+      else next.delete(id)
+      return next
+    })
+  }, [])
   const [attachmentError, setAttachmentError] = useState(() => getComposerDraft(draftKeyValue)?.attachmentError ?? '')
   const [editingAttachment, setEditingAttachment] = useState<PendingAttachment | null>(null)
   const [dragActive, setDragActive] = useState(false)
@@ -573,6 +584,7 @@ export const InputBar = memo(function InputBar({
           type: item.type,
           name: item.name || t.chatAttachmentFallbackName,
           path: item.path,
+          ...(item.sizeBytes === undefined ? {} : { sizeBytes: item.sizeBytes }),
         }))
       if (next.length > 0) return next
     } catch (err) {
@@ -1034,9 +1046,13 @@ export const InputBar = memo(function InputBar({
     const quotedBlock = quotes
       .map((q) => q.split('\n').map((line) => `> ${line}`).join('\n'))
       .join('\n\n')
+    // Keep native slash commands and their arguments verbatim.
+    const body = !quotedBlock && trimmed.startsWith('/')
+      ? trimmed
+      : textWithImageReferences(input, attachments, t.chatComposerImageReference).trim()
     const content = quotedBlock
-      ? (trimmed ? `${quotedBlock}\n\n${trimmed}` : quotedBlock)
-      : trimmed
+      ? (body ? `${quotedBlock}\n\n${body}` : quotedBlock)
+      : body
     const files = attachments.map(attachment => {
       const file = { ...attachment }
       delete file.offset
@@ -1244,7 +1260,7 @@ export const InputBar = memo(function InputBar({
     menuTarget?: ComposerPasteTarget,
     knownNativePaths?: string[],
     operationScope?: AttachmentOperationScope,
-    insertion = editorRef.current?.captureAttachmentInsertion(),
+    insertion = editorRef.current?.captureAttachmentInsertion({ replaceSelection: true }),
   ) => {
     if (composerLocked || optimizeBusy || (!isTauriRuntime() && !menuTarget)) {
       insertion?.release()
@@ -1343,6 +1359,7 @@ export const InputBar = memo(function InputBar({
               type: 'image',
               name: result.name,
               path: result.path,
+              sizeBytes: file.size,
             })
             continue
           }
@@ -1387,7 +1404,7 @@ export const InputBar = memo(function InputBar({
     onError: setAttachmentError,
     onPaste: async (target) => {
       const scope = beginComposerAttachmentOperation(draftScopeRef.current.key)
-      const insertion = editorRef.current?.captureAttachmentInsertion()
+      const insertion = editorRef.current?.captureAttachmentInsertion({ replaceSelection: true })
       try {
         // 桌面端全部走系统剪贴板；WebView 的 read/readText 会弹出网站权限请求。
         let nativePaths: string[] = []
@@ -1791,6 +1808,7 @@ export const InputBar = memo(function InputBar({
                 variant="composer"
                 onRemove={composerLocked ? undefined : removeAttachment}
                 onEditAttachment={setEditingAttachment}
+                onImageThumbnail={onImageThumbnail}
               />
             </div>
           )}
@@ -1838,7 +1856,7 @@ export const InputBar = memo(function InputBar({
                 scopeKey={draftKeyValue}
                 commands={allSlashCommands}
                 attachments={attachments}
-                imageReferenceLabel={t.chatComposerImageReference}
+                imageThumbnails={imageThumbnails}
                 readOnly={sendPending || optimizeBusy}
                 busy={sendPending || optimizeBusy}
                 onChange={handleInput}
