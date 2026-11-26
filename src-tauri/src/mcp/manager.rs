@@ -110,7 +110,7 @@ impl McpSession {
 /// lifecycle code cannot reach unrelated `AppState` domains.
 pub(crate) struct McpManager<'a> {
     runtime: &'a McpRuntimeState,
-    http: &'a reqwest::Client,
+    http: reqwest::Client,
     config: McpManagerConfig,
     settings_persistence: &'a dyn McpSettingsPersistence,
 }
@@ -143,7 +143,7 @@ pub(crate) trait McpSettingsPersistence: Send + Sync {
 impl<'a> McpManager<'a> {
     pub(crate) fn new(
         runtime: &'a McpRuntimeState,
-        http: &'a reqwest::Client,
+        http: reqwest::Client,
         config: McpManagerConfig,
         settings_persistence: &'a dyn McpSettingsPersistence,
     ) -> Self {
@@ -321,7 +321,7 @@ impl<'a> McpManager<'a> {
         let client_id = auth.client_id.clone();
 
         match crate::connectors::oauth::refresh_access_token(
-            self.http,
+            &self.http,
             &token_endpoint,
             &refresh_token,
             client_id.as_deref(),
@@ -1390,7 +1390,7 @@ mod tests {
         let runtime = McpRuntimeState::load(directory.path());
         let manager = McpManager::new(
             &runtime,
-            &state.http,
+            state.http(),
             McpManagerConfig::from_settings(&Settings::default()),
             &state,
         );
@@ -1475,7 +1475,7 @@ mod tests {
         let state = test_app_state();
         let server = http_server(url);
 
-        let (tools, _) = conn::inspect_server_once(&server, &state.http)
+        let (tools, _) = conn::inspect_server_once(&server, &state.http())
             .await
             .expect("one-shot list should work");
         assert_eq!(
@@ -1497,7 +1497,7 @@ mod tests {
 
         let raw = conn::call_tool_once(
             &server,
-            &state.http,
+            &state.http(),
             "echo",
             serde_json::json!({}),
             Duration::from_secs(5),

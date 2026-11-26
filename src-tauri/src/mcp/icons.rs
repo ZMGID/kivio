@@ -107,7 +107,7 @@ async fn load_icon(client: &reqwest::Client, icon: &Icon, origin: Option<&str>) 
 }
 
 pub(super) async fn load_icons(icons: &[Icon], origin: Option<&str>) -> Vec<McpIconImage> {
-    let Ok(client) = reqwest::Client::builder()
+    let Ok(client) = crate::network_proxy::client_builder()
         .redirect(Policy::none())
         .timeout(Duration::from_secs(2))
         .build()

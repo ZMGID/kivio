@@ -414,7 +414,7 @@ pub async fn chat_mcp_test_server(
 ) -> Result<McpTestResult, String> {
     // tauri command 必须返回 Result 才能用 State<'_, _>；前端仍读 McpTestResult（永不 Err）。
     Ok(
-        match list_server_tools(&state.http, &server, timeout_ms.unwrap_or(60_000)).await {
+        match list_server_tools(&state.http(), &server, timeout_ms.unwrap_or(60_000)).await {
             Ok((tools, icons)) => McpTestResult {
                 success: true,
                 tools,

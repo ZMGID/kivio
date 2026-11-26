@@ -160,7 +160,7 @@ pub(crate) fn automation_working_directory(app: &AppHandle) -> String {
 }
 
 pub(crate) fn http_client(app: &AppHandle) -> reqwest::Client {
-    app.state::<AppState>().http.clone()
+    app.state::<AppState>().http()
 }
 
 pub(crate) async fn run_captured_command(

@@ -59,7 +59,7 @@ export function ProviderAccountIdentity({ provider, lang, heading }: {
       } catch { if (!stopped) setResult({ status: 'error' }) }
     })()
     return () => { stopped = true }
-  }, [provider.id, provider.request.oauth?.provider, provider.request.oauth?.credentialId, provider.baseUrl, provider.apiFormat, provider.request.useSystemProxy, retry])
+  }, [provider.id, provider.request.oauth?.provider, provider.request.oauth?.credentialId, provider.baseUrl, provider.apiFormat, retry])
   const { status } = result
   const account = result.status === 'ready' ? result.account : null
   if (heading) return <ProviderAccountSummary heading={heading} lang={lang}

@@ -110,7 +110,7 @@ pub async fn connector_oauth_connect(
     request_id: String,
     on_device_code: tauri::ipc::Channel<github_device::DevicePrompt>,
 ) -> Result<ChatMcpServer, String> {
-    let http = state.http.clone();
+    let http = state.http();
     if request_id.is_empty() || request_id.len() > 128 {
         return Err("Invalid OAuth request id".into());
     }

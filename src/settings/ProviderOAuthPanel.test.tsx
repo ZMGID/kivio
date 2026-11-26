@@ -31,7 +31,7 @@ describe('model OAuth onboarding', () => {
     vi.mocked(api.providerOAuthStart).mockResolvedValue(browserLogin)
     render(<ProviderOAuthPanel settings={makeSettings()} onFetchModels={vi.fn()} provider={provider} lang="zh" onUpdateProvider={vi.fn()} />)
     await start()
-    expect(api.providerOAuthStart).toHaveBeenCalledWith('antigravity', true, undefined)
+    expect(api.providerOAuthStart).toHaveBeenCalledWith('antigravity', undefined)
     expect(screen.getByText(/请在浏览器中完成 Google 登录/)).toBeInTheDocument()
     expect(screen.queryByText(/输入设备码/)).toBeNull()
     expect(api.openExternal).toHaveBeenCalledWith(browserLogin.verificationUrl)
@@ -50,14 +50,14 @@ describe('model OAuth onboarding', () => {
     setup(); await start()
     expect(screen.getByText('ABCD-1234')).toBeTruthy()
     expect(api.openExternal).toHaveBeenCalledWith(login.verificationUrl)
-    expect(api.providerOAuthStart).toHaveBeenCalledWith('kimi', true, undefined)
+    expect(api.providerOAuthStart).toHaveBeenCalledWith('kimi', undefined)
   })
   it.each(['kimi', 'codex'] as const)('opens device authorization and saves the credential reference for %s', async (kind) => {
     const { update, provider } = setup(kind)
     const auth = { provider: kind, credentialId: 'credential-1' }
     vi.mocked(api.providerOAuthPoll).mockResolvedValue({ status: 'authorized', interval: 0, auth })
     await start(); await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
-    expect(api.providerOAuthStart).toHaveBeenCalledWith(kind, true, undefined)
+    expect(api.providerOAuthStart).toHaveBeenCalledWith(kind, undefined)
     expect(update).toHaveBeenCalledWith(provider.id, { request: { ...provider.request, oauth: auth } })
     expect(screen.queryByText('ABCD-1234')).toBeNull()
     expect(JSON.stringify(update.mock.calls)).not.toContain('access_token')
@@ -109,7 +109,7 @@ describe('model OAuth onboarding', () => {
     expect(screen.getByRole('option', { name: 'work@example.test · aaaa1111' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('option', { name: 'work@example.test · bbbb2222' }))
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '使用 ChatGPT 登录' })) })
-    expect(api.providerOAuthStart).toHaveBeenCalledWith('chatgpt', true, 'reg-bbbb2222')
+    expect(api.providerOAuthStart).toHaveBeenCalledWith('chatgpt', 'reg-bbbb2222')
   })
 
   it.each(['failed', 'cancelled'])('resumes the issued ChatGPT client after a %s exchange and after reopening', async outcome => {
@@ -129,7 +129,7 @@ describe('model OAuth onboarding', () => {
     }
     expect(screen.getByRole('button', { name: '登录账号' })).toHaveTextContent('待完成授权 · ab123456')
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '继续授权' })) })
-    expect(api.providerOAuthStart).toHaveBeenLastCalledWith('chatgpt', true, 'reg-ab123456')
+    expect(api.providerOAuthStart).toHaveBeenLastCalledWith('chatgpt', 'reg-ab123456')
     first.unmount()
     render(panel)
     await act(async () => {})

@@ -29,6 +29,7 @@ pub mod macos_ocr;
 pub mod market;
 pub mod mcp;
 pub mod native_tools;
+pub mod network_proxy;
 pub mod notes;
 pub mod offline_models;
 mod opencode_free;
@@ -70,7 +71,7 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_single_instance::init as init_single_instance;
 
-use api::build_http_client;
+use api::shared_http_client;
 use commands::initialize_launch_at_startup;
 use native_tools::cleanup_stale_sandbox_exports;
 use screenshot::cleanup_orphan_temp_files;
@@ -355,6 +356,8 @@ pub fn run() {
             }
 
             let mut settings = load_settings(&app.handle());
+            // Before any client, child process or window exists: everything follows one route.
+            network_proxy::install(&settings.network_proxy);
             external_agents::overrides::sync_from_settings(&settings);
             if let Err(err) = chat::storage::sync_builtin_assistants(&app.handle()) {
                 eprintln!("Failed to sync built-in assistants: {err}");
@@ -379,11 +382,11 @@ pub fn run() {
             });
 
             let offline_models =
-                offline_models::OfflineModelManager::new(&app.handle(), build_http_client());
+                offline_models::OfflineModelManager::new(&app.handle(), shared_http_client());
             app.manage(AppState::base(
                 settings,
                 usage_dir,
-                build_http_client(),
+                shared_http_client(),
                 #[cfg(target_os = "macos")]
                 macos_ocr::MacOcrClient::new(&app.handle()),
                 offline_models.clone(),
@@ -569,6 +572,7 @@ pub fn run() {
             backup::webdav::webdav_load,
             backup::webdav::webdav_save,
             backup::webdav::webdav_test,
+            network_proxy::network_proxy_test,
             backup::webdav::webdav_list,
             backup::webdav::webdav_upload,
             backup::webdav::webdav_download,

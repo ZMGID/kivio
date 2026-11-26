@@ -1054,8 +1054,6 @@ export type ProviderRequestConfig = {
   oauth?: ProviderOAuthConfig | null
   /** 附加到该供应商所有请求上的自定义头。同名时覆盖 CLI 身份预设。 */
   customHeaders: { key: string; value: string }[]
-  /** 是否跟随系统代理。默认 true；关掉走直连。 */
-  useSystemProxy: boolean
   /**
    * 遗留 on/off。sanitize/normalize 时迁移进 `promptCacheRetention`，新配置不再写入。
    * @deprecated 使用 promptCacheRetention
@@ -1236,6 +1234,18 @@ export type WebSearchConfig = {
   searchDepth: 'ultra-fast' | 'fast' | 'basic' | 'advanced'
 }
 
+export type NetworkProxyMode = 'system' | 'none' | 'custom'
+
+export type NetworkProxySettings = {
+  mode: NetworkProxyMode
+  /** http / https / socks5 / socks5h 代理地址，可含账号密码。切到其它模式时保留。 */
+  url: string
+  /** 不走代理的主机，逗号分隔。本机地址始终直连。 */
+  bypass: string
+}
+
+export type NetworkProxyTestResult = { latencyMs: number; status: number }
+
 export type Settings = {
   hotkey: string
   chatHotkey: string
@@ -1260,6 +1270,8 @@ export type Settings = {
   launchMinimizedToTray: boolean
   /** 关闭聊天窗口时隐藏复用（默认 false = 销毁）。下次打开无需重新加载，占用更多内存。 */
   keepChatWindowAlive?: boolean
+  /** 全局网络代理：所有出网请求、子进程与（Windows）窗口内网页内容都按它走。旧快照可省略。 */
+  networkProxy?: NetworkProxySettings
   /** 回复完成时发送系统通知，默认关闭；开启后正在查看该对话时不提醒。 */
   chatCompletionNotifications: boolean
   translatorProviderId: string
@@ -1919,13 +1931,13 @@ export const api = {
   },
 
   providerOAuthChatGPTAccounts: () => invoke<ChatGPTAccount[]>('provider_oauth_chatgpt_accounts'),
-  providerOAuthStart: (provider: ProviderOAuthConfig['provider'], useSystemProxy = true, credentialId?: string) =>
-    invoke<ProviderOAuthLogin>('provider_oauth_start', { provider, useSystemProxy, credentialId }),
+  providerOAuthStart: (provider: ProviderOAuthConfig['provider'], credentialId?: string) =>
+    invoke<ProviderOAuthLogin>('provider_oauth_start', { provider, credentialId }),
   providerOAuthPoll: (loginId: string) => invoke<ProviderOAuthPoll>('provider_oauth_poll', { loginId }),
   providerOAuthCancel: (loginId: string) => invoke<void>('provider_oauth_cancel', { loginId }),
   providerOAuthAccount: (provider: ModelProvider) => invoke<ProviderOAuthAccount>('provider_oauth_account', { provider }),
   providerOAuthUsage: (provider: ModelProvider) => invoke<ProviderOAuthUsage>('provider_oauth_usage', { provider }),
-  providerOAuthDisconnect: (credentialId: string, useSystemProxy = true) => invoke<string | null>('provider_oauth_disconnect', { credentialId, useSystemProxy }),
+  providerOAuthDisconnect: (credentialId: string) => invoke<string | null>('provider_oauth_disconnect', { credentialId }),
   desktopPetGetEnabled: () => invoke<boolean>('desktop_pet_get_enabled'),
   desktopPetSetEnabled: (enabled: boolean) =>
     invoke<boolean>('desktop_pet_set_enabled', { enabled }),
@@ -1960,6 +1972,8 @@ export const api = {
   webdavLoad: () => invoke<WebDavConfig>('webdav_load'),
   webdavSave: (input: WebDavConfigInput) => invoke<WebDavConfig>('webdav_save', { input }),
   webdavTest: (input: WebDavConfigInput) => invoke<void>('webdav_test', { input }),
+  networkProxyTest: (settings: NetworkProxySettings) =>
+    invoke<NetworkProxyTestResult>('network_proxy_test', { settings }),
   webdavList: () => invoke<WebDavBackup[]>('webdav_list'),
   webdavUpload: (kind: WebDavBackupKind) => invoke<void>('webdav_upload', { kind }),
   webdavDownload: (name: string) => invoke<WebDavDownload>('webdav_download', { name }),

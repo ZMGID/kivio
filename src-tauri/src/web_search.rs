@@ -390,7 +390,8 @@ async fn search_ollama(
     let base = normalized_base_url(&config.ollama_base_url, "https://ollama.com");
     let url = format!("{base}/api/web_search");
     let response = send_with_retry("Ollama search", retry_attempts, || {
-        with_standard_request_timeout(state.http.post(&url).bearer_auth(api_key).json(&body)).send()
+        with_standard_request_timeout(state.http().post(&url).bearer_auth(api_key).json(&body))
+            .send()
     })
     .await?;
 
@@ -459,7 +460,7 @@ async fn search_exa_mcp(
     let max_results = config.max_results.clamp(1, 10);
     let result = crate::mcp::conn::call_tool_once(
         &server,
-        &state.http,
+        &state.http(),
         "web_search_exa",
         serde_json::json!({ "query": query, "numResults": max_results }),
         std::time::Duration::from_secs(30),
@@ -597,7 +598,7 @@ async fn search_brave(
     let response = send_with_retry("Brave search", retry_attempts, || {
         with_standard_request_timeout(
             state
-                .http
+                .http()
                 .get(&url)
                 .header("X-Subscription-Token", api_key)
                 .header("Accept", "application/json"),
@@ -713,7 +714,7 @@ async fn search_keenable(
     let body = serde_json::json!({ "query": query, "max_results": max_results });
     let response = send_with_retry("Keenable search", retry_attempts, || {
         let mut req = state
-            .http
+            .http()
             .post(&url)
             .header("X-Keenable-Title", "Kivio")
             .json(&body);
@@ -799,7 +800,7 @@ async fn search_specstream(
     let response = send_with_retry("SpecStream search", retry_attempts, || {
         with_standard_request_timeout(
             state
-                .http
+                .http()
                 .get(&url)
                 .bearer_auth(api_key)
                 .header("Accept", "application/json"),
@@ -830,7 +831,7 @@ async fn search_tinyfish(
     let response = send_with_retry("TinyFish search", retry_attempts, || {
         with_standard_request_timeout(
             state
-                .http
+                .http()
                 .get(&url)
                 .header("X-API-Key", api_key)
                 .header("Accept", "application/json"),
@@ -1091,7 +1092,7 @@ async fn search_serper(
     let response = send_with_retry("Serper search", retry_attempts, || {
         with_standard_request_timeout(
             state
-                .http
+                .http()
                 .post(&url)
                 .header("X-API-KEY", api_key)
                 .json(&body),
@@ -1170,7 +1171,8 @@ async fn search_bocha(
     let base = normalized_base_url(&config.bocha_base_url, "https://api.bochaai.com");
     let url = format!("{base}/v1/web-search");
     let response = send_with_retry("Bocha search", retry_attempts, || {
-        with_standard_request_timeout(state.http.post(&url).bearer_auth(api_key).json(&body)).send()
+        with_standard_request_timeout(state.http().post(&url).bearer_auth(api_key).json(&body))
+            .send()
     })
     .await?;
     let parsed: BochaSearchResponse = read_search_json("Bocha search", response).await?;
@@ -1225,7 +1227,8 @@ async fn search_zhipu(
     );
     let url = format!("{base}/web_search");
     let response = send_with_retry("Zhipu search", retry_attempts, || {
-        with_standard_request_timeout(state.http.post(&url).bearer_auth(api_key).json(&body)).send()
+        with_standard_request_timeout(state.http().post(&url).bearer_auth(api_key).json(&body))
+            .send()
     })
     .await?;
     let parsed: ZhipuSearchResponse = read_search_json("Zhipu search", response).await?;
@@ -1321,7 +1324,8 @@ async fn search_kimi(
         "timeout_seconds": 30,
     });
     let response = send_with_retry("Kimi search", retry_attempts, || {
-        with_standard_request_timeout(state.http.post(&url).bearer_auth(api_key).json(&body)).send()
+        with_standard_request_timeout(state.http().post(&url).bearer_auth(api_key).json(&body))
+            .send()
     })
     .await?;
     let parsed: KimiSearchResponse = read_search_json("Kimi search", response).await?;
@@ -1361,7 +1365,7 @@ async fn search_searxng(
     let response = send_with_retry("SearXNG search", retry_attempts, || {
         with_standard_request_timeout(
             state
-                .http
+                .http()
                 .post(&url)
                 .header("Accept", "application/json")
                 .form(&form),
@@ -1416,7 +1420,8 @@ async fn search_tavily(
     let base = normalized_base_url(&config.tavily_base_url, "https://api.tavily.com");
     let url = format!("{base}/search");
     let response = send_with_retry("Tavily search", retry_attempts, || {
-        with_standard_request_timeout(state.http.post(&url).bearer_auth(api_key).json(&body)).send()
+        with_standard_request_timeout(state.http().post(&url).bearer_auth(api_key).json(&body))
+            .send()
     })
     .await?;
 
@@ -1493,7 +1498,7 @@ async fn search_exa(
     let response = send_with_retry("Exa search", retry_attempts, || {
         with_standard_request_timeout(
             state
-                .http
+                .http()
                 .post(&url)
                 .header("x-api-key", api_key)
                 .json(&body),
@@ -1571,7 +1576,7 @@ async fn search_grok(
     let response = send_with_retry("Grok search", retry_attempts, || {
         with_standard_request_timeout(
             state
-                .http
+                .http()
                 .post(url.clone())
                 .bearer_auth(api_key)
                 .json(&body),
@@ -1679,7 +1684,8 @@ async fn search_deepseek(
         "need_content": true,
     });
     let response = send_with_retry("DeepSeek search", retry_attempts, || {
-        with_standard_request_timeout(state.http.post(&url).bearer_auth(api_key).json(&body)).send()
+        with_standard_request_timeout(state.http().post(&url).bearer_auth(api_key).json(&body))
+            .send()
     })
     .await?;
     let parsed: DeepseekSearchResponse = read_search_json("DeepSeek search", response).await?;
@@ -1734,7 +1740,7 @@ async fn search_deepseek_image(
         ]}]
     });
     let response = send_with_retry("DeepSeek image search", retry_attempts, || {
-        crate::api::with_chat_request_timeout(state.http.post(&url).bearer_auth(key).json(&body))
+        crate::api::with_chat_request_timeout(state.http().post(&url).bearer_auth(key).json(&body))
             .send()
     })
     .await?;

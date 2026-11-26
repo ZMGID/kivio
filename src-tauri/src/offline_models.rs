@@ -367,27 +367,27 @@ enum ValidationState {
 
 pub struct OfflineModelManager {
     app: Option<AppHandle>,
-    http: reqwest::Client,
+    http: crate::network_proxy::SharedHttp,
     install_lock: Mutex<()>,
     model_dir_override: Option<PathBuf>,
     verified_files: StdMutex<HashMap<PathBuf, (u64, Option<std::time::SystemTime>)>>,
 }
 
 impl OfflineModelManager {
-    pub fn new(app: &AppHandle, http: reqwest::Client) -> Arc<Self> {
+    pub fn new(app: &AppHandle, http: impl Into<crate::network_proxy::SharedHttp>) -> Arc<Self> {
         Arc::new(Self {
             app: Some(app.clone()),
-            http,
+            http: http.into(),
             install_lock: Mutex::new(()),
             model_dir_override: None,
             verified_files: StdMutex::new(HashMap::new()),
         })
     }
 
-    pub fn headless(http: reqwest::Client) -> Arc<Self> {
+    pub fn headless(http: impl Into<crate::network_proxy::SharedHttp>) -> Arc<Self> {
         Arc::new(Self {
             app: None,
-            http,
+            http: http.into(),
             install_lock: Mutex::new(()),
             model_dir_override: None,
             verified_files: StdMutex::new(HashMap::new()),
@@ -395,10 +395,13 @@ impl OfflineModelManager {
     }
 
     #[cfg(test)]
-    pub fn with_model_dir(dir: PathBuf, http: reqwest::Client) -> Arc<Self> {
+    pub fn with_model_dir(
+        dir: PathBuf,
+        http: impl Into<crate::network_proxy::SharedHttp>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             app: None,
-            http,
+            http: http.into(),
             install_lock: Mutex::new(()),
             model_dir_override: Some(dir),
             verified_files: StdMutex::new(HashMap::new()),
@@ -870,6 +873,7 @@ impl OfflineModelManager {
     ) -> Result<(), String> {
         let mut request = self
             .http
+            .get()
             .get(source.url())
             .header(USER_AGENT, DOWNLOAD_USER_AGENT)
             .header(ACCEPT_ENCODING, "identity")

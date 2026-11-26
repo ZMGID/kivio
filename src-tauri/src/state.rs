@@ -64,10 +64,8 @@ pub struct AppState {
     /// without needing an AppHandle threaded through every call path.
     pub usage_dir: PathBuf,
     pub(crate) usage_ledger: crate::usage::UsageLedger,
-    pub http: Client,
-    /// 直连客户端（忽略系统/环境代理）。只有当某个供应商关掉「跟随系统代理」时才构造，
-    /// 默认全跟随系统代理的用户不会多出一个连接池。
-    http_direct: std::sync::OnceLock<Client>,
+    /// 跟随全局代理的共享客户端，经 `http()` 取用；代理设置变更后自动重建。
+    pub(crate) http: crate::network_proxy::SharedHttp,
     /// macOS Apple Vision OCR sidecar 客户端。只有系统 OCR 路径会拉起。
     #[cfg(target_os = "macos")]
     pub macos_ocr: std::sync::Arc<MacOcrClient>,
@@ -184,7 +182,7 @@ impl AppState {
     pub(crate) fn base(
         settings: Settings,
         usage_dir: PathBuf,
-        http: Client,
+        http: impl Into<crate::network_proxy::SharedHttp>,
         #[cfg(target_os = "macos")] macos_ocr: std::sync::Arc<MacOcrClient>,
         offline_models: std::sync::Arc<OfflineModelManager>,
         rapidocr: std::sync::Arc<RapidOcrClient>,
@@ -222,8 +220,7 @@ impl AppState {
             usage_dir,
             usage_ledger: Default::default(),
             note_catalog: Default::default(),
-            http,
-            http_direct: std::sync::OnceLock::new(),
+            http: http.into(),
             #[cfg(target_os = "macos")]
             macos_ocr,
             offline_models,
@@ -249,29 +246,29 @@ impl AppState {
     /// chat-generation state, session-consent set, `http`, and `usage_dir`; the
     /// rest are inert defaults kept for struct completeness.
     pub fn new_headless(settings: Settings, usage_dir: PathBuf) -> Self {
-        let offline_models = OfflineModelManager::headless(crate::api::build_http_client());
+        let offline_models = OfflineModelManager::headless(crate::api::shared_http_client());
         Self::base(
             settings,
             usage_dir,
-            crate::api::build_http_client(),
+            crate::api::shared_http_client(),
             #[cfg(target_os = "macos")]
             MacOcrClient::headless(),
             offline_models.clone(),
             RapidOcrClient::headless(offline_models),
         )
     }
-    /// 该供应商应当使用的 HTTP 客户端。默认跟随系统代理（与加这个开关之前一致），
-    /// 关掉时用忽略代理的直连客户端。
-    pub fn client_for(&self, provider: &crate::settings::ModelProvider) -> &Client {
+    /// 共享 HTTP 客户端（跟随全局代理）。克隆很便宜，调用方按次取用。
+    pub fn http(&self) -> Client {
+        self.http.get()
+    }
+
+    /// 该供应商应当使用的 HTTP 客户端。代理统一由全局网络代理设置决定；
+    /// OAuth 供应商使用禁止重定向的推理客户端。
+    pub fn client_for(&self, provider: &crate::settings::ModelProvider) -> Client {
         if provider.request.oauth.is_some() {
-            return crate::provider_oauth::inference_client(provider.request.use_system_proxy);
+            return crate::provider_oauth::inference_client();
         }
-        if provider.request.use_system_proxy {
-            &self.http
-        } else {
-            self.http_direct
-                .get_or_init(crate::api::build_direct_http_client)
-        }
+        self.http()
     }
 
     /// 安全读取设置（锁中毒时返回内部数据，不 panic）
@@ -317,6 +314,7 @@ impl AppState {
         let mut current = self.settings.write().unwrap_or_else(|e| e.into_inner());
         self.native_diagnostics
             .set_enabled(canonical.chat_tools.request_debug_enabled);
+        crate::network_proxy::install(&canonical.network_proxy);
         *current = canonical.clone();
         let revision = self.advance_settings_revision();
         Ok(SettingsSnapshot {
@@ -394,7 +392,7 @@ impl AppState {
             let settings = self.settings_read();
             crate::mcp::McpManagerConfig::from_settings(&settings)
         };
-        crate::mcp::McpManager::new(&self.mcp_runtime, &self.http, config, self)
+        crate::mcp::McpManager::new(&self.mcp_runtime, self.http(), config, self)
     }
 
     pub(crate) async fn mcp_resource_connection(

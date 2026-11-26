@@ -53,7 +53,8 @@ import { ChatTab } from './tabs/ChatTab'
 import { ProvidersTab } from './tabs/ProvidersTab'
 import { HooksTab } from './tabs/HooksTab'
 import { ComputerControlTab } from './tabs/ComputerControlTab'
-import { AppearanceGroup, BehaviorGroup, PermissionsGroup } from './tabs/GeneralTab'
+import { AppearanceGroup, BehaviorGroup, PermissionsGroup, NetworkProxyGroup } from './tabs/GeneralTab'
+import type { CustomProxyDraft } from './tabs/GeneralTab'
 import { AppInfoGroup, UpdateGroup } from './tabs/AboutTab'
 import { useSettingsMemoryEditor } from './useSettingsMemoryEditor'
 import { useProviderCatalogController } from './useProviderCatalogController'
@@ -172,6 +173,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'general')
 
   const [themeDraft, setThemeDraft] = useState<ThemeDefinition | null>(null)
+  const [customProxyDraft, setCustomProxyDraft] = useState<CustomProxyDraft | null>(null)
   const [usageView, setUsageView] = useState<'app' | 'limits' | 'calls' | 'debug'>('app')
   useEffect(() => {
     if (initialTab) setActiveTab(initialTab)
@@ -1098,6 +1100,14 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   settings={settings}
                   t={t}
                   lang={lang}
+                  onUpdateSettings={updateSettings}
+                />
+
+                <NetworkProxyGroup
+                  settings={settings}
+                  lang={lang}
+                  customDraft={customProxyDraft}
+                  onCustomDraftChange={setCustomProxyDraft}
                   onUpdateSettings={updateSettings}
                 />
 

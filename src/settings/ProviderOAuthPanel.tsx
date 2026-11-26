@@ -84,7 +84,7 @@ export function ProviderOAuthPanel({ provider, settings, lang, onUpdateProvider,
     const run = ++generation.current
     setOperation('sign-in'); setError(''); setNotice('')
     try {
-      const next = await api.providerOAuthStart(auth.provider, provider.request.useSystemProxy, credentialId)
+      const next = await api.providerOAuthStart(auth.provider, credentialId)
       if (generation.current !== run) { await cancelLogin(next.loginId); return }
       loginRef.current = next
       setLogin(next)
@@ -106,7 +106,7 @@ export function ProviderOAuthPanel({ provider, settings, lang, onUpdateProvider,
     if (!auth?.credentialId) return
     setOperation('disconnect'); setError('')
     try {
-      const warning = await api.providerOAuthDisconnect(auth.credentialId, provider.request.useSystemProxy)
+      const warning = await api.providerOAuthDisconnect(auth.credentialId)
       const latest = current.current.provider
       if (latest.id !== provider.id || latest.request.oauth?.credentialId !== auth.credentialId) return
       const oauth = chatgpt ? { ...auth, requiresReauthorization: true } : { provider: auth.provider }

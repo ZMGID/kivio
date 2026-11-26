@@ -1107,7 +1107,7 @@ pub async fn chat_external_cli_install_info(
         .and_then(extract_semver);
     let environment = std::env::vars_os().collect();
     let (latest_version, prepared) = maintenance_preview(
-        &state.http,
+        &state.http(),
         def,
         resolved_path.as_deref(),
         local_version.as_deref(),
@@ -1446,7 +1446,7 @@ pub async fn chat_external_cli_install(
         );
     };
     execute_install_plan(
-        &state.http,
+        &state.http(),
         state.external_live_sessions(),
         def,
         &plan,

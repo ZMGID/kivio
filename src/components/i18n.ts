@@ -170,8 +170,6 @@ export const i18n = {
     // 请求配置（供应商详情里的折叠分组）
     requestConfig: '请求配置',
     requestConfigHint: '自定义请求头、代理、缓存与客户端身份',
-    useSystemProxy: '跟随系统代理',
-    useSystemProxyHint: '关闭后该供应商直连，忽略系统与环境变量里的代理',
     promptCaching: 'Prompt 缓存',
     promptCachingHintAnthropic: '默认打 ephemeral 断点（tools/system/末条消息）；长保留额外 ttl:1h（需端点支持）',
     promptCachingHintOpenAI: '默认发送 prompt_cache_key（同会话同值，拒绝则自动停发）；长保留额外 prompt_cache_retention:24h',
@@ -2888,8 +2886,6 @@ export const i18n = {
     providerName: 'Provider Name',
     requestConfig: 'Request',
     requestConfigHint: 'Custom headers, proxy, caching and client identity',
-    useSystemProxy: 'Use system proxy',
-    useSystemProxyHint: 'Off means a direct connection, ignoring system and environment proxies',
     promptCaching: 'Prompt caching',
     promptCachingHintAnthropic: 'Default marks ephemeral breakpoints (tools/system/last message). Long adds ttl:1h when the endpoint supports it',
     promptCachingHintOpenAI: 'Default sends prompt_cache_key (stable per chat; auto-stops if rejected). Long adds prompt_cache_retention:24h',

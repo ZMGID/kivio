@@ -119,6 +119,7 @@ pub(crate) async fn save_settings(
     settings: Settings,
     expected_version: SettingsVersion,
 ) -> Result<SettingsSnapshot, SettingsError> {
+    crate::network_proxy::validate(&settings.network_proxy)?;
     apply_settings(&app, &state, settings, expected_version, true).await
 }
 

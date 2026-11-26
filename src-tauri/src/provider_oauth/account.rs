@@ -63,7 +63,7 @@ pub async fn provider_oauth_account(
     }
     let resolved = resolve_provider(&state, &provider).await?;
     if auth.provider == "antigravity" {
-        let response = http(provider.request.use_system_proxy)?
+        let response = http()?
             .get("https://openidconnect.googleapis.com/v1/userinfo")
             .bearer_auth(resolved.preferred_api_key().ok_or("OAuth token missing")?)
             .send()

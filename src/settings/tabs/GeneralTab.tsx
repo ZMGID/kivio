@@ -2,9 +2,11 @@ import { useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { Toggle, Select, Input, SettingRow, SettingsGroup, PermissionItem } from '../components'
 import { Button } from '../../components/Button'
+import { notifyError } from '../../components/appNoticeStore'
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from '../uiFont'
 import type { I18n, Lang } from '../../components/i18n'
-import type { Settings as SettingsData, PermissionStatus } from '../../api/tauri'
+import { api } from '../../api/tauri'
+import type { Settings as SettingsData, PermissionStatus, NetworkProxySettings } from '../../api/tauri'
 
 /**
  * 可搜索字体选择器：聚焦展开、输入过滤，每项以自身字体预览。界面字体/代码字体共用。
@@ -236,6 +238,157 @@ export function PermissionsGroup({
           {t.refreshPermissions}
         </Button>
       </div>
+    </SettingsGroup>
+  )
+}
+
+const DEFAULT_NETWORK_PROXY: NetworkProxySettings = { mode: 'system', url: '', bypass: '' }
+const PROXY_URL_PATTERN = /^(https?|socks5h?):\/\/[^\s/?#]+\/?$/i
+export type CustomProxyDraft = Pick<NetworkProxySettings, 'url' | 'bypass'>
+
+function isProxyAddressValid(address: string): boolean {
+  const trimmed = address.trim()
+  if (!PROXY_URL_PATTERN.test(trimmed)) return false
+  try {
+    return Boolean(new URL(trimmed).hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 全局网络代理：Kivio 所有出网请求、外部 CLI / MCP 子进程，以及 Windows 上窗口内的网页内容
+ * 自定义代理填完地址后一次提交，测试连接可以使用未保存的配置。
+ */
+export function NetworkProxyGroup({
+  settings,
+  lang,
+  customDraft,
+  onCustomDraftChange,
+  onUpdateSettings,
+}: {
+  settings: SettingsData
+  lang: Lang
+  customDraft: CustomProxyDraft | null
+  onCustomDraftChange: (draft: CustomProxyDraft | null) => void
+  onUpdateSettings: (updates: Partial<SettingsData>) => void
+}) {
+  const zh = lang === 'zh'
+  const settingsProxy = settings.networkProxy ?? DEFAULT_NETWORK_PROXY
+  const proxy: NetworkProxySettings = customDraft ? { mode: 'custom', ...customDraft } : settingsProxy
+  const [testing, setTesting] = useState(false)
+  const [result, setResult] = useState<{ key: string; text: string } | null>(null)
+  const key = JSON.stringify(proxy)
+  const custom = proxy.mode === 'custom'
+  const urlInvalid = custom && !isProxyAddressValid(proxy.url)
+
+  const changeMode = (mode: string) => {
+    if (mode === proxy.mode) return
+    if (mode === 'custom') {
+      onCustomDraftChange({ url: settingsProxy.url, bypass: settingsProxy.bypass })
+    } else if (mode === 'system' || mode === 'none') {
+      onCustomDraftChange(null)
+      if (mode !== settingsProxy.mode) onUpdateSettings({ networkProxy: { ...settingsProxy, mode } })
+    }
+  }
+
+  const save = () => {
+    onUpdateSettings({ networkProxy: proxy })
+    onCustomDraftChange(null)
+  }
+
+  const test = async () => {
+    setTesting(true)
+    setResult(null)
+    try {
+      const outcome = await api.networkProxyTest(proxy)
+      setResult({ key, text: zh ? `连接成功 · ${outcome.latencyMs} ms` : `Connected · ${outcome.latencyMs} ms` })
+    } catch (error) {
+      notifyError(`${zh ? '代理测试失败' : 'Proxy test failed'}: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  return (
+    <SettingsGroup
+      title={zh ? '网络代理' : 'Network proxy'}
+      description={zh
+        ? 'Kivio 的所有网络请求、外部 CLI 与 MCP 进程都按此设置连接，本机地址始终直连。Windows 上窗口内的网页内容（图片、预览）需重启 Kivio 后生效。'
+        : 'All Kivio network traffic, external CLIs and MCP processes follow this setting; local addresses always connect directly. On Windows, web content inside windows (images, previews) changes after restarting Kivio.'}
+    >
+      <SettingRow label={zh ? '代理模式' : 'Proxy mode'}>
+        <Select
+          className="kv-ctl"
+          ariaLabel={zh ? '代理模式' : 'Proxy mode'}
+          value={proxy.mode}
+          onChange={changeMode}
+          options={[
+            { value: 'system', label: zh ? '系统代理' : 'System proxy' },
+            { value: 'none', label: zh ? '不使用代理' : 'No proxy' },
+            { value: 'custom', label: zh ? '自定义代理' : 'Custom proxy' },
+          ]}
+        />
+      </SettingRow>
+      {custom && (
+        <>
+          <SettingRow
+            label={zh ? '代理地址' : 'Proxy address'}
+            description={zh
+              ? '支持 http、https、socks5、socks5h，可写账号密码，如 socks5://user:pass@127.0.0.1:1080'
+              : 'http, https, socks5 or socks5h, optionally with credentials, e.g. socks5://user:pass@127.0.0.1:1080'}
+          >
+            <div className="flex flex-col items-end gap-1">
+              <Input
+                className="kv-ctl"
+                mono
+                aria-label={zh ? '代理地址' : 'Proxy address'}
+                aria-invalid={urlInvalid}
+                value={proxy.url}
+                onChange={(url) => onCustomDraftChange({ url, bypass: proxy.bypass })}
+                placeholder="http://127.0.0.1:7890"
+              />
+              {urlInvalid && proxy.url.trim() !== '' && (
+                <span className="text-[12px] text-[var(--danger)]" role="status">
+                  {zh ? '格式应为 协议://主机:端口' : 'Expected scheme://host:port'}
+                </span>
+              )}
+            </div>
+          </SettingRow>
+          <SettingRow
+            label={zh ? '不走代理的地址' : 'Bypass list'}
+            description={zh ? '逗号分隔，如 *.corp.local, 192.168.0.0/16。本机地址无需填写。' : 'Comma separated, e.g. *.corp.local, 192.168.0.0/16. Local addresses are always bypassed.'}
+          >
+            <Input
+              className="kv-ctl"
+              mono
+              aria-label={zh ? '不走代理的地址' : 'Bypass list'}
+              value={proxy.bypass}
+              onChange={(bypass) => onCustomDraftChange({ url: proxy.url, bypass })}
+              placeholder="*.corp.local"
+            />
+          </SettingRow>
+        </>
+      )}
+      <SettingRow
+        label={zh ? '测试连接' : 'Test connection'}
+        description={zh ? '用当前填写的设置（无需先保存）访问外网一次。' : 'Reaches the internet once with the settings above, saved or not.'}
+      >
+        <div className="flex items-center gap-2">
+          {result?.key === key && <span className="text-[12px] text-[var(--text-muted)]" role="status">{result.text}</span>}
+          <Button size="sm" onClick={() => void test()} disabled={testing || urlInvalid} data-tauri-drag-region="false">
+            <RefreshCw size={10} className={testing ? 'animate-spin' : ''} />
+            {testing ? (zh ? '测试中…' : 'Testing…') : (zh ? '测试' : 'Test')}
+          </Button>
+        </div>
+      </SettingRow>
+      {customDraft && (
+        <SettingRow label={zh ? '应用代理' : 'Apply proxy'}>
+          <Button size="sm" onClick={save} disabled={urlInvalid}>
+            {zh ? '保存代理' : 'Save proxy'}
+          </Button>
+        </SettingRow>
+      )}
     </SettingsGroup>
   )
 }

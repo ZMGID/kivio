@@ -188,7 +188,7 @@ fn antigravity_windows(value: &Value, fetched: i64) -> Vec<UsageWindow> {
 }
 
 async fn antigravity_usage(provider: &ModelProvider) -> Result<AccountUsage, String> {
-    let client = http(provider.request.use_system_proxy)?;
+    let client = http()?;
     let token = provider.preferred_api_key().ok_or("OAuth token missing")?;
     let project = provider
         .request
@@ -232,7 +232,7 @@ pub async fn provider_oauth_usage(
         _ => return Err("This provider does not expose account usage here".into()),
     };
     let resolved = resolve_provider(&state, &provider).await?;
-    let client = http(provider.request.use_system_proxy)?;
+    let client = http()?;
     let mut request = client
         .get(url)
         .bearer_auth(resolved.preferred_api_key().ok_or("OAuth token missing")?)

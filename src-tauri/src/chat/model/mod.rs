@@ -33,9 +33,9 @@ use openai::OpenAiChatProvider;
 use responses::OpenAiResponsesProvider;
 pub use types::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ModelTransport<'a> {
-    client: &'a reqwest::Client,
+    client: reqwest::Client,
     runtime: &'a ProviderRuntimeState,
     retry_attempts: usize,
     request_debug: &'a (dyn Fn() -> Option<&'a RequestDebugState> + Sync),
@@ -297,7 +297,6 @@ mod anonymous_http_tests {
             request: Default::default(),
             active_key_index: 0,
         };
-        provider.request.use_system_proxy = false;
         provider.request.custom_headers.push(ProviderCustomHeader {
             key: "X-Local-Routing".into(),
             value: "preserved".into(),
@@ -1504,35 +1503,32 @@ mod anonymous_http_tests {
             "x-client-route",
             reqwest::header::HeaderValue::from_static("shared"),
         );
-        state.http = reqwest::Client::builder()
-            .no_proxy()
-            .default_headers(headers)
-            .build()
-            .unwrap();
+        state.http = crate::network_proxy::SharedHttp::fixed(
+            reqwest::Client::builder()
+                .no_proxy()
+                .default_headers(headers)
+                .build()
+                .unwrap(),
+        );
 
         for format in FORMATS {
-            for use_system_proxy in [true, false] {
-                let (url, server) = endpoint(vec![("200 OK", success(format, false))], false).await;
-                let mut provider = provider(format, url, Vec::new());
-                provider.request.use_system_proxy = use_system_proxy;
-                let output = call(&state, &provider, false).await.unwrap();
-                assert_eq!(output.text, "anonymous ok");
-                let captured = server.await.unwrap();
-                assert_eq!(
-                    header(&captured[0], "x-client-route"),
-                    use_system_proxy.then_some("shared")
-                );
-                assert_eq!(header(&captured[0], "x-local-routing"), Some("preserved"));
+            let (url, server) = endpoint(vec![("200 OK", success(format, false))], false).await;
+            let provider = provider(format, url, Vec::new());
+            let output = call(&state, &provider, false).await.unwrap();
+            assert_eq!(output.text, "anonymous ok");
+            let captured = server.await.unwrap();
+            // Every provider uses the app's shared client; the proxy is decided globally.
+            assert_eq!(header(&captured[0], "x-client-route"), Some("shared"));
+            assert_eq!(header(&captured[0], "x-local-routing"), Some("preserved"));
 
-                let records = crate::chat::request_debug::snapshot(&state);
-                let record = records.first().unwrap();
-                assert_eq!(record.provider_id, provider.id);
-                assert_eq!(record.provider_name, provider.name);
-                assert_eq!(record.api_format, format);
-            }
+            let records = crate::chat::request_debug::snapshot(&state);
+            let record = records.first().unwrap();
+            assert_eq!(record.provider_id, provider.id);
+            assert_eq!(record.provider_name, provider.name);
+            assert_eq!(record.api_format, format);
         }
         let usage = crate::usage::today_usage(&state.usage_dir).unwrap();
-        assert_eq!(usage.summary.total_requests as usize, FORMATS.len() * 2);
+        assert_eq!(usage.summary.total_requests as usize, FORMATS.len());
     }
 
     #[tokio::test]

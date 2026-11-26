@@ -38,7 +38,7 @@ pub async fn web_fetch(_http: &Client, arguments: &Value) -> Result<String, Stri
     let mut diagnostics = Vec::new();
     // Fetch owns its redirect policy; changing the shared provider client
     // would also change intentional localhost / HTTP provider connections.
-    let http = fetch_client()?;
+    let http = &fetch_client()?;
     let mut reader_safe = args.reader_fallback;
     let direct = tokio::time::timeout(
         std::time::Duration::from_secs(FETCH_TIMEOUT_SECS),
@@ -175,18 +175,19 @@ async fn fetch_direct(http: &Client, url: &str) -> Result<DirectFetch, String> {
     fetch_direct_guarded(http, url, &mut false).await
 }
 
-fn fetch_client() -> Result<&'static Client, String> {
-    static CLIENT: std::sync::OnceLock<Result<Client, String>> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            Client::builder()
+fn fetch_client() -> Result<Client, String> {
+    static CLIENT: crate::network_proxy::SharedHttp =
+        crate::network_proxy::SharedHttp::live(|| {
+            crate::network_proxy::client_builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
                 .build()
-                .map_err(|err| format!("Build fetch client failed: {err}"))
-        })
-        .as_ref()
-        .map_err(Clone::clone)
+                .unwrap_or_else(|err| {
+                    eprintln!("Build fetch client failed: {err}");
+                    Client::new()
+                })
+        });
+    Ok(CLIENT.get())
 }
 
 fn public_reader_address(address: std::net::IpAddr) -> bool {
@@ -694,7 +695,7 @@ mod tests {
                 .await
                 .is_ok()
         });
-        let err = fetch_direct(fetch_client().unwrap(), &format!("http://{address}/"))
+        let err = fetch_direct(&fetch_client().unwrap(), &format!("http://{address}/"))
             .await
             .unwrap_err();
         assert!(err.contains("only allows https"));

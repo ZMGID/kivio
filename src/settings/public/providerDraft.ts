@@ -7,7 +7,6 @@ export function createProviderRequestDraft(
   return {
     ...(oauth ? { oauth: { provider: oauth } } : {}),
     customHeaders: [],
-    useSystemProxy: true,
     promptCacheRetention: 'short',
     cliIdentity: '',
     cliIdentityVersion: '',

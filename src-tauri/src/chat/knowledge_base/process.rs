@@ -182,7 +182,7 @@ async fn mineru_process(
     // 1. request a presigned upload URL.
     let req: Value = with_standard_request_timeout(
         state
-            .http
+            .http()
             .post(format!("{base}/api/v4/file-urls/batch"))
             .bearer_auth(&key)
             .json(&serde_json::json!({
@@ -215,7 +215,7 @@ async fn mineru_process(
 
     // 2. PUT the file bytes — NO Content-Type header (OSS presign gotcha).
     state
-        .http
+        .http()
         .put(put_url)
         .body(bytes)
         .send()
@@ -229,7 +229,7 @@ async fn mineru_process(
         tokio::time::sleep(POLL_INTERVAL).await;
         let st: Value = with_standard_request_timeout(
             state
-                .http
+                .http()
                 .get(format!("{base}/api/v4/extract-results/batch/{batch_id}"))
                 .bearer_auth(&key),
         )
@@ -265,7 +265,7 @@ async fn mineru_process(
 /// first `.md` entry).
 async fn mineru_download_md(state: &AppState, zip_url: &str) -> Result<String, String> {
     let bytes = state
-        .http
+        .http()
         .get(zip_url)
         .send()
         .await
@@ -313,7 +313,7 @@ async fn llamaparse_process(
     let form = reqwest::multipart::Form::new().part("file", part);
     let up: Value = with_standard_request_timeout(
         state
-            .http
+            .http()
             .post(format!("{base}/api/parsing/upload"))
             .bearer_auth(&key)
             .multipart(form),
@@ -335,7 +335,7 @@ async fn llamaparse_process(
         tokio::time::sleep(POLL_INTERVAL).await;
         let st: Value = with_standard_request_timeout(
             state
-                .http
+                .http()
                 .get(format!("{base}/api/parsing/job/{job_id}"))
                 .bearer_auth(&key),
         )
@@ -356,7 +356,7 @@ async fn llamaparse_process(
                 // 3. fetch the markdown result.
                 let res: Value = with_standard_request_timeout(
                     state
-                        .http
+                        .http()
                         .get(format!("{base}/api/parsing/job/{job_id}/result/markdown"))
                         .bearer_auth(&key),
                 )

@@ -163,7 +163,7 @@ async fn refresh_rotation_and_signout_preserve_only_the_saved_registration() {
     .is_err());
     let reply = json!({"scope":"openid profile email", "id_token":"synthetic-id-token"});
     let mut tokens = session_tokens(&reply, registration(), true).unwrap();
-    assert!(prepare_session(&id, &mut tokens, false)
+    assert!(prepare_session(&id, &mut tokens)
         .await
         .unwrap_err()
         .contains("disabled"));
@@ -188,9 +188,9 @@ async fn refresh_rotation_and_signout_preserve_only_the_saved_registration() {
     assert!(saved_accounts(root.path()).unwrap()[0].plan_enabled);
     tokens.chatgpt.as_mut().unwrap().earliest_refresh_at = Some(now() + 3600);
     tokens.expires_at = now() + 30;
-    prepare_session(&id, &mut tokens, false).await.unwrap();
+    prepare_session(&id, &mut tokens).await.unwrap();
     tokens.expires_at = now() - 1;
-    assert!(prepare_session(&id, &mut tokens, false)
+    assert!(prepare_session(&id, &mut tokens)
         .await
         .unwrap_err()
         .contains("cannot refresh"));

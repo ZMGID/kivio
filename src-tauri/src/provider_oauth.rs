@@ -51,7 +51,6 @@ struct Pending {
     expires_at: i64,
     next_poll: i64,
     interval: i64,
-    use_system_proxy: bool,
 }
 
 #[derive(Serialize)]
@@ -156,15 +155,11 @@ fn token_url(provider: &str) -> &'static str {
         _ => "https://auth.kimi.com/api/oauth/token",
     }
 }
-fn http(use_system_proxy: bool) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder()
+fn http() -> Result<reqwest::Client, String> {
+    crate::network_proxy::client_builder()
         .user_agent(concat!("Kivio/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30));
-    if !use_system_proxy {
-        builder = builder.no_proxy();
-    }
-    builder
+        .timeout(Duration::from_secs(30))
         .build()
         .map_err(|_| "Cannot create OAuth HTTP client".into())
 }
@@ -208,20 +203,17 @@ fn device_id() -> &'static str {
 }
 
 /// OAuth credentials are never forwarded through HTTP redirects, including same-host redirects.
-pub fn inference_client(use_system_proxy: bool) -> &'static reqwest::Client {
-    static PROXY: OnceLock<reqwest::Client> = OnceLock::new();
-    static DIRECT: OnceLock<reqwest::Client> = OnceLock::new();
-    let slot = if use_system_proxy { &PROXY } else { &DIRECT };
-    slot.get_or_init(|| {
-        let mut builder = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(300));
-        if !use_system_proxy {
-            builder = builder.no_proxy();
-        }
-        builder.build().expect("OAuth TLS client initialization")
-    })
+pub fn inference_client() -> reqwest::Client {
+    static CLIENT: crate::network_proxy::SharedHttp =
+        crate::network_proxy::SharedHttp::live(|| {
+            crate::network_proxy::client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(30))
+                .read_timeout(Duration::from_secs(300))
+                .build()
+                .expect("OAuth TLS client initialization")
+        });
+    CLIENT.get()
 }
 async fn response_json(request: reqwest::RequestBuilder) -> Result<(u16, Value), String> {
     let response = request
@@ -541,16 +533,15 @@ pub async fn provider_oauth_start(
     app: tauri::AppHandle,
     credential_id: Option<String>,
     provider: String,
-    use_system_proxy: bool,
 ) -> Result<Login, String> {
     if provider == "chatgpt" {
-        return chatgpt::start(app, credential_id, use_system_proxy).await;
+        return chatgpt::start(app, credential_id).await;
     }
     if provider == "antigravity" {
-        return antigravity::start(use_system_proxy).await;
+        return antigravity::start().await;
     }
     let client_id = client_id(&provider)?;
-    let client = http(use_system_proxy)?;
+    let client = http()?;
     let codex = provider == "codex";
     let request = if codex {
         client
@@ -623,7 +614,6 @@ pub async fn provider_oauth_start(
             expires_at,
             next_poll: now() + interval,
             interval,
-            use_system_proxy,
         },
     );
     Ok(Login {
@@ -662,7 +652,7 @@ pub async fn provider_oauth_poll(login_id: String) -> Result<PollResult, String>
         p.next_poll = now() + 60; // reserve this poll against concurrent invocations
         p.clone()
     };
-    let client = http(p.use_system_proxy)?;
+    let client = http()?;
     let codex = p.provider == "codex";
     let request = if codex {
         client
@@ -764,21 +754,13 @@ pub async fn provider_oauth_cancel(login_id: String) {
 }
 
 #[tauri::command]
-pub async fn provider_oauth_disconnect(
-    credential_id: String,
-    use_system_proxy: Option<bool>,
-) -> Result<Option<String>, String> {
+pub async fn provider_oauth_disconnect(credential_id: String) -> Result<Option<String>, String> {
     let root = credential_root()?;
     let path = credential_path(&root, &credential_id)?;
     if credential_id.starts_with(chatgpt::CREDENTIAL_PREFIX) {
         let _store_guard = chatgpt::store_lock().await?;
         let mut tokens = chatgpt::saved_session(&root, &credential_id)?;
-        return chatgpt::sign_out(
-            &credential_id,
-            &mut tokens,
-            use_system_proxy.unwrap_or(true),
-        )
-        .await;
+        return chatgpt::sign_out(&credential_id, &mut tokens).await;
     }
     let _guard = refresh_lock().lock().await;
     let _file_guard = credential_lock()
@@ -833,11 +815,10 @@ pub async fn resolve_provider(
     let tokens = if auth.provider == "chatgpt" {
         // A cancelled model call must not interrupt a refresh after the old grant was spent.
         let id = id.to_owned();
-        let proxy = provider.request.use_system_proxy;
         tokio::spawn(async move {
             let _guard = chatgpt::store_lock().await?;
             let mut tokens = chatgpt::saved_session(&credential_root()?, &id)?;
-            chatgpt::prepare_session(&id, &mut tokens, proxy).await?;
+            chatgpt::prepare_session(&id, &mut tokens).await?;
             Ok::<_, String>(tokens)
         })
         .await
@@ -849,7 +830,7 @@ pub async fn resolve_provider(
             return Err("OAuth credential belongs to another provider".into());
         }
         if tokens.expires_at <= now() + 120 {
-            let client = http(provider.request.use_system_proxy)?;
+            let client = http()?;
             let mut form = vec![
                 ("grant_type", "refresh_token"),
                 ("client_id", client_id(&auth.provider)?),
@@ -971,7 +952,7 @@ pub async fn models(
             ..Default::default()
         });
     }
-    let client = http(provider.request.use_system_proxy)?;
+    let client = http()?;
     let url = if is_chatgpt(&provider) {
         format!("{CHATGPT_BASE}/models")
     } else if is_codex(&provider) {
@@ -1145,7 +1126,7 @@ mod tests {
                 stream.write_all(reply.as_bytes()).await.unwrap();
             }
         });
-        let client = http(false).unwrap();
+        let client = http().unwrap();
         let value = fetch_model_catalog(|| client.get(&url)).await.unwrap();
         assert_eq!(parse_models(&value, true).unwrap().models, ["allowed"]);
         server.await.unwrap();

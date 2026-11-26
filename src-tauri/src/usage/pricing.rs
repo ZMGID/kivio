@@ -270,7 +270,7 @@ async fn refresh_with_urls(dir: &Path, force: bool, urls: &[&str]) -> Result<i64
         return Ok(fetched);
     }
     attempts.insert(dir.to_path_buf(), std::time::Instant::now());
-    let client = reqwest::Client::builder()
+    let client = crate::network_proxy::client_builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;

@@ -499,7 +499,7 @@ fn snapshot_of(catalog: &Catalog, disabled_skill_ids: &[String]) -> Value {
 // ---------------------------------------------------------------------------
 
 async fn download(url: &str, limit: usize) -> Result<Vec<u8>, String> {
-    let client = reqwest::Client::builder()
+    let client = crate::network_proxy::client_builder()
         .timeout(Duration::from_secs(90))
         .user_agent("kivio-market/1")
         .build()

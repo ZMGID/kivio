@@ -311,7 +311,7 @@ fn summary(market: &SavedMarket) -> Marketplace {
 }
 async fn fetch_json(url: &str) -> Result<Value, String> {
     packages::https_url(url)?;
-    let client = reqwest::Client::builder()
+    let client = crate::network_proxy::client_builder()
         .timeout(Duration::from_secs(30))
         .https_only(true)
         .build()

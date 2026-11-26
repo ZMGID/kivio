@@ -85,7 +85,7 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 rcgen = "0.13"
 
 # HTTP 客户端与异步运行时
-reqwest = { version = "0.13", features = ["json", "rustls", "multipart", "form", "stream"] }
+reqwest = { version = "0.13", features = ["json", "rustls", "multipart", "form", "stream", "socks"] }
 tokio = { version = "1", features = ["time", "process", "io-util", "net", "sync", "rt-multi-thread", "macros", "fs"] }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 quick-xml = { version = "0.41", features = ["serialize"] }

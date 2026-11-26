@@ -190,32 +190,33 @@ pub fn attach_json_body(
 /// 连接池加保活 + 缩短空闲淘汰：长时间运行后不再复用被对端静默关闭的陈旧连接
 /// （见任务 07-24-http-connection-pool-diagnosis）。
 pub fn build_http_client() -> Client {
-    build_client(false)
+    build_client(crate::network_proxy::client_builder())
 }
 
-/// 直连客户端：同样的连接池调优，但忽略系统/环境代理。供关掉「跟随系统代理」的供应商使用。
-pub fn build_direct_http_client() -> Client {
-    build_client(true)
+/// 跟随全局代理设置自动重建的共享客户端（代理变更后下一次取用时重建）。
+pub fn shared_http_client() -> crate::network_proxy::SharedHttp {
+    crate::network_proxy::SharedHttp::live(build_http_client)
 }
 
-fn build_client(no_proxy: bool) -> Client {
-    let builder = Client::builder()
+/// 回环专用客户端：同样的连接池调优，但不走任何代理。仅用于只访问本机的请求。
+pub fn build_loopback_http_client() -> Client {
+    build_client(Client::builder().no_proxy())
+}
+
+fn build_client(builder: reqwest::ClientBuilder) -> Client {
+    builder
         .connect_timeout(HTTP_CONNECT_TIMEOUT)
         .read_timeout(HTTP_READ_IDLE_TIMEOUT)
         .pool_idle_timeout(HTTP_POOL_IDLE_TIMEOUT)
         .tcp_keepalive(HTTP_TCP_KEEPALIVE)
         .http2_keep_alive_interval(HTTP2_KEEPALIVE_INTERVAL)
         .http2_keep_alive_timeout(HTTP2_KEEPALIVE_TIMEOUT)
-        .http2_keep_alive_while_idle(true);
-    let builder = if no_proxy {
-        builder.no_proxy()
-    } else {
-        builder
-    };
-    builder.build().unwrap_or_else(|err| {
-        eprintln!("Failed to build HTTP client: {err}");
-        Client::new()
-    })
+        .http2_keep_alive_while_idle(true)
+        .build()
+        .unwrap_or_else(|err| {
+            eprintln!("Failed to build HTTP client: {err}");
+            Client::new()
+        })
 }
 
 /// 流式 UTF-8 增量解码器：SSE 分片可能在多字节字符（如中文 3 字节）中间切开，

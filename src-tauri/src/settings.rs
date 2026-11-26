@@ -165,7 +165,7 @@ pub struct ProviderCustomHeader {
     pub value: String,
 }
 
-/// 供应商级「请求配置」：自定义请求头 / 代理 / prompt 缓存 / CLI 身份伪装。
+/// 供应商级「请求配置」：自定义请求头 / prompt 缓存 / CLI 身份伪装。代理由全局 `network_proxy` 决定。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProviderRequestConfig {
@@ -174,8 +174,6 @@ pub struct ProviderRequestConfig {
     pub oauth: Option<crate::provider_oauth::OAuthConfig>,
     /// 附加到该供应商所有请求上的自定义头。同名时覆盖 CLI 身份预设。
     pub custom_headers: Vec<ProviderCustomHeader>,
-    /// 是否跟随系统代理。默认 true —— 与加这个开关之前的行为一致；关掉才走直连。
-    pub use_system_proxy: bool,
     /// 遗留 on/off。sanitize 时迁移进 `prompt_cache_retention` 后清空，新配置不再写入。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_caching: Option<bool>,
@@ -195,7 +193,6 @@ impl Default for ProviderRequestConfig {
         Self {
             oauth: None,
             custom_headers: Vec::new(),
-            use_system_proxy: true,
             prompt_caching: None,
             prompt_cache_retention: "short".to_string(),
             cli_identity: String::new(),
@@ -2123,6 +2120,9 @@ pub struct Settings {
     /// 高频开关 / 低配机可避免每次冷创建的启动延迟和风扇起来。
     #[serde(default = "default_false")]
     pub keep_chat_window_alive: bool,
+    /// App-wide outbound proxy for every client, child process and window (`network_proxy`).
+    #[serde(default)]
+    pub network_proxy: crate::network_proxy::NetworkProxySettings,
     /// 回复完成时发送系统通知；默认关闭，开启后正在查看该对话时不提醒。
     #[serde(default = "default_false")]
     pub chat_completion_notifications: bool,
@@ -2326,6 +2326,7 @@ impl Default for Settings {
             launch_at_startup: false,
             launch_minimized_to_tray: false,
             keep_chat_window_alive: false,
+            network_proxy: Default::default(),
             chat_completion_notifications: false,
             translator_provider_id: String::new(),
             translator_model: String::new(),
@@ -2469,6 +2470,7 @@ fn mirror_explicit_chat_default_for_persistence(settings: &mut Settings) {
 }
 
 pub fn sanitize_settings(mut settings: Settings) -> Settings {
+    crate::network_proxy::sanitize(&mut settings.network_proxy);
     // 旧的自动中英互译只属于输入翻译；阅读翻译始终有一个明确目标。
     let reading = settings.reading_target_lang.trim();
     let reading = if reading.is_empty() {
@@ -3455,7 +3457,10 @@ fn commit_settings_with(
 ) -> Result<SettingsSnapshot, SettingsError> {
     state.publish_settings_transaction(
         Some(expected_version),
-        |_| Ok(sanitize_settings(next)),
+        |_| {
+            crate::network_proxy::validate(&next.network_proxy)?;
+            Ok(sanitize_settings(next))
+        },
         persist,
     )
 }
@@ -3470,6 +3475,7 @@ fn update_settings_with(
         |current| {
             let mut next = current.clone();
             update(&mut next)?;
+            crate::network_proxy::validate(&next.network_proxy)?;
             Ok(sanitize_settings(next))
         },
         persist,
@@ -4632,6 +4638,52 @@ mod tests {
         let settings: Settings =
             serde_json::from_str("{}").expect("legacy settings should deserialize");
         assert!(!settings.keep_chat_window_alive);
+    }
+
+    #[test]
+    fn legacy_per_provider_proxy_switch_loads_into_the_global_system_proxy() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "providers": [{"id": "p", "name": "P", "baseUrl": "https://api.example.com", "apiFormat": "openai", "request": {"useSystemProxy": false}}]
+        }))
+        .expect("legacy provider proxy switch still parses");
+        let settings = sanitize_settings(settings);
+        assert_eq!(
+            settings.network_proxy.mode,
+            crate::network_proxy::MODE_SYSTEM
+        );
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(!saved.to_string().contains("useSystemProxy"));
+        assert_eq!(saved["networkProxy"]["mode"], "system");
+    }
+
+    #[test]
+    fn saving_an_invalid_custom_proxy_is_rejected_and_keeps_the_old_route() {
+        let state = crate::state::test_app_state();
+        let error = update_settings_in_memory(&state, |settings| {
+            settings.network_proxy.mode = crate::network_proxy::MODE_CUSTOM.into();
+            settings.network_proxy.url = "127.0.0.1:7890".into();
+            Ok(())
+        })
+        .expect_err("invalid proxy must not save");
+        assert!(error.to_string().contains("proxy"), "{error}");
+        assert_eq!(
+            state.settings_read().network_proxy.mode,
+            crate::network_proxy::MODE_SYSTEM
+        );
+
+        let saved = update_settings_in_memory(&state, |settings| {
+            settings.network_proxy.mode = crate::network_proxy::MODE_CUSTOM.into();
+            settings.network_proxy.url = " socks5://127.0.0.1:1080 ".into();
+            Ok(())
+        })
+        .expect("valid proxy saves");
+        assert_eq!(saved.settings.network_proxy.url, "socks5://127.0.0.1:1080");
+        // Leave the process on the default route for other tests.
+        update_settings_in_memory(&state, |settings| {
+            settings.network_proxy = Default::default();
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

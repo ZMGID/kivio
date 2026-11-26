@@ -12,6 +12,21 @@ use tauri::{
     window::Color, AppHandle, LogicalSize, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
+/// Every Kivio window starts here so all WebView2 instances share one proxy configuration
+/// (WebView2 rejects differing browser arguments within one process).
+fn new_window<'a>(
+    app: &'a AppHandle,
+    label: impl Into<String>,
+    url: WebviewUrl,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    let builder = WebviewWindowBuilder::new(app, label, url);
+    #[cfg(windows)]
+    if let Some(args) = crate::network_proxy::webview_browser_args() {
+        return builder.additional_browser_args(&args);
+    }
+    builder
+}
+
 /// 侧栏收起时主内容区最小宽度（与前端 `CHAT_MIN_SIZE_COLLAPSED` 一致）。
 pub const CHAT_MIN_INNER_WIDTH_COLLAPSED: f64 = 400.0;
 /// 侧栏展开时整窗最小宽度（240px 侧栏 + 主内容区最小宽度）。
@@ -376,7 +391,7 @@ pub fn ensure_translator_window(app: &AppHandle) -> Result<WebviewWindow, String
         return Ok(window);
     }
 
-    let window = WebviewWindowBuilder::new(
+    let window = new_window(
         app,
         TRANSLATOR_WINDOW_LABEL,
         WebviewUrl::App("index.html#translator".into()),
@@ -427,7 +442,7 @@ pub fn ensure_chat_window_with_hash(app: &AppHandle, hash: &str) -> Result<Webvi
         chat_window_size_for_visible_content(CHAT_MIN_INNER_WIDTH_COLLAPSED, CHAT_MIN_INNER_HEIGHT);
     let (default_width, default_height) =
         chat_window_size_for_visible_content(CHAT_DEFAULT_INNER_WIDTH, CHAT_DEFAULT_INNER_HEIGHT);
-    let mut builder = WebviewWindowBuilder::new(app, "chat", WebviewUrl::App(url.into()))
+    let mut builder = new_window(app, "chat", WebviewUrl::App(url.into()))
         .title(crate::app_data::product_name())
         .inner_size(default_width, default_height)
         .min_inner_size(min_width, min_height)
@@ -498,7 +513,7 @@ pub fn ensure_chat_popout_window(
         POPOUT_DEFAULT_INNER_WIDTH,
         POPOUT_DEFAULT_INNER_HEIGHT,
     );
-    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+    let mut builder = new_window(app, label, WebviewUrl::App(url.into()))
         .title("Kivio")
         .inner_size(default_width, default_height)
         .min_inner_size(min_width, min_height)
@@ -593,7 +608,7 @@ fn ensure_overlay_window(
         "lens".to_string()
     };
     let url = format!("index.html#{hash}");
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+    let window = new_window(app, label, WebviewUrl::App(url.into()))
         .title(title)
         .inner_size(600.0, 72.0)
         .always_on_top(true)

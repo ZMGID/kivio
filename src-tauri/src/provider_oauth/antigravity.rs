@@ -47,7 +47,7 @@ pub(crate) fn model_includes_effort(model: &str) -> bool {
         )
     })
 }
-pub(super) async fn start(proxy: bool) -> Result<Login, String> {
+pub(super) async fn start() -> Result<Login, String> {
     let mut active = sessions().lock().await;
     active.retain(|_, s| s.expires > now());
     if !active.is_empty() {
@@ -72,7 +72,7 @@ pub(super) async fn start(proxy: bool) -> Result<Login, String> {
     let task = tokio::spawn(async move {
         tokio::time::timeout(
             Duration::from_secs(300),
-            authorize(listener, state, verifier, proxy),
+            authorize(listener, state, verifier),
         )
         .await
         .map_err(|_| "Antigravity login expired; start again".to_string())?
@@ -135,12 +135,11 @@ async fn authorize(
     listener: TcpListener,
     state: String,
     verifier: String,
-    proxy: bool,
 ) -> Result<Tokens, String> {
     let code = super::wait_for_callback(listener, |request| callback(request, &state))
         .await?
         .ok_or("Google authorization was declined")?;
-    let client = http(proxy)?;
+    let client = http()?;
     let (status, value) = response_json(client.post(TOKEN_URL).form(&[
         ("client_id", CLIENT),
         ("client_secret", CLIENT_SECRET),
@@ -248,7 +247,7 @@ pub(super) async fn control(
 
 pub(super) async fn models(provider: &ModelProvider) -> Result<Vec<String>, String> {
     let value = control(
-        &http(provider.request.use_system_proxy)?,
+        &http()?,
         provider
             .preferred_api_key()
             .ok_or("Missing OAuth session")?,
@@ -391,7 +390,6 @@ mod tests {
             listener,
             "test-state".into(),
             "test-verifier".into(),
-            false,
         ));
         sessions().lock().await.insert(
             id.clone(),
@@ -409,12 +407,7 @@ mod tests {
     async fn callback_rejects_bad_state_then_accepts_denial() {
         let listener = callback_listener("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = listener.local_addr().unwrap();
-        let task = tokio::spawn(authorize(
-            listener,
-            "expected".into(),
-            "verifier".into(),
-            false,
-        ));
+        let task = tokio::spawn(authorize(listener, "expected".into(), "verifier".into()));
         for (state, status) in [("wrong", "400 Bad Request"), ("expected", "200 OK")] {
             let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
             socket.write_all(format!("GET /oauth-callback?state={state}&error=access_denied HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes()).await.unwrap();

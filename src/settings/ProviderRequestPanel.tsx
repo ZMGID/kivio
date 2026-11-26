@@ -163,14 +163,6 @@ export function ProviderRequestPanel({
         />
       </SettingRow>
 
-      <SettingRow label={t.useSystemProxy} description={t.useSystemProxyHint}>
-        <Toggle
-          ariaLabel={t.useSystemProxy}
-          checked={config.useSystemProxy}
-          onChange={(useSystemProxy) => patch({ useSystemProxy })}
-        />
-      </SettingRow>
-
       {/* 一直显示：藏起来会让人以为没做这个功能。不支持的协议置灰并说明原因。 */}
       <SettingRow
         label={t.promptCaching}

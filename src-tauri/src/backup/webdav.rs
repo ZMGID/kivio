@@ -173,7 +173,7 @@ impl Dav {
             segments.push("");
         }
         let client_builder = || {
-            Client::builder()
+            crate::network_proxy::client_builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(15))
         };

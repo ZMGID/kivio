@@ -1264,7 +1264,7 @@ fn call_web_fetch(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
                 }
             }
         }
-        let content = crate::native_tools::web_fetch(&ctx.state.http, ctx.arguments).await?;
+        let content = crate::native_tools::web_fetch(&ctx.state.http(), ctx.arguments).await?;
         Ok(text_tool_result(content))
     })
 }

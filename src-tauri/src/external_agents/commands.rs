@@ -140,7 +140,7 @@ pub async fn chat_external_cli_fetch_relay_models(
     base_url: String,
     api_key: String,
 ) -> Result<Vec<String>, String> {
-    crate::external_agents::relay_models::fetch(&state.http, &base_url, &api_key).await
+    crate::external_agents::relay_models::fetch(&state.http(), &base_url, &api_key).await
 }
 
 /// 扫描本机 cc-switch 的库，列出可导入的供应商。只读，不写任何东西。

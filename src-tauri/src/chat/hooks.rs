@@ -578,7 +578,7 @@ async fn run_http_hook(hook: &HookDef, body: &str) -> Result<(), String> {
                     .is_ok_and(|ip| ip.is_loopback())
         });
     let client = if direct {
-        crate::api::build_direct_http_client()
+        crate::api::build_loopback_http_client()
     } else {
         crate::api::build_http_client()
     };

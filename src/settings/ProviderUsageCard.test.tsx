@@ -65,8 +65,8 @@ describe('ProviderUsageCard', () => {
   })
   it('keeps separate snapshots when the same credential uses different request settings', async () => {
     const provider = account('shared-account')
-    const direct = { ...provider, request: { ...provider.request, useSystemProxy: false } }
-    const proxied = { ...provider, request: { ...provider.request, useSystemProxy: true } }
+    const direct = { ...provider, baseUrl: `${provider.baseUrl}/direct` }
+    const proxied = { ...provider, baseUrl: `${provider.baseUrl}/relay` }
     const view = render(<ProviderUsageCard provider={direct} lang="zh" />)
     expect(await screen.findByText('剩余 25%')).toBeInTheDocument()
 

@@ -45,7 +45,7 @@ async fn try_api_latest(state: &AppState, repo: &str, current: &str) -> Option<s
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
     let response = with_standard_request_timeout(
         state
-            .http
+            .http()
             .get(&url)
             // GitHub API 要求显式 User-Agent
             .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
@@ -88,7 +88,7 @@ async fn try_atom_latest(state: &AppState, repo: &str, current: &str) -> Option<
     let url = format!("https://github.com/{repo}/releases.atom");
     let response = with_standard_request_timeout(
         state
-            .http
+            .http()
             .get(&url)
             .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
             .header("Accept", "application/atom+xml"),
@@ -229,7 +229,7 @@ pub(crate) async fn download_update_asset(
     let dest = std::env::temp_dir().join(format!("kivio-update-{version}.{ext}"));
 
     let mut resp = state
-        .http
+        .http()
         .get(&asset_url)
         .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
         .send()
@@ -380,7 +380,7 @@ async fn install_windows_update(app: &AppHandle, path: String) -> Result<(), Str
     let asset = release_asset_name_for(&version, "windows", std::env::consts::ARCH)
         .ok_or("当前架构没有 Windows 更新包")?;
     let checksum = release_download_url(REPO, &version, &format!("{asset}.sha256"));
-    let digest = with_standard_request_timeout(app.state::<AppState>().http.get(checksum))
+    let digest = with_standard_request_timeout(app.state::<AppState>().http().get(checksum))
         .send()
         .await
         .and_then(|response| response.error_for_status())

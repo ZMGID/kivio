@@ -543,7 +543,7 @@ async fn fetch_web_text(app: &AppHandle, url: &str) -> Result<String, String> {
         let state = app.state::<AppState>();
         let resp = crate::api::with_standard_request_timeout(
             state
-                .http
+                .http()
                 .get(url)
                 .header("User-Agent", "Mozilla/5.0 (compatible; KivioBot/1.0)"),
         )

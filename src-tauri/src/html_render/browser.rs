@@ -258,7 +258,7 @@ pub(crate) async fn executable(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 async fn install_browser(root: &Path, platform: &str) -> Result<(), String> {
-    let client = reqwest::Client::builder()
+    let client = crate::network_proxy::client_builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(300))
@@ -1025,6 +1025,11 @@ async fn run_capture(
     .into_iter()
     .map(OsString::from)
     .collect();
+    args.extend(
+        crate::network_proxy::browser_proxy_args()
+            .into_iter()
+            .map(OsString::from),
+    );
     args.push(profile_arg);
     args.push("about:blank".into());
     let (child, reader, writer, mut stderr) =

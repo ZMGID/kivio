@@ -289,12 +289,11 @@ impl Attempt {
     async fn exchange(
         mut self,
         mut listener: TcpListener,
-        proxy: bool,
         app: tauri::AppHandle,
         host: String,
         mut profile: LoginProfile,
     ) -> Result<OAuthConfig, String> {
-        let client = http(proxy)?;
+        let client = http()?;
         let mut restarted = false;
         let (client_id, value) = loop {
             let (code, client_id) =
@@ -447,7 +446,6 @@ impl LoginProfile {
 pub(super) async fn start(
     app: tauri::AppHandle,
     credential_id: Option<String>,
-    proxy: bool,
 ) -> Result<Login, String> {
     let (host, profile) = {
         let _lock = store_lock().await?;
@@ -471,7 +469,7 @@ pub(super) async fn start(
     let task = tokio::spawn(async move {
         tokio::time::timeout(
             Duration::from_secs(300),
-            attempt.exchange(listener, proxy, app, host, profile),
+            attempt.exchange(listener, app, host, profile),
         )
         .await
         .map_err(|_| "ChatGPT sign-in expired. Start again.".to_string())?
@@ -856,11 +854,7 @@ fn finish_refresh(root: &Path, id: &str, tokens: &mut Tokens, keys: &JwkSet) -> 
     save_tokens_in(root, id, tokens)
 }
 
-pub(super) async fn prepare_session(
-    id: &str,
-    tokens: &mut Tokens,
-    proxy: bool,
-) -> Result<(), String> {
+pub(super) async fn prepare_session(id: &str, tokens: &mut Tokens) -> Result<(), String> {
     let reg = tokens
         .chatgpt
         .as_ref()
@@ -903,7 +897,7 @@ pub(super) async fn prepare_session(
             );
         }
     }
-    refresh_session(&credential_root()?, id, tokens, &http(proxy)?).await
+    refresh_session(&credential_root()?, id, tokens, &http()?).await
 }
 
 async fn refresh_session(
@@ -975,11 +969,7 @@ async fn refresh_session(
     Ok(())
 }
 
-pub(super) async fn sign_out(
-    id: &str,
-    tokens: &mut Tokens,
-    proxy: bool,
-) -> Result<Option<String>, String> {
+pub(super) async fn sign_out(id: &str, tokens: &mut Tokens) -> Result<Option<String>, String> {
     let reg = tokens
         .chatgpt
         .as_ref()
@@ -991,7 +981,7 @@ pub(super) async fn sign_out(
         .unwrap_or(&tokens.refresh_token);
     let mut confirmed = refresh_token.is_empty();
     if !confirmed {
-        if let Ok(client) = http(proxy) {
+        if let Ok(client) = http() {
             for attempt in 0..2 {
                 if attempt > 0 {
                     tokio::time::sleep(Duration::from_millis(500)).await;

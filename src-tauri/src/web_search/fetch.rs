@@ -197,7 +197,14 @@ async fn fetch_deepseek(
     let endpoint = deepseek_api_url(&config.deepseek_base_url, "tools/fetch");
     let body = serde_json::json!({ "url": url });
     let response = send_with_retry("DeepSeek fetch", retry_attempts, || {
-        with_fetch_timeout(state.http.post(&endpoint).bearer_auth(api_key).json(&body)).send()
+        with_fetch_timeout(
+            state
+                .http()
+                .post(&endpoint)
+                .bearer_auth(api_key)
+                .json(&body),
+        )
+        .send()
     })
     .await?;
     let parsed: DeepseekFetchResponse = read_search_json("DeepSeek fetch", response).await?;
@@ -254,7 +261,14 @@ async fn fetch_tavily(
         "format": "markdown",
     });
     let response = send_with_retry("Tavily extract", retry_attempts, || {
-        with_fetch_timeout(state.http.post(&endpoint).bearer_auth(api_key).json(&body)).send()
+        with_fetch_timeout(
+            state
+                .http()
+                .post(&endpoint)
+                .bearer_auth(api_key)
+                .json(&body),
+        )
+        .send()
     })
     .await?;
     let parsed: TavilyExtractResponse = read_search_json("Tavily extract", response).await?;
@@ -323,7 +337,7 @@ async fn fetch_exa(
     let response = send_with_retry("Exa contents", retry_attempts, || {
         with_fetch_timeout(
             state
-                .http
+                .http()
                 .post(&endpoint)
                 .header("x-api-key", api_key)
                 .json(&body),
@@ -350,7 +364,7 @@ async fn fetch_exa_mcp(
     let server = exa_mcp_server(config)?;
     let result = crate::mcp::conn::call_tool_once(
         &server,
-        &state.http,
+        &state.http(),
         "web_fetch_exa",
         serde_json::json!({
             "urls": [url],
@@ -392,7 +406,14 @@ async fn fetch_ollama(
     let endpoint = format!("{base}/api/web_fetch");
     let body = serde_json::json!({ "url": url });
     let response = send_with_retry("Ollama fetch", retry_attempts, || {
-        with_fetch_timeout(state.http.post(&endpoint).bearer_auth(api_key).json(&body)).send()
+        with_fetch_timeout(
+            state
+                .http()
+                .post(&endpoint)
+                .bearer_auth(api_key)
+                .json(&body),
+        )
+        .send()
     })
     .await?;
     let parsed: OllamaFetchResponse = read_search_json("Ollama fetch", response).await?;
@@ -433,7 +454,7 @@ async fn fetch_serper(
     let response = send_with_retry("Serper scrape", retry_attempts, || {
         with_fetch_timeout(
             state
-                .http
+                .http()
                 .post(DEFAULT_SERPER_SCRAPE_URL)
                 .header("X-API-KEY", api_key)
                 .json(&body),
@@ -507,7 +528,7 @@ async fn fetch_tinyfish(
     let response = send_with_retry("TinyFish fetch", retry_attempts, || {
         with_fetch_timeout(
             state
-                .http
+                .http()
                 .post(endpoint)
                 .header("X-API-Key", api_key)
                 .json(&body),
@@ -626,7 +647,7 @@ async fn fetch_kimi(
     let response = send_with_retry("Kimi fetch", retry_attempts, || {
         with_fetch_timeout(
             state
-                .http
+                .http()
                 .post(&endpoint)
                 .bearer_auth(api_key)
                 .header("Accept", "text/markdown")

@@ -35,7 +35,7 @@ export function ProviderUsageCard({ provider, lang }: UsageCardProps) {
   if (!supported || !auth.credentialId) return null
 
   const usageKey = JSON.stringify([
-    auth.provider, auth.credentialId, provider.baseUrl, provider.apiFormat, provider.request.useSystemProxy,
+    auth.provider, auth.credentialId, provider.baseUrl, provider.apiFormat,
   ])
   return <AccountUsageCard key={usageKey} usageKey={usageKey} provider={provider} lang={lang} />
 }
