@@ -8,6 +8,8 @@ describe('askUserTools', () => {
     expect(isAskUserToolName('AskUserQuestion')).toBe(true)
     expect(isAskUserToolName('ask_user_question')).toBe(true)
     expect(isAskUserToolName('requestUserInput')).toBe(true)
+    expect(isAskUserToolName('Run ask_question')).toBe(true)
+    expect(isAskUserToolName('ask_question')).toBe(true)
     expect(isAskUserToolName('cursor/ask_question')).toBe(false)
     expect(isAskUserToolName('elicitation/create')).toBe(true)
     expect(isAskUserToolName('cursor/create_plan')).toBe(false)

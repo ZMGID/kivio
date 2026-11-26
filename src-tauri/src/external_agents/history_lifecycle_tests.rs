@@ -872,7 +872,7 @@ fn external_history_publication_and_recovery_on_real_files() {
         let pi_file = workspace.join("pi-import-test.jsonl");
         for (agent, protocol) in [
             ("dsh", "dsh_json_rpc"),
-            ("antigravity", "antigravity_stream_json"),
+            ("antigravity", "antigravity_acp"),
             ("pi", "pi_rpc"),
         ] {
             let native_id = format!("{agent}-native");

@@ -709,9 +709,18 @@ async fn run_external_cli_reply_owned(
             .clone()
             .filter(|m| !m.is_empty() && m != "default"),
     };
+    let requested_reasoning = conversation.agent_runtime.external_reasoning.as_deref();
+    let wire_reasoning = if def.stream_format == StreamFormat::AntigravityAcp {
+        super::providers::antigravity::effective_reasoning(
+            wire_model.as_deref(),
+            requested_reasoning,
+        )
+    } else {
+        requested_reasoning
+    };
     let build_options = RuntimeBuildOptions {
         model: wire_model.clone(),
-        reasoning: conversation.agent_runtime.external_reasoning.clone(),
+        reasoning: wire_reasoning.map(str::to_owned),
         sandbox: conversation.agent_runtime.external_sandbox.clone(),
     };
 
@@ -818,7 +827,7 @@ async fn run_external_cli_reply_owned(
             | StreamFormat::AcpJsonRpc
             | StreamFormat::DshJsonRpc
             | StreamFormat::PiRpc
-            | StreamFormat::AntigravityStreamJson
+            | StreamFormat::AntigravityAcp
     );
     if lease.is_cancelled()
         || !state
@@ -905,6 +914,9 @@ async fn run_external_cli_reply_owned(
             );
         }
         if let Some(commands) = slash::slash_commands_from_event(&event) {
+            if def.slash_strategy == super::types::SlashStrategy::Antigravity {
+                return;
+            }
             state
                 .external_discovery()
                 .set_cached_external_slash_commands(slash_cache_key.clone(), commands);
@@ -968,13 +980,21 @@ async fn run_external_cli_reply_owned(
     finalizes_reply.store(true, std::sync::atomic::Ordering::Release);
     let read_result = finish_turn_after_cancel(
         async {
+            if is_slash && def.id == "antigravity" {
+                if let Some(delta) = super::antigravity_slash::local_reply(
+                    &resolved_bin, &cwd, &runtime_ctx, &build_options, latest_user_message,
+                ).await {
+                    emit_event(UnifiedAgentEvent::TextDelta { delta }, None);
+                    return Ok(());
+                }
+            }
             if persistent {
                 // 本轮的启动配置指纹：变了就换进程（spec 第 8 条）。指令哈希只在**真的注入了**
                 // `--append-system-prompt-file` 时才有值——斜杠命令那一轮不注入，不参与判定。
                 let mut launch_config = launch_config_for_turn(
                     def.stream_format,
                     conversation.agent_runtime.external_model.as_deref(),
-                    conversation.agent_runtime.external_reasoning.as_deref(),
+                    wire_reasoning,
                     conversation.agent_runtime.external_sandbox.as_deref(),
                     conversation.agent_runtime.external_agent_preset.as_deref(),
                     system_prompt_file
@@ -991,7 +1011,7 @@ async fn run_external_cli_reply_owned(
                     );
                 }
                 let recover_antigravity_prompt = (!is_slash
-                    && def.stream_format == StreamFormat::AntigravityStreamJson)
+                    && def.stream_format == StreamFormat::AntigravityAcp)
                     .then_some(|recovery: &Conversation| {
                         let request = format!("{latest_user_message}{attachment_note}");
                         let first_prompt = compose_external_prompt(
@@ -1024,7 +1044,7 @@ async fn run_external_cli_reply_owned(
                     &cwd,
                     // Claude: already resolved to runtime id above; other agents keep external_model.
                     wire_model.clone(),
-                    conversation.agent_runtime.external_reasoning.clone(),
+                    build_options.reasoning.clone(),
                     conversation.agent_runtime.external_sandbox.clone(),
                     conversation.agent_runtime.external_agent_preset.clone(),
                     &launch_config,
@@ -1240,7 +1260,7 @@ async fn run_external_cli_reply_owned(
     let claude_forked = rewind_settled && matches!(rewind, Some(NativeRewind::ClaudeResumeAt(_)));
     let use_live_native_id = matches!(
         def.stream_format,
-        StreamFormat::PiRpc | StreamFormat::AntigravityStreamJson
+        StreamFormat::PiRpc | StreamFormat::AntigravityAcp
     ) || claude_forked;
     if state
         .chat_runtime()
@@ -1292,6 +1312,20 @@ async fn run_external_cli_reply_owned(
 
     let terminal_content = crate::chat::protocol::terminal_content(&content).to_owned();
     let terminal_outcome = stream_outcome.clone();
+    // An ACP process can disconnect after the user answers and before its tool result.
+    for record in tool_calls.iter_mut().filter(|record| {
+        matches!(
+            record.status,
+            ToolCallStatus::Running | ToolCallStatus::Pending
+        )
+    }) {
+        if let Some(answer) = state
+            .chat_interactions()
+            .take_answered_ask_user(&run_id, &record.id)
+        {
+            record.structured_content = Some(answer);
+        }
+    }
     push_assistant_message(
         app,
         state,
@@ -1742,7 +1776,7 @@ where
     E: FnMut(UnifiedAgentEvent, Option<Uuid>),
     C: Fn() -> bool,
 {
-    use crate::external_agents::session::antigravity::MISSING_RESUME_TARGET;
+    use crate::external_agents::providers::antigravity::MISSING_RESUME_TARGET;
     use crate::external_agents::session::live::LiveSession;
     use crate::external_agents::session::{load_live_handle, LiveSessionHandle};
 
@@ -1902,6 +1936,7 @@ where
                 let connected = match connect_persistent_session(
                     app,
                     conversation_id,
+                    agent_id,
                     protocol,
                     resolved_bin,
                     &turn_args,
@@ -1925,12 +1960,12 @@ where
                                     && protocol == StreamFormat::AcpJsonRpc
                                     && err.contains("session/load")
                                     && err.to_ascii_lowercase().contains("method not found"))
-                                || (protocol == StreamFormat::AntigravityStreamJson
+                                || (protocol == StreamFormat::AntigravityAcp
                                     && resume_native.is_some()
                                     && err == MISSING_RESUME_TARGET)) =>
                     {
                         dropped_resume = true;
-                        if protocol == StreamFormat::AntigravityStreamJson {
+                        if protocol == StreamFormat::AntigravityAcp {
                             let recover = recover_antigravity_prompt.ok_or(
                                 "Antigravity 原生会话已不存在。请先发送一条普通消息恢复上下文，再运行命令。",
                             )?;
@@ -1961,6 +1996,7 @@ where
                         connect_persistent_session(
                             app,
                             conversation_id,
+                            agent_id,
                             protocol,
                             resolved_bin,
                             &turn_args,
@@ -1985,6 +2021,7 @@ where
                         connect_persistent_session(
                             app,
                             conversation_id,
+                            agent_id,
                             protocol,
                             resolved_bin,
                             &turn_args,
@@ -2020,6 +2057,7 @@ where
                     connect_persistent_session(
                         app,
                         conversation_id,
+                        agent_id,
                         protocol,
                         resolved_bin,
                         &turn_args,
@@ -2161,12 +2199,7 @@ where
             Err(e) => e,
         };
 
-        // Antigravity closes its command channel before returning a failure that loses the
-        // stream. A failed result for a dispatched turn can leave the channel open for the next.
-        let antigravity_turn_settled = protocol == StreamFormat::AntigravityStreamJson
-            && delivery.possibly_sent()
-            && !control.is_closed();
-        if !antigravity_turn_settled && !cancel_keeps_live_session(&err, protocol) {
+        if !cancel_keeps_live_session(&err, protocol) {
             state
                 .external_live_sessions()
                 .remove_exact(conversation_id, &control);
@@ -2376,6 +2409,7 @@ async fn reconnect_fresh(
     } = connect_persistent_session(
         app,
         conversation_id,
+        agent_id,
         protocol,
         resolved_bin,
         args,
@@ -2445,7 +2479,7 @@ fn launch_config_for_turn(
             model, reasoning, sandbox, preset,
         );
     }
-    if matches!(protocol, StreamFormat::AntigravityStreamJson) {
+    if matches!(protocol, StreamFormat::AntigravityAcp) {
         let env: std::collections::BTreeMap<_, _> =
             crate::external_agents::overrides::env_for("antigravity")
                 .into_iter()
@@ -2539,7 +2573,7 @@ fn persistent_turn_prompt<'a>(
         StreamFormat::ClaudeStreamJson
         | StreamFormat::DshJsonRpc
         | StreamFormat::PiRpc
-        | StreamFormat::AntigravityStreamJson => composed_prompt.into(),
+        | StreamFormat::AntigravityAcp => composed_prompt.into(),
         _ if !attachment_note.is_empty() => {
             format!("{latest_user_message}{attachment_note}").into()
         }
@@ -2652,8 +2686,6 @@ fn persistent_failure_action(
             PersistentFailureAction::ReconnectWithoutResume
         };
     }
-    // agy has no request ids or prompt acknowledgement. Replaying a failed in-flight
-    // turn could execute tools twice. Preserve the binding and let the user retry.
     if matches!(
         get_agent_def(agent_id).map(|def| def.run.retry),
         Some(RetryStrategy::NeverReplay)
@@ -2693,7 +2725,7 @@ fn is_missing_resume_target(err: &str, agent_id: &str) -> bool {
         Some(StreamFormat::AcpJsonRpc) => {
             crate::external_agents::session::acp::is_missing_acp_session_error(err)
         }
-        Some(StreamFormat::AntigravityStreamJson) | None => false,
+        Some(StreamFormat::AntigravityAcp) | None => false,
     }
 }
 
@@ -3345,7 +3377,7 @@ pub(super) fn persistent_protocol_tag(protocol: StreamFormat) -> &'static str {
         StreamFormat::AcpJsonRpc => "acp_json_rpc",
         StreamFormat::PiRpc => "pi_rpc",
         StreamFormat::DshJsonRpc => "dsh_json_rpc",
-        StreamFormat::AntigravityStreamJson => "antigravity_stream_json",
+        StreamFormat::AntigravityAcp => "antigravity_acp",
     }
 }
 
@@ -4087,6 +4119,7 @@ async fn append_wake_turn_message(
 async fn connect_persistent_session(
     app: &AppHandle,
     conversation_id: &str,
+    agent_id: &str,
     protocol: StreamFormat,
     resolved_bin: &std::path::Path,
     args: &[String],
@@ -4143,29 +4176,6 @@ async fn connect_persistent_session(
                 .map(|credential| (credential.url.as_str(), credential.authorization.as_str()));
 
             match protocol {
-                StreamFormat::AntigravityStreamJson => {
-                    use crate::external_agents::session::antigravity::{
-                        spawn_antigravity_session_actor, AntigravitySession,
-                    };
-                    let session = AntigravitySession::connect(
-                        resolved_bin,
-                        args,
-                        cwd,
-                        resume_native.as_deref(),
-                    )
-                    .await?;
-                    let native_id = session.session_id().to_string();
-                    let child_pid = session.child_pid();
-                    Ok(PersistentConnection {
-                        supports_load: true,
-                        control: spawn_antigravity_session_actor(session),
-                        native_id,
-                        resumed: resume_native.is_some(),
-                        child_pid,
-                        chat_credential,
-                    }
-                    .identified(&identity))
-                }
                 StreamFormat::ClaudeStreamJson => {
                     // claude 的会话 id 走**启动参数**，不像 codex / ACP 在握手 RPC 里传 ——
                     // 所以这里要看/改 argv 而不是传参。
@@ -4299,7 +4309,7 @@ async fn connect_persistent_session(
                     }
                     .identified(&identity))
                 }
-                StreamFormat::AcpJsonRpc => {
+                StreamFormat::AcpJsonRpc | StreamFormat::AntigravityAcp => {
                     let mcp_servers: Vec<AcpMcpServer> = chat_credential
                         .as_ref()
                         .map(|credential| AcpMcpServer::Http {
@@ -4312,42 +4322,12 @@ async fn connect_persistent_session(
                         })
                         .into_iter()
                         .collect();
-                    if let Some(sid) = resume_native
+                    let sid = resume_native
                         .as_deref()
                         .map(str::trim)
-                        .filter(|id| !id.is_empty())
-                    {
-                        // Same contract as Codex: resume failure must surface. Swallowing it
-                        // and calling session/new made save_live_handle overwrite the real id.
-                        let session = AcpSession::connect(
-                            resolved_bin,
-                            args,
-                            cwd,
-                            model,
-                            reasoning,
-                            sandbox,
-                            &mcp_servers,
-                            Some(sid),
-                            additional_directories,
-                        )
-                        .await
-                        .map_err(|err| {
-                            eprintln!("[external-agent] acp resume failed (session {sid}): {err}");
-                            err
-                        })?;
-                        let id = session.session_id().to_string();
-                        let child_pid = session.child_pid();
-                        return Ok(PersistentConnection {
-                            supports_load: session.supports_load,
-                            control: spawn_acp_session_actor(session),
-                            native_id: id,
-                            resumed: true,
-                            child_pid,
-                            chat_credential,
-                        }
-                        .identified(&identity));
-                    }
+                        .filter(|id| !id.is_empty());
                     let session = AcpSession::connect(
+                        agent_id,
                         resolved_bin,
                         args,
                         cwd,
@@ -4355,7 +4335,7 @@ async fn connect_persistent_session(
                         reasoning,
                         sandbox,
                         &mcp_servers,
-                        None,
+                        sid,
                         additional_directories,
                     )
                     .await?;
@@ -4365,7 +4345,7 @@ async fn connect_persistent_session(
                         supports_load: session.supports_load,
                         control: spawn_acp_session_actor(session),
                         native_id: id,
-                        resumed: false,
+                        resumed: sid.is_some(),
                         child_pid,
                         chat_credential,
                     }
@@ -6072,7 +6052,7 @@ mod tests {
 
     #[test]
     fn antigravity_preserves_turn_context_and_restarts_for_launch_changes() {
-        let protocol = StreamFormat::AntigravityStreamJson;
+        let protocol = StreamFormat::AntigravityAcp;
         let original =
             launch_config_for_turn(protocol, Some("a"), Some("low"), None, None, None, "dir");
         for (model, effort, sandbox, dirs) in [

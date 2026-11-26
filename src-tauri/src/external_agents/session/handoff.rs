@@ -270,7 +270,11 @@ pub(crate) fn remember_answer(
         return Ok(());
     }
     // ACP adapters negotiate loadSession per launch. An unconfirmed handle can only start fresh.
-    if def.stream_format == StreamFormat::AcpJsonRpc && !handle.supports_load {
+    if matches!(
+        def.stream_format,
+        StreamFormat::AcpJsonRpc | StreamFormat::AntigravityAcp
+    ) && !handle.supports_load
+    {
         return Ok(());
     }
     let checkpoint = Checkpoint {

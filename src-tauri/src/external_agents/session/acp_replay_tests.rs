@@ -14,7 +14,7 @@ async fn offline_replay_adapted_grok_acp_turn_uses_production_reader() {
     let run = acp_read_prompt(
         &mut reader,
         &mut host_write,
-        &mut terminals,
+        Some(&mut terminals),
         7,
         "00000000-0000-4000-8000-000000000001",
         false,
@@ -116,7 +116,7 @@ async fn grok_handshake_model_notifications_supply_usage_only_prompt_capacity() 
         acp_read_prompt(
             &mut reader,
             &mut host_write,
-            &mut terminals,
+            Some(&mut terminals),
             reply_id + 1,
             "ours",
             false,

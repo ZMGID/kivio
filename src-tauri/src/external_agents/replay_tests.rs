@@ -26,7 +26,6 @@ pub(crate) fn fixture(name: &str) -> Vec<Step> {
         "dsh-two-turns" => include_str!("fixtures/dsh-two-turns.ndjson"),
         "dsh-disconnect" => include_str!("fixtures/dsh-disconnect.ndjson"),
         "dsh-stop-next" => include_str!("fixtures/dsh-stop-next.ndjson"),
-        "antigravity-steps" => include_str!("fixtures/antigravity-steps.ndjson"),
         _ => panic!("unknown replay fixture {name}"),
     };
     load(source).expect("valid bounded replay fixture")
@@ -200,7 +199,6 @@ fn replay_loader_rejects_oversized_or_unattributed_records_and_matches_exact_val
         "dsh-two-turns",
         "dsh-disconnect",
         "dsh-stop-next",
-        "antigravity-steps",
     ] {
         assert!(!fixture(name).is_empty());
     }

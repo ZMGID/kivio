@@ -12,7 +12,6 @@ use crate::external_agents::types::ExternalAgentSession;
 
 pub mod acp;
 mod acp_terminal;
-pub mod antigravity;
 pub mod claude_init;
 /// 常驻 `claude` 会话（B1）：一个会话一个进程。
 pub mod claude_stream;
@@ -473,7 +472,12 @@ impl LiveSessionHandle {
     /// dropped the id, started a blank thread, and overwrote the binding — so reopening
     /// the conversation could not continue the original native session.
     pub fn can_resume(&self, agent_id: &str, protocol: &str) -> bool {
-        self.agent_id == agent_id && self.protocol == protocol && !self.native_id.trim().is_empty()
+        self.agent_id == agent_id
+            && !self.native_id.trim().is_empty()
+            && (self.protocol == protocol
+                || (agent_id == "antigravity"
+                    && self.protocol == "antigravity_stream_json"
+                    && protocol == "antigravity_acp"))
     }
 }
 
@@ -710,6 +714,18 @@ mod live_handle_tests {
         assert!(stored.can_resume("codex", "codex_app_server"));
         let slash = handle("E:/proj");
         assert!(slash.can_resume("codex", "codex_app_server"));
+    }
+
+    #[test]
+    fn antigravity_acp_resumes_ids_saved_by_stream_json() {
+        let mut legacy = handle("project");
+        legacy.agent_id = "antigravity".into();
+        legacy.protocol = "antigravity_stream_json".into();
+        assert!(legacy.can_resume("antigravity", "antigravity_acp"));
+        assert!(!legacy.can_resume("grok", "antigravity_acp"));
+        assert!(!legacy.can_resume("antigravity", "acp_json_rpc"));
+        legacy.native_id.clear();
+        assert!(!legacy.can_resume("antigravity", "antigravity_acp"));
     }
 
     #[test]
