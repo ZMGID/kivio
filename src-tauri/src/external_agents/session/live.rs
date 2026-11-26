@@ -387,6 +387,7 @@ impl LaunchConfig {
 /// Clones retain actor ownership; the final owner aborts a forgotten actor.
 #[derive(Clone)]
 pub struct SessionControl {
+    pub(crate) gemini_questions: Option<crate::app_mcp::gemini_questions::GeminiQuestions>,
     sender: mpsc::Sender<SessionCommand>,
     owner: Option<Arc<ActorOwner>>,
     instance_id: uuid::Uuid,
@@ -465,6 +466,7 @@ impl SessionControl {
         });
         Self {
             sender,
+            gemini_questions: None,
             instance_id: uuid::Uuid::new_v4(),
             diagnostics: crate::external_agents::diagnostics::ConnectionCapture::current(),
             owner: Some(Arc::new(ActorOwner {
@@ -516,6 +518,7 @@ impl SessionControl {
     fn untracked(sender: mpsc::Sender<SessionCommand>) -> Self {
         Self {
             sender,
+            gemini_questions: None,
             instance_id: uuid::Uuid::new_v4(),
             diagnostics: crate::external_agents::diagnostics::ConnectionCapture::current(),
             owner: None,

@@ -718,6 +718,9 @@ pub struct ChatAskUserOptionPayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(rename_all = "camelCase")]
 pub struct ChatAskUserQuestionPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub is_secret: Option<bool>,
     pub id: String,
     pub prompt: String,
     pub options: Vec<ChatAskUserOptionPayload>,
@@ -750,6 +753,7 @@ impl From<&crate::chat::ask_user::AskUserPromptPayload> for ChatAskUserPromptPay
                 .questions
                 .iter()
                 .map(|question| ChatAskUserQuestionPayload {
+                    is_secret: question.is_secret.then_some(true),
                     id: question.id.clone(),
                     prompt: question.prompt.clone(),
                     options: question

@@ -184,6 +184,8 @@ Model requests go to the selected provider. Web search and manual WebDAV backups
 
 If they are installed: Claude Code, Codex, Antigravity, OpenCode, Gemini, Kimi, Pi, Hermes, Grok, DeepSeek Harness. Availability is probed on the machine; model catalogs load lazily for the selected CLI.
 
+Hermes question cards require its native `clarify` tool. Add `clarify` to the existing `platform_toolsets.acp` list in your Hermes configuration. With the default ACP toolset, use `[hermes-acp, clarify]`. Gemini CLI uses Kivio’s local MCP server for question cards. This integration is currently unavailable when Kivio on Windows launches Gemini inside WSL.
+
 </details>
 
 <details>

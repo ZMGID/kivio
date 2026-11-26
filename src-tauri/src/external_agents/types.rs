@@ -229,6 +229,7 @@ pub enum RetryStrategy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentRunPolicy {
+    pub chat_mcp_questions: bool,
     pub additional_dirs: AdditionalDirsStrategy,
     pub model_selection: ModelSelectionStrategy,
     pub regenerate: RegenerateStrategy,
@@ -328,6 +329,7 @@ impl AgentLaunchPolicy {
 
 impl AgentRunPolicy {
     pub const STANDARD: Self = Self {
+        chat_mcp_questions: false,
         additional_dirs: AdditionalDirsStrategy::ConversationOnly,
         model_selection: ModelSelectionStrategy::Direct,
         regenerate: RegenerateStrategy::None,
@@ -627,6 +629,12 @@ pub enum UnifiedAgentEvent {
     /// The CLI has cleared this request; withdraw its existing host card and waiter.
     InteractionResolved {
         interaction_id: String,
+    },
+    /// A host-rendered question has a public answer card, even when the CLI emits no tool events.
+    QuestionResolved {
+        id: String,
+        name: String,
+        card: Value,
     },
     ThinkingDelta {
         delta: String,
