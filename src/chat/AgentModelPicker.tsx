@@ -690,20 +690,17 @@ function EffortSlider({
           }}
         >
           {shownIndex >= 0 && (
-            // 外层管随档位增强的光晕（滤镜要在裁切之外，否则光被裁掉）；
-            // 内层是铺满整条轨道的渐变，用 clip-path 露出到当前档：越往右颜色越深，档位越高越「热」。
             <span
-              className="kv-effort__glow"
-              style={{ '--kv-effort-ratio': ratio } as CSSProperties}
+              className="kv-effort__progress"
+              style={{ width: stepPosition(ratio), '--kv-effort-ratio': ratio } as CSSProperties}
               aria-hidden="true"
             >
-              <span
-                className="kv-effort__fill"
-                style={{ clipPath: `inset(0 calc(100% - ${stepPosition(ratio)}) 0 0 round 999px)` }}
-              >
-                {/* 打开面板与每次换档时扫过一道光（按已提交的档位换 key 重挂）。 */}
-                <span key={value ?? 'none'} className="kv-effort__sheen" />
+              <span className="kv-effort__glow">
+                <span className="kv-effort__fill">
+                  <span key={value ?? 'none'} className="kv-effort__sheen" />
+                </span>
               </span>
+              <span className="kv-effort__knob" />
             </span>
           )}
           {steps.map((step, index) => (
@@ -723,7 +720,6 @@ function EffortSlider({
               style={{ left: stepPosition(stepRatio(index, count)) }}
             />
           ))}
-          {shownIndex >= 0 && <span className="kv-effort__knob" style={{ left: stepPosition(ratio) }} aria-hidden="true" />}
         </div>
       )}
       {fastButton}

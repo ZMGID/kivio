@@ -1,5 +1,46 @@
 import { expect, test } from '@playwright/test'
 
+test('keeps the effort fill and knob on the previewed step while dragging in either direction', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('kivio.chat.lastAgentRuntime', JSON.stringify({ kind: 'external', externalAgentId: 'codex' }))
+  })
+  await page.goto('/#chat')
+  await page.locator('.kv-agent-picker > button').click()
+  await page.evaluate(async () => {
+    const { api } = await import('/src/api/tauri.ts')
+    api.thinkingCapabilitiesForModel = async () => ({ levels: ['low', 'medium', 'high', 'max'], offMode: 'unsupported' })
+  })
+  await page.getByRole('radio', { name: 'Kivio Agent', exact: true }).click()
+  const track = page.locator('.kv-effort__track')
+  const step = name => track.getByRole('menuitemradio', { name, exact: true })
+  await expect(step('High')).toBeChecked()
+  // Hit-test the painted fill, including its clipping, at either side of the knob center.
+  await page.addStyleTag({ content: '.kv-effort__fill { pointer-events: auto; }' })
+  await step('High').hover()
+  await page.mouse.down()
+  for (const name of ['Low', 'Max', 'Medium']) {
+    const box = await step(name).boundingBox()
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await expect(page.locator('.kv-effort__value-text')).toHaveText(name)
+    const { knobOffset, filledBefore, filledAfter } = await step(name).evaluate(dot => {
+      const track = dot.parentElement
+      const knob = track.querySelector('.kv-effort__knob').getBoundingClientRect()
+      const fill = track.querySelector('.kv-effort__fill')
+      const bounds = dot.getBoundingClientRect()
+      const x = bounds.left + bounds.width / 2
+      const y = bounds.top + bounds.height / 2
+      const filled = point => document.elementsFromPoint(point, y).includes(fill)
+      return { knobOffset: Math.abs(knob.left + knob.width / 2 - x), filledBefore: filled(x - 2), filledAfter: filled(x + 2) }
+    })
+    expect(knobOffset).toBeLessThan(1)
+    expect(filledBefore).toBe(true)
+    expect(filledAfter).toBe(false)
+    await expect(step('High')).toBeChecked()
+  }
+  await page.mouse.up()
+  await expect(step('Medium')).toBeChecked()
+})
+
 function expectTextCaret(editor, offset) {
   return expect.poll(() => editor.evaluate(element => {
     const selection = getSelection()

@@ -198,6 +198,7 @@
 
 /* 轨道：浅凹槽 + 强调色渐变填充（随档位露出、越高越深）+ 等距落点 + 白色旋钮。 */
 .kv-effort__track {
+  container-type: inline-size;
   --kv-effort-from: color-mix(in srgb, var(--accent) 38%, #fff);
   --kv-effort-to: color-mix(in srgb, var(--accent) 88%, #3b2fd6);
   position: relative;
@@ -222,6 +223,17 @@
   pointer-events: none;
 }
 
+.kv-effort__progress {
+  position: absolute;
+  inset: 0 auto 0 0;
+  pointer-events: none;
+  transition: width var(--kv-dur-normal) var(--kv-ease-out);
+}
+
+.kv-effort__track.is-dragging .kv-effort__progress {
+  transition: none;
+}
+
 /* 光晕层：档位越高越亮（--kv-effort-ratio 0→1）。 */
 .kv-effort__glow {
   position: absolute;
@@ -241,11 +253,10 @@
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.04) 50%, rgba(0, 0, 0, 0.06)),
     linear-gradient(90deg, var(--kv-effort-from), var(--accent) 62%, var(--kv-effort-to));
+  background-size: 100cqw 100%;
   box-shadow:
     inset 0 0 0 0.5px color-mix(in srgb, var(--kv-effort-to) 35%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.3);
-  /* 轻弹吸附：换档时填充带一点回弹落到位。 */
-  transition: clip-path var(--kv-dur-slow) var(--kv-ease-spring);
 }
 
 /* 扫光：一道斜向高光从左扫到右，只跑一次。 */
@@ -316,6 +327,7 @@
 .kv-effort__knob {
   position: absolute;
   top: 50%;
+  left: 100%;
   z-index: 2;
   width: 24px;
   height: 24px;
@@ -331,7 +343,6 @@
   transform: translate(-50%, -50%);
   pointer-events: none;
   transition:
-    left var(--kv-dur-slow) var(--kv-ease-spring),
     transform var(--kv-dur-fast) var(--kv-ease-spring),
     box-shadow var(--kv-dur-fast) var(--kv-ease-out);
 }
@@ -442,8 +453,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .kv-agent-picker__agent,
+  .kv-effort__progress,
   .kv-effort__glow,
-  .kv-effort__fill,
   .kv-effort__dot::after,
   .kv-effort__knob {
     transition: none !important;
