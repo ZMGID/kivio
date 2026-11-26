@@ -12,7 +12,7 @@ use crate::mcp::types::McpToolCallResult;
 
 pub const L1_MAX_BYTES: usize = 5_000;
 
-const MEMORY_DIR: &str = "chat-memory";
+pub(crate) const DIRECTORY: &str = "chat-memory";
 const L1_FILE: &str = "L1.md";
 const L2_FILE: &str = "L2.md";
 
@@ -94,7 +94,7 @@ pub struct MemoryModifyArgs {
 /// terminal agent, which has no `AppHandle`) can read/write the SAME memory the
 /// GUI writes, by passing their own resolved app-data dir.
 pub fn memory_dir_at(base: &Path) -> Result<PathBuf, String> {
-    let dir = base.join(MEMORY_DIR);
+    let dir = base.join(DIRECTORY);
     fs::create_dir_all(&dir).map_err(|e| format!("create memory dir: {e}"))?;
     Ok(dir)
 }

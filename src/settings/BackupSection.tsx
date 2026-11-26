@@ -35,8 +35,8 @@ export function BackupSection({ controller, lang }: {
     <section className="backup-section">
       <h3 className="backup-section-title">{zh ? '聊天全量备份' : 'Full chat backup'}</h3>
       <div className="backup-surface"><div className="backup-row">
-        <div className="backup-copy"><p className="kv-row-label">{zh ? '项目、对话、附件和笔记' : 'Projects, conversations, attachments and notes'}</p>
-          <p className="kv-row-desc">{zh ? '包含助手、集、项目记录、全部对话、分支、草稿、附件，以及笔记、文件夹和笔记回收站。恢复会替换备份包含的数据并重启应用。' : 'Includes assistants, sets, project records, conversations, branches, drafts, attachments, notes, note folders and Trash. Restore replaces the data covered by the backup and restarts the app.'}</p>
+        <div className="backup-copy"><p className="kv-row-label">{zh ? '项目、对话、附件、笔记和记忆' : 'Projects, conversations, attachments, notes and memory'}</p>
+          <p className="kv-row-desc">{zh ? '包含助手、集、项目记录、全部对话、分支、草稿、附件、笔记、文件夹、笔记回收站，以及 L1 在线记忆和 L2 长期记忆。恢复会替换备份包含的数据并重启应用。' : 'Includes assistants, sets, project records, conversations, branches, drafts, attachments, notes, note folders and Trash, plus L1 online memory and L2 long-term memory. Restore replaces the data covered by the backup and restarts the app.'}</p>
           <p className="kv-row-desc">{zh ? '不包含项目代码、外部链接文件或 CLI 原生会话。换电脑后可能需要重新指定项目目录，外部 CLI 不保证能续聊。' : 'Excludes project source files, externally linked files and CLI native sessions. Project paths may need updating on another computer; CLI session continuation is not guaranteed.'}</p>
         </div>
         <div className="backup-actions">

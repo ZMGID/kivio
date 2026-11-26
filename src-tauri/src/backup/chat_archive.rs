@@ -5,15 +5,16 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const DIRECTORIES: [&str; 5] = [
-    "conversations",
-    "external-agent-sessions",
-    "subagents",
-    "artifacts",
-    crate::notes::DIRECTORY,
+const DIRECTORY_VERSIONS: [(&str, u64); 6] = [
+    ("conversations", 1),
+    ("external-agent-sessions", 1),
+    ("subagents", 1),
+    ("artifacts", 1),
+    (crate::notes::DIRECTORY, 2),
+    (crate::chat::memory::DIRECTORY, 3),
 ];
 const FORMAT: &str = "kivio-chat-backup";
-const VERSION: u64 = 2;
+const VERSION: u64 = 3;
 pub(super) const MAX_BYTES: u64 = 50 * 1024 * 1024 * 1024;
 
 fn error(e: impl std::fmt::Display) -> String {
@@ -95,7 +96,7 @@ pub(crate) fn export(root: &Path, destination: &Path) -> Result<(), String> {
         .map_err(error)?
         .join(destination.file_name().ok_or("无效备份路径")?);
     let mut remaining = MAX_BYTES;
-    for directory in DIRECTORIES {
+    for (directory, _) in DIRECTORY_VERSIONS {
         let _notes = (directory == crate::notes::DIRECTORY).then(crate::notes::lock_storage);
         let path = root.join(directory);
         if path.exists() {
@@ -119,7 +120,7 @@ fn remap(value: &mut serde_json::Value, source: &str, target: &str) {
                 .filter(|tail| tail.starts_with(['/', '\\']))
             {
                 // Only app-owned resource paths move; project working directories stay unchanged.
-                if DIRECTORIES.iter().any(|dir| {
+                if DIRECTORY_VERSIONS.iter().any(|(dir, _)| {
                     tail.trim_start_matches(['/', '\\'])
                         .starts_with(&format!("{dir}/"))
                         || tail
@@ -156,20 +157,21 @@ pub(crate) fn prepare(root: &Path, archive: &Path) -> Result<(), String> {
             .take(1024 * 1024),
     )
     .map_err(error)?;
-    let version = manifest["version"].as_u64();
-    if manifest["type"] != FORMAT || !matches!(version, Some(1 | VERSION)) {
+    let Some(version) = manifest["version"]
+        .as_u64()
+        .filter(|version| manifest["type"] == FORMAT && (1..=VERSION).contains(version))
+    else {
         return Err("不支持的聊天备份格式或版本".into());
-    }
+    };
     let source = manifest["sourceRoot"]
         .as_str()
         .filter(|s| !s.is_empty())
         .ok_or("备份缺少原始数据路径")?;
     let temporary = tempfile::tempdir_in(root.parent().ok_or("无效数据目录")?).map_err(error)?;
     let data = temporary.path().join("data");
-    let directories = DIRECTORIES
-        .iter()
-        .copied()
-        .filter(|directory| *directory != crate::notes::DIRECTORY || version == Some(VERSION))
+    let directories = DIRECTORY_VERSIONS
+        .into_iter()
+        .filter_map(|(directory, since)| (version >= since).then_some(directory))
         .collect::<Vec<_>>();
     for directory in &directories {
         fs::create_dir_all(data.join(directory)).map_err(error)?;
@@ -275,7 +277,7 @@ pub(crate) fn restore_at_startup(root: &Path) -> Result<(), String> {
     let previous = stage.join("previous");
     fs::create_dir_all(&previous).map_err(error)?;
     fs::create_dir_all(root).map_err(error)?;
-    for directory in DIRECTORIES {
+    for (directory, _) in DIRECTORY_VERSIONS {
         let incoming = stage.join("data").join(directory);
         if !incoming.exists() {
             continue;
@@ -302,6 +304,7 @@ pub(crate) fn restore_at_startup(root: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::memory::{memory_dir_at, read_layer_at, save_layer_at, MemoryLayer};
     use std::io::Write;
 
     #[test]
@@ -347,36 +350,92 @@ mod tests {
     }
 
     #[test]
-    fn older_archives_leave_notes_intact_and_new_empty_archives_restore_empty_notes() {
+    fn full_archive_restores_both_memory_layers_and_keeps_previous_memory() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("source");
+        let target = workspace.path().join("target");
+        let source_memory = memory_dir_at(&source).unwrap();
+        let target_memory = memory_dir_at(&target).unwrap();
+        let layers = [(MemoryLayer::L1, "当前偏好"), (MemoryLayer::L2, "长期记录")];
+        for (layer, content) in layers {
+            save_layer_at(&source_memory, layer, content).unwrap();
+            save_layer_at(&target_memory, layer, "Previous memory").unwrap();
+        }
+        let archive = workspace.path().join("chat.zip");
+
+        export(&source, &archive).unwrap();
+        prepare(&target, &archive).unwrap();
+        restore_at_startup(&target).unwrap();
+        for (layer, content) in layers {
+            assert_eq!(
+                read_layer_at(&target_memory, layer).unwrap().content,
+                content
+            );
+        }
+        let retained_memory = fs::read_dir(workspace.path())
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("target.chat-before-restore-")
+            })
+            .unwrap()
+            .path()
+            .join("previous/chat-memory");
+        for (layer, _) in layers {
+            assert_eq!(
+                read_layer_at(&retained_memory, layer).unwrap().content,
+                "Previous memory"
+            );
+        }
+    }
+
+    #[test]
+    fn older_archives_preserve_data_outside_their_scope() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("source");
         let target = workspace.path().join("target");
         fs::create_dir_all(target.join("notes")).unwrap();
         fs::write(target.join("notes/current.md"), b"keep me").unwrap();
+        let memory = memory_dir_at(&target).unwrap();
+        save_layer_at(&memory, MemoryLayer::L1, "keep memory").unwrap();
         let archive = workspace.path().join("old.zip");
-        let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
-        zip.start_file("manifest.json", zip::write::SimpleFileOptions::default())
+        for (version, note) in [(1, "keep me"), (2, "from version 2")] {
+            let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("manifest.json", options).unwrap();
+            write!(
+                zip,
+                "{}",
+                serde_json::json!({"type": FORMAT, "version": version, "sourceRoot": source})
+            )
             .unwrap();
-        write!(
-            zip,
-            "{}",
-            serde_json::json!({"type": FORMAT, "version": 1, "sourceRoot": source})
-        )
-        .unwrap();
-        zip.finish().unwrap();
+            if version == 2 {
+                zip.start_file("notes/current.md", options).unwrap();
+                zip.write_all(note.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
 
-        prepare(&target, &archive).unwrap();
-        restore_at_startup(&target).unwrap();
-        assert_eq!(
-            fs::read(target.join("notes/current.md")).unwrap(),
-            b"keep me"
-        );
+            prepare(&target, &archive).unwrap();
+            restore_at_startup(&target).unwrap();
+            assert_eq!(
+                fs::read_to_string(target.join("notes/current.md")).unwrap(),
+                note
+            );
+            assert_eq!(
+                read_layer_at(&memory, MemoryLayer::L1).unwrap().content,
+                "keep memory"
+            );
+        }
 
         let archive = workspace.path().join("current.zip");
         export(&source, &archive).unwrap();
         prepare(&target, &archive).unwrap();
         restore_at_startup(&target).unwrap();
         assert_eq!(target.join("notes").read_dir().unwrap().count(), 0);
+        assert_eq!(memory.read_dir().unwrap().count(), 0);
     }
     #[test]
     fn restart_resumes_after_old_directory_was_moved() {

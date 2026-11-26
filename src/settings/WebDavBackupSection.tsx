@@ -59,7 +59,7 @@ export function WebDavBackupSection({ controller, lang }: {
         <Button size="sm" variant={config?.url ? 'default' : 'primary'} disabled={disabled} onClick={openEditor}>{config?.url ? (zh ? '管理连接' : 'Manage connection') : (zh ? '配置 WebDAV' : 'Configure WebDAV')}</Button>
       </div>
       {config?.url && <div className="backup-row backup-divider">
-        <div className="backup-copy"><p className="kv-row-label">{zh ? '远程备份' : 'Remote backups'}</p><p className="kv-row-desc">{zh ? '配置备份保存设置。聊天全量备份保存聊天、附件、笔记、文件夹和笔记回收站。' : 'Configuration backups save settings. Full chat backups save chats, attachments, notes, note folders and Trash.'}</p></div>
+        <div className="backup-copy"><p className="kv-row-label">{zh ? '远程备份' : 'Remote backups'}</p><p className="kv-row-desc">{zh ? '配置备份保存设置。聊天全量备份保存聊天、附件、笔记、文件夹、笔记回收站和 L1/L2 记忆。' : 'Configuration backups save settings. Full chat backups save chats, attachments, notes, note folders and Trash, plus L1/L2 memory.'}</p></div>
         <div className="backup-actions">
           <Select size="sm" ariaLabel={zh ? '远程备份类型' : 'Remote backup type'} value={kind} onChange={(value) => { if (value === 'configuration' || value === 'chat') setKind(value) }} disabled={disabled || !ready} options={[{ value: 'configuration', label: zh ? '配置备份' : 'Configuration' }, { value: 'chat', label: zh ? '聊天全量备份' : 'Full chat backup' }]} />
           <Button size="sm" disabled={disabled || !ready} onClick={() => void run({ type: 'upload', kind })}><Upload size={13} />{zh ? '上传备份' : 'Upload backup'}</Button>
