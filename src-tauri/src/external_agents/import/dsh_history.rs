@@ -94,7 +94,7 @@ fn apply_tool_results(data: &Value, pending: &mut Pending, messages: &mut [Impor
             pending,
             messages,
             id,
-            truncate_tool_result(&output),
+            |_| truncate_tool_result(&output),
             is_error,
         );
     }

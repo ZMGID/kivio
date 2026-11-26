@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 use crate::mcp::ChatToolDefinition;
 
 mod value_schema;
-pub(crate) use value_schema::{answer_value, supports_value_schema};
+pub(crate) use value_schema::{answer_value, supports_value_schema, FormChoices};
 
 pub const ASK_USER_TOOL_NAME: &str = "ask_user";
 pub const ASK_USER_PHASE_AWAITING: &str = "awaiting";
@@ -36,6 +36,8 @@ pub struct AskUserOption {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AskUserQuestion {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_secret: bool,
     pub id: String,
     pub prompt: String,
     pub options: Vec<AskUserOption>,
@@ -282,12 +284,18 @@ pub fn structured_content(
     phase: &str,
     answers: &HashMap<String, AskUserAnswer>,
 ) -> Value {
+    let visible_answers: HashMap<_, _> = prompt
+        .questions
+        .iter()
+        .filter(|question| !question.is_secret)
+        .filter_map(|question| answers.get_key_value(&question.id))
+        .collect();
     serde_json::json!({
         "askUser": {
             "phase": phase,
             "title": prompt.title,
             "questions": prompt.questions,
-            "answers": answers,
+            "answers": visible_answers,
         }
     })
 }
@@ -335,7 +343,9 @@ fn normalize_answer(
         }
     }
 
-    let custom_text = if question.value_schema.is_some() {
+    let custom_text = if question.is_secret {
+        answer.custom_text.clone().filter(|text| !text.is_empty())
+    } else if question.value_schema.is_some() {
         // Typed forms distinguish omission from an explicitly supplied empty string, and
         // validation must inspect the original text rather than a truncated/coerced value.
         answer.custom_text.clone()
@@ -347,7 +357,10 @@ fn normalize_answer(
             .filter(|text| !text.is_empty())
     };
 
-    if selected.is_empty() && custom_text.is_none() {
+    let accepts_empty_array = question.value_schema.as_ref().is_some_and(|schema| {
+        schema["type"] == "array" && schema["minItems"].as_u64().unwrap_or(0) == 0
+    });
+    if selected.is_empty() && custom_text.is_none() && !accepts_empty_array {
         return Err(format!(
             "Question `{}` requires at least one option or custom answer",
             question.id

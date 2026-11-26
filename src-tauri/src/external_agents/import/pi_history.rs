@@ -121,7 +121,7 @@ fn apply_tool_result(pending: &mut Pending, messages: &mut [ImportedMessage], me
     };
     let result = truncate_tool_result(&tool_result_text(message));
     let is_error = message["isError"].as_bool().unwrap_or(false);
-    resolve_tool_result(pending, messages, id, result, is_error);
+    resolve_tool_result(pending, messages, id, |_| result, is_error);
 
     let Some(content) = message["content"].as_array() else {
         return;

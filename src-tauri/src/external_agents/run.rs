@@ -954,7 +954,9 @@ async fn run_external_cli_reply_owned(
     // （`--permission-prompt-tool stdio`），从 argv 读回来就不可能与 `build_args` 分叉。
     // 没有这条 flag 的 CLI（dsh 的 `session/ask`）靠 `ask_user::needs_host` 开通道，
     // 否则问用户会卡在 `NO_PROVIDER`。
-    let approval_host = turn_needs_approval_host(&args, def).then(|| ApprovalHost {
+    let approval_host = (turn_needs_approval_host(&args, def)
+        || use_chat_mcp_questions(def, &resolved_bin))
+    .then(|| ApprovalHost {
         app,
         state,
         conversation_id: &conversation_id,
@@ -1852,7 +1854,7 @@ where
         pi_regenerate.filter(|_| matches!(protocol, StreamFormat::PiRpc))
     {
         let chat_credential = if !crate::external_agents::wsl::is_wsl_target(resolved_bin) {
-            Some(crate::app_mcp::issue_chat_credential(app, conversation_id).await?)
+            Some(crate::app_mcp::issue_chat_credential(app, conversation_id, None).await?)
         } else {
             None
         };
@@ -2813,6 +2815,10 @@ fn claude_elicitation_url(
     (url.starts_with("https://") || url.starts_with("http://")).then(|| url.to_string())
 }
 
+fn use_chat_mcp_questions(def: &RuntimeAgentDef, binary: &Path) -> bool {
+    def.run.chat_mcp_questions && !crate::external_agents::wsl::is_wsl_target(binary)
+}
+
 /// 本轮要不要建审批 / 问用户宿主。claude 看 argv 上的 `--permission-prompt-tool`；
 /// 没有这条 flag 的 CLI（dsh 的 `session/ask`）靠 `ask_user::needs_host` —— 加了
 /// codec 就会开通道。
@@ -2870,21 +2876,24 @@ where
     let (done_tx, done_rx) = oneshot::channel::<Result<(), String>>();
     // 审批通道只在宿主接得住时才建。会话侧据此决定 `can_use_tool` 是「问用户」还是走那条
     // fail-closed 的 error 兜底 —— 两种都绝不沉默（沉默 = 那一轮永久挂死）。
-    let (bridge, mut ask_rx, decision_tx) = match approvals {
-        Some(_) => {
-            let (ask_tx, ask_rx) = mpsc::channel(8);
-            let (decision_tx, decision_rx) = mpsc::channel(8);
-            (
-                Some(ApprovalBridge {
-                    requests: ask_tx,
-                    decisions: decision_rx,
-                }),
-                Some(ask_rx),
-                Some(decision_tx),
-            )
-        }
-        None => (None, None, None),
-    };
+    // Gemini asks through its session-scoped MCP tool. Its native ACP permission policy
+    // remains independent of this extra interactive tool.
+    let (bridge, mut ask_rx, decision_tx) =
+        match approvals.filter(|_| control.gemini_questions.is_none()) {
+            Some(_) => {
+                let (ask_tx, ask_rx) = mpsc::channel(8);
+                let (decision_tx, decision_rx) = mpsc::channel(8);
+                (
+                    Some(ApprovalBridge {
+                        requests: ask_tx,
+                        decisions: decision_rx,
+                    }),
+                    Some(ask_rx),
+                    Some(decision_tx),
+                )
+            }
+            None => (None, None, None),
+        };
     let permit = tokio::select! {
         permit = control.reserve() => permit.map_err(|_| "external CLI session ended".to_string())?,
         _ = async {
@@ -2916,6 +2925,12 @@ where
             );
         }
     }
+    let mut mcp_questions = control
+        .gemini_questions
+        .as_ref()
+        .zip(approvals)
+        .map(|(questions, _)| questions.begin_turn());
+    let mut mcp_answers = FuturesUnordered::new();
     let _observation = control.observe_generation(run_generation);
     state
         .chat_runtime()
@@ -2949,7 +2964,20 @@ where
     let mut resolved_interactions = std::collections::HashSet::new();
     let identity = SessionIdentity::from_control(control);
     let actor_id = identity.instance_id();
-    let mut handle_event = |event, resolved: &mut std::collections::HashSet<String>| {
+    use crate::app_mcp::gemini_questions::QuestionReceipts;
+    let mut mcp_receipts = QuestionReceipts::default();
+    let mut handle_event = |mut event,
+                            resolved: &mut std::collections::HashSet<String>,
+                            receipts: &mut QuestionReceipts| {
+        if control.gemini_questions.is_some() {
+            if let Some((id, card)) = receipts.observe(&mut event) {
+                if let Some(host) = approvals {
+                    state
+                        .chat_interactions()
+                        .remember_answered_ask_user(host.run_id, id, card);
+                }
+            }
+        }
         match event {
             UnifiedAgentEvent::InteractionResolved { interaction_id } => {
                 resolved.insert(interaction_id.clone());
@@ -2991,7 +3019,7 @@ where
                 // Invariant (A4): the actor sends every `event` before `done`, and mpsc preserves
                 // order, so all remaining events are already queued — drain them before returning.
                 while let Ok(event) = events_rx.try_recv() {
-                    handle_event(event, &mut resolved_interactions);
+                    handle_event(event, &mut resolved_interactions, &mut mcp_receipts);
                 }
                 break result.unwrap_or_else(|_| {
                     delivery.mark_possibly_sent();
@@ -3000,9 +3028,19 @@ where
             }
             maybe_event = events_rx.recv(), if events_open => {
                 match maybe_event {
-                    Some(event) => handle_event(event, &mut resolved_interactions),
+                    Some(event) => handle_event(event, &mut resolved_interactions, &mut mcp_receipts),
                     None => events_open = false,
                 }
+            }
+            Some(request) = async { mcp_questions.as_mut()?.recv().await }, if mcp_questions.is_some() => {
+                if let Some(host) = approvals {
+                    let id = Uuid::new_v4().to_string();
+                    pending_approvals.ids.push(id.clone());
+                    mcp_answers.push(host.answer_mcp_question(id, request));
+                }
+            }
+            Some(answer) = mcp_answers.next(), if !mcp_answers.is_empty() => {
+                mcp_receipts.deliver(answer);
             }
             // 会话侧送来一条「这个工具能用吗」⇒ 复用内置 agent 那条审批链路去问用户
             // （typed approval event + `chat_confirm_tool_call` 命令 + 同一张挂起表），
@@ -3016,11 +3054,22 @@ where
                 if let Some(host) = approvals {
                     if resolved_interactions.contains(&ask.interaction_id) { continue; }
                     pending_approvals.ids.push(ask.interaction_id.clone());
-                    in_flight.push(host.ask(ask));
+                    in_flight.push(async move {
+                        let mut question = None;
+                        let decision = host.ask(ask, |record| {
+                            question = record.structured_content.map(|card| UnifiedAgentEvent::QuestionResolved {
+                                id: record.id, name: record.name, card,
+                            });
+                        }).await;
+                        (decision, question)
+                    });
                 }
             }
             // 用户答了 ⇒ 把答复送回会话，由它写 `control_response`。
-            Some(decision) = in_flight.next(), if !in_flight.is_empty() => {
+            Some((decision, question)) = in_flight.next(), if !in_flight.is_empty() => {
+                if let Some(question) = question {
+                    handle_event(question, &mut resolved_interactions, &mut mcp_receipts);
+                }
                 if let Some(tx) = decision_tx.as_ref() {
                     let _: Result<_, _> = tx.send(decision).await;
                 }
@@ -3034,6 +3083,31 @@ where
     };
     // 未消费的答复对应的询问已经被会话侧拒掉了，丢弃即可。
     drop(decision_tx);
+    // The agent may disconnect after receiving the answer but before publishing its tool result.
+    // Keep that card using its local ID. Normal replies have already claimed their receipt.
+    if let Some(host) = approvals {
+        for (id, card) in mcp_receipts.unclaimed() {
+            emit(
+                UnifiedAgentEvent::ToolUse {
+                    id: id.clone(),
+                    name: "ask_user".into(),
+                    input: card.clone(),
+                },
+                actor_id,
+            );
+            state
+                .chat_interactions()
+                .remember_answered_ask_user(host.run_id, id.clone(), card);
+            emit(
+                UnifiedAgentEvent::ToolResult {
+                    tool_use_id: id,
+                    content: String::new(),
+                    is_error: false,
+                },
+                actor_id,
+            );
+        }
+    }
     outcome
 }
 
@@ -3076,22 +3150,13 @@ pub(crate) struct ApprovalHost<'a> {
 }
 
 impl ApprovalHost<'_> {
-    /// 用户点停止 / 通道断开时 `request_tool_approval` 返回 false 并清掉挂起条目
-    /// —— **默认拒**。不设墙钟超时：60s 会把晚到的「允许」变成 Codex 的
-    /// `Rejected("rejected by user")`，原生 CLI 不会这样。
-    async fn ask(
-        &self,
-        ask: crate::external_agents::session::live::ApprovalAsk,
-    ) -> crate::external_agents::session::live::ApprovalDecision {
-        // 复用 `ToolCallRecord` 作为审批卡的载体：`request_tool_approval` 的入参就是它，
-        // 而它的 `format_tool_approval_summary` 已经会把 claude 的 `Write`/`file_path`
-        // 摘成人看得懂的一两行。只填审批需要的字段，其余留默认。
-        let record = ToolCallRecord {
-            id: ask.tool_call_id.clone(),
-            name: ask.tool_name.clone(),
+    fn tool_record(id: &str, name: &str, input: &serde_json::Value) -> ToolCallRecord {
+        ToolCallRecord {
+            id: id.to_string(),
+            name: name.to_string(),
             source: "external_cli".to_string(),
             server_id: None,
-            arguments: serde_json::to_string(&ask.input).unwrap_or_else(|_| "{}".to_string()),
+            arguments: serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string()),
             status: ToolCallStatus::Running,
             result_preview: None,
             error: None,
@@ -3104,7 +3169,49 @@ impl ApprovalHost<'_> {
             trace_id: None,
             span_id: None,
             structured_content: None,
+        }
+    }
+
+    async fn answer_mcp_question(
+        &self,
+        id: String,
+        request: crate::app_mcp::gemini_questions::Question,
+    ) -> crate::app_mcp::gemini_questions::Answer {
+        let crate::app_mcp::gemini_questions::Question { prompt, mut reply } = request;
+        let record = Self::tool_record(&id, "ask_user", &serde_json::json!(prompt));
+        let answer = tokio::select! {
+            answer = crate::chat::commands::interaction::request_user_response(
+                self.app, self.state, self.conversation_id, self.run_id, self.generation, &record, &id, prompt.clone(),
+            ) => answer,
+            _ = reply.closed() => {
+                self.forget(std::slice::from_ref(&id));
+                crate::chat::ask_user::cancelled_response()
+            },
         };
+        crate::app_mcp::gemini_questions::Answer {
+            id,
+            card: crate::chat::ask_user::structured_content(
+                &prompt,
+                &answer.phase,
+                &answer.answers,
+            ),
+            response: answer,
+            reply,
+        }
+    }
+
+    /// 用户点停止 / 通道断开时 `request_tool_approval` 返回 false 并清掉挂起条目
+    /// —— **默认拒**。不设墙钟超时：60s 会把晚到的「允许」变成 Codex 的
+    /// `Rejected("rejected by user")`，原生 CLI 不会这样。
+    async fn ask(
+        &self,
+        ask: crate::external_agents::session::live::ApprovalAsk,
+        on_answer: impl FnOnce(ToolCallRecord),
+    ) -> crate::external_agents::session::live::ApprovalDecision {
+        // 复用 `ToolCallRecord` 作为审批卡的载体：`request_tool_approval` 的入参就是它，
+        // 而它的 `format_tool_approval_summary` 已经会把 claude 的 `Write`/`file_path`
+        // 摘成人看得懂的一两行。只填审批需要的字段，其余留默认。
+        let record = Self::tool_record(&ask.tool_call_id, &ask.tool_name, &ask.input);
         // 问用户不是「要不要放行这个工具」，而是 CLI 在问用户一个问题。
         // 官方答法走各 CLI 自己的线（claude: 同一条 `can_use_tool` 回
         // `allow + updatedInput`；dsh: `session/ask` 回 `{ answers }`），
@@ -3114,7 +3221,7 @@ impl ApprovalHost<'_> {
         {
             if let Some(prompt) = (codec.parse)(&ask.input) {
                 return self
-                    .present_ask_user(&ask, record, prompt, |prompt, answered| {
+                    .present_ask_user(&ask, record, prompt, on_answer, |prompt, answered| {
                         (codec.encode)(&ask.input, prompt, answered)
                     })
                     .await;
@@ -3295,13 +3402,13 @@ impl ApprovalHost<'_> {
     /// 少了这一步，那条工具卡的载荷永远停在「等待作答」，而 CLI 随后回的
     /// `tool_result` 又不带结构化内容 ⇒ 看着像「答完什么都没留下」。
     /// 内置 agent 那条路早就这么做了（`agent/execute.rs` 的 ask_user 分支）。
-    /// 同一份载荷再留一份给**落盘记录**：流解析层建的 tool 记录只有原始入参，
-    /// 答案只有这里知道。不留的话刷新一次「问了什么 + 选了什么」就没了。
+    /// 由调用方在放行 CLI 前把公开答复写入本轮或后台子代理所属的历史记录。
     async fn present_ask_user(
         &self,
         ask: &crate::external_agents::session::live::ApprovalAsk,
         record: ToolCallRecord,
         prompt: crate::chat::ask_user::AskUserPromptPayload,
+        on_answer: impl FnOnce(ToolCallRecord),
         encode: impl FnOnce(
             &crate::chat::ask_user::AskUserPromptPayload,
             &crate::chat::ask_user::AskUserResponseResult,
@@ -3327,18 +3434,7 @@ impl ApprovalHost<'_> {
             &answered.phase,
             &answered.answers,
         ));
-        crate::chat::commands::interaction::emit_chat_tool_record(
-            self.app,
-            self.run_id,
-            &answered_record,
-        );
-        if let Some(content) = answered_record.structured_content.clone() {
-            self.state.chat_interactions().remember_answered_ask_user(
-                self.run_id,
-                answered_record.id.clone(),
-                content,
-            );
-        }
+        on_answer(answered_record);
         let approved = answered.phase == crate::chat::ask_user::ASK_USER_PHASE_ANSWERED;
         crate::external_agents::session::live::ApprovalDecision {
             interaction_id: ask.interaction_id.clone(),
@@ -3609,20 +3705,21 @@ async fn present_dsh_idle_ask(
     let current = state
         .external_live_sessions()
         .is_identity_current(&conversation_id, &identity);
+    let mut answered_card = None;
     let decision = if persisted.is_some() && current {
         tokio::select! {
             biased;
             _ = identity.closed() => denied,
-            decision = host.ask(ask) => decision,
+            decision = host.ask(ask, |record| {
+                emit_chat_tool_record(&app, &run_id, &record);
+                answered_card = record.structured_content;
+            }) => decision,
         }
     } else {
         denied
     };
     if let Some(mut revision) = persisted {
-        if let Some(content) = state
-            .chat_interactions()
-            .take_answered_ask_user(&run_id, &tool_call_id)
-        {
+        if let Some(content) = answered_card {
             match crate::chat::repository::repository(&app)
                 .mutate(&app, &conversation_id, |conversation| {
                     let record = conversation
@@ -4158,6 +4255,9 @@ async fn connect_persistent_session(
             let dsh_idle_approvals =
                 dsh_idle_approvals_for(protocol, app, conversation_id, identity.clone());
             // WSL loopback may not reach the Windows-hosted MCP server.
+            let gemini_questions = get_agent_def(agent_id)
+                .filter(|def| use_chat_mcp_questions(def, resolved_bin))
+                .map(|_| crate::app_mcp::gemini_questions::GeminiQuestions::default());
             let chat_credential = if matches!(
                 protocol,
                 StreamFormat::ClaudeStreamJson
@@ -4167,7 +4267,14 @@ async fn connect_persistent_session(
                     | StreamFormat::DshJsonRpc
             ) && !crate::external_agents::wsl::is_wsl_target(resolved_bin)
             {
-                Some(crate::app_mcp::issue_chat_credential(app, conversation_id).await?)
+                Some(
+                    crate::app_mcp::issue_chat_credential(
+                        app,
+                        conversation_id,
+                        gemini_questions.clone(),
+                    )
+                    .await?,
+                )
             } else {
                 None
             };
@@ -4341,9 +4448,12 @@ async fn connect_persistent_session(
                     .await?;
                     let id = session.session_id().to_string();
                     let child_pid = session.child_pid();
+                    let supports_load = session.supports_load;
+                    let mut control = spawn_acp_session_actor(session);
+                    control.gemini_questions = gemini_questions;
                     Ok(PersistentConnection {
-                        supports_load: session.supports_load,
-                        control: spawn_acp_session_actor(session),
+                        supports_load,
+                        control,
                         native_id: id,
                         resumed: sid.is_some(),
                         child_pid,
@@ -4747,6 +4857,17 @@ fn apply_unified_event(
             );
             emit_run_event(app, run_id, cli_stream_delta(&segments[segment], delta));
         }
+        UnifiedAgentEvent::QuestionResolved { id, name, card } => {
+            let (idx, inserted) =
+                record_answered_question(tool_calls, tool_map, &id, &name, card, now);
+            if inserted {
+                segment_tracker.reset_text();
+                segment_tracker.reset_reasoning();
+                let segment = push_tool_segment(segments, segment_order, &id);
+                emit_chat_stream_delta(app, run_id, "", None, Some(&segment));
+            }
+            emit_chat_tool_record(app, run_id, &tool_calls[idx]);
+        }
         UnifiedAgentEvent::ToolUse {
             id,
             name,
@@ -5114,6 +5235,47 @@ fn apply_unified_event(
     }
 }
 
+fn record_answered_question(
+    records: &mut Vec<ToolCallRecord>,
+    index: &mut HashMap<String, usize>,
+    id: &str,
+    name: &str,
+    card: serde_json::Value,
+    now: i64,
+) -> (usize, bool) {
+    let next = records.len();
+    let idx = *index.entry(id.to_owned()).or_insert(next);
+    if idx == next {
+        let mut record = ApprovalHost::tool_record(id, name, &serde_json::json!({}));
+        record.started_at = Some(now);
+        records.push(record);
+    }
+    let record = &mut records[idx];
+    if matches!(
+        record.status,
+        ToolCallStatus::Running | ToolCallStatus::Pending
+    ) {
+        record.status = ToolCallStatus::Success;
+        record.completed_at = Some(now);
+    }
+    record.sensitive = false;
+    if has_private_question(&card) {
+        // The normalized card includes the question and its public answers. A CLI may echo a
+        // private answer back through a tool result or an input update.
+        record.arguments = "{}".to_string();
+        record.result_preview = None;
+        record.error = None;
+    }
+    record.structured_content = Some(card);
+    (idx, idx == next)
+}
+
+fn has_private_question(card: &serde_json::Value) -> bool {
+    card.pointer("/askUser/questions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|questions| questions.iter().any(|q| q["is_secret"] == true))
+}
+
 fn update_existing_acp_tool(
     record: &mut ToolCallRecord,
     name: &str,
@@ -5311,7 +5473,15 @@ fn apply_external_tool_result(
     } else {
         ToolCallStatus::Success
     };
-    record.result_preview = Some(truncate_for_preview(result_content, 800));
+    record.result_preview = if record
+        .structured_content
+        .as_ref()
+        .is_some_and(has_private_question)
+    {
+        None
+    } else {
+        Some(truncate_for_preview(result_content, 800))
+    };
     record.completed_at = Some(now);
 }
 
@@ -5621,6 +5791,63 @@ pub(crate) mod regression_tests;
 mod tests {
     use super::*;
 
+    #[test]
+    fn reverse_question_creates_one_card_and_reuses_native_tool_entries() {
+        let mut records = Vec::new();
+        let mut index = HashMap::new();
+        let card = serde_json::json!({"askUser":{"phase":"skipped","answers":{}}});
+        assert_eq!(
+            record_answered_question(&mut records, &mut index, "solo", "clarify", card.clone(), 5),
+            (0, true)
+        );
+        assert_eq!(
+            record_answered_question(&mut records, &mut index, "solo", "clarify", card.clone(), 7),
+            (0, false)
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].completed_at, Some(5));
+        assert_eq!(records[0].structured_content, Some(card.clone()));
+
+        let mut native = ApprovalHost::tool_record("native", "original", &serde_json::json!({}));
+        native.started_at = Some(2);
+        index.insert(native.id.clone(), records.len());
+        records.push(native);
+        assert_eq!(
+            record_answered_question(&mut records, &mut index, "native", "session/ask", card, 9),
+            (1, false)
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1].started_at, Some(2));
+        assert_eq!(records[1].name, "original");
+        assert_eq!(records[1].status, ToolCallStatus::Success);
+    }
+
+    #[test]
+    fn private_question_history_drops_native_input_and_result_echoes() {
+        let mut record = ApprovalHost::tool_record(
+            "item",
+            "requestUserInput",
+            &serde_json::json!({"input":"private-example"}),
+        );
+        apply_external_tool_result(&mut record, "private-example", false, 3);
+        let mut records = vec![record];
+        let mut index = HashMap::from([("item".to_string(), 0)]);
+        let card = serde_json::json!({"askUser":{"phase":"answered","questions":[{"id":"pin","is_secret":true}],"answers":{}}});
+        record_answered_question(
+            &mut records,
+            &mut index,
+            "item",
+            "requestUserInput",
+            card.clone(),
+            4,
+        );
+        apply_external_tool_result(&mut records[0], "private-example", false, 5);
+        assert!(!serde_json::to_string(&records[0])
+            .unwrap()
+            .contains("private-example"));
+        assert_eq!(records[0].structured_content, Some(card));
+    }
+
     #[tokio::test]
     async fn dropping_an_approval_wait_removes_the_pending_request() {
         let state = crate::state::test_app_state();
@@ -5669,6 +5896,20 @@ mod tests {
             span_id: None,
             structured_content: Some(input),
         }
+    }
+
+    #[test]
+    fn chat_mcp_questions_require_a_native_binary_with_the_capability() {
+        let gemini = get_agent_def("gemini").unwrap();
+        assert!(use_chat_mcp_questions(gemini, Path::new("gemini")));
+        assert!(!use_chat_mcp_questions(
+            gemini,
+            Path::new("//wsl$/Ubuntu/bin/gemini")
+        ));
+        assert!(!use_chat_mcp_questions(
+            get_agent_def("opencode").unwrap(),
+            Path::new("opencode")
+        ));
     }
 
     #[test]

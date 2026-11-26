@@ -96,6 +96,7 @@ function normalizeQuestions(value: unknown): AskUserQuestion[] {
     questions.push({
       id,
       prompt,
+      isSecret: question.isSecret === true || question.is_secret === true,
       required: question.required !== false,
       value_schema: valueSchema,
       valueSchema,
@@ -206,11 +207,12 @@ function allowCustom(question: AskUserQuestion): boolean {
 }
 
 function stringValue(question: AskUserQuestion): boolean {
-  return (question.value_schema ?? question.valueSchema)?.type === 'string'
+  return question.options.length === 0 && (question.value_schema ?? question.valueSchema)?.type === 'string'
 }
 
 function draftCustomText(question: AskUserQuestion, answer: DraftAnswer): string | null {
   if (!allowCustom(question)) return null
+  if (question.isSecret) return answer.customText || null
   // Schema and prefilled strings preserve explicit empty values and whitespace.
   if ((stringValue(question) || question.defaultValue !== undefined) && answer.customTextEdited) return answer.customText
   return answer.customText.trim() || null
@@ -221,6 +223,25 @@ function draftHasAnswer(question: AskUserQuestion, answer?: DraftAnswer): boolea
   const hasSelection = answer.selectedOptionIds.length > 0
   const hasCustom = draftCustomText(question, answer) !== null
   return hasSelection || hasCustom
+}
+
+function canSubmitQuestion(question: AskUserQuestion, answer?: DraftAnswer): boolean {
+  const schema = question.valueSchema
+  if (!draftHasAnswer(question, answer)) {
+    return question.required === false || (schema?.type === 'array' && !schema.minItems)
+  }
+  if (schema?.type !== 'array') return true
+  const count = answer?.selectedOptionIds.length ?? 0
+  return !(typeof schema.minItems === 'number' && count < schema.minItems)
+    && !(typeof schema.maxItems === 'number' && count > schema.maxItems)
+}
+
+function multipleChoiceHint(question: AskUserQuestion, t: I18n): string {
+  const schema = question.valueSchema
+  if (typeof schema?.minItems !== 'number' && typeof schema?.maxItems !== 'number') return t.chatAskMultiple
+  const min = typeof schema.minItems === 'number' ? schema.minItems : 0
+  const max = Math.min(Number(schema.maxItems ?? question.options.length), question.options.length)
+  return t.chatAskSelectCount.replace('{count}', min === max ? String(min) : `${min}–${max}`)
 }
 
 function createDraft(parsed: ParsedAskUser | null): Record<string, DraftAnswer> {
@@ -273,7 +294,8 @@ function optionLabel(question: AskUserQuestion, optionId: string): string {
   return question.options.find((option) => option.id === optionId)?.label ?? optionId
 }
 
-function readonlySummary(question: AskUserQuestion, answer: AskUserAnswer | undefined, t: I18n): string {
+function readonlySummary(question: AskUserQuestion, answer: AskUserAnswer | undefined, phase: string, t: I18n): string {
+  if (question.isSecret) return phase === 'answered' ? t.chatAskPrivateAnswer : t.chatAskUnanswered
   const labels = answerSelectedIds(answer).map((optionId) => optionLabel(question, optionId))
   const custom = answerCustomText(answer)
   return [...labels, custom].filter(Boolean).join(' · ') || t.chatAskUnanswered
@@ -323,7 +345,11 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
     const next = { signature, answers, questionIndex }
     draftRef.current = next
     setDraft(next)
-    interaction.write(next)
+    const sharedAnswers = { ...answers }
+    for (const question of parsed?.questions ?? []) {
+      if (question.isSecret) delete sharedAnswers[question.id]
+    }
+    interaction.write({ ...next, answers: sharedAnswers })
   }
 
   useEffect(() => {
@@ -377,8 +403,8 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
   const currentAnswer = currentQuestion
     ? draft.answers[currentQuestion.id] ?? { selectedOptionIds: [], customText: '' }
     : { selectedOptionIds: [], customText: '' }
-  const allAnswered = parsed.questions.every((question) => question.required === false || draftHasAnswer(question, draft.answers[question.id]))
-  const currentAnswered = currentQuestion ? draftHasAnswer(currentQuestion, currentAnswer) : false
+  const allAnswered = parsed.questions.every((question) => canSubmitQuestion(question, draft.answers[question.id]))
+  const currentAnswered = currentQuestion ? canSubmitQuestion(currentQuestion, currentAnswer) : false
   const isLastQuestion = visibleIndex >= parsed.questions.length - 1
   /** 单题（绝大多数情况）不显示进度条与上一题/下一题 —— 一道题的「1/1」和翻页键是纯噪声。 */
   const multiQuestion = parsed.questions.length > 1
@@ -388,8 +414,10 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
   const optionCount = currentQuestion?.options.length ?? 0
   /** 键盘光标可停的行数：选项 +（有自定义时）那一行。 */
   const rowCount = optionCount + (currentQuestion && allowCustom(currentQuestion) ? 1 : 0)
-  const multiline = (toolCall.name ?? toolCall.toolName ?? toolCall.tool_name ?? '').toLowerCase() === 'piextensioneditor'
+  const multiline = !currentQuestion?.isSecret && (
+    (toolCall.name ?? toolCall.toolName ?? toolCall.tool_name ?? '').toLowerCase() === 'piextensioneditor'
     || /[\r\n]/.test(currentQuestion?.defaultValue ?? '')
+  )
   const CustomInput = multiline ? 'textarea' : 'input'
 
   /** 纯函数：把「这一题选了这个选项」应用到草稿上。抽出来是因为「选中即提交」要**同步**拿到
@@ -407,7 +435,6 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
       : [optionId]
     // 单选题的选项与自定义文字互斥：否则「先打了字、又点了选项」会把两个答案一起交上去。
     const exclusive = !allowMultiple(question)
-      && (!(question.value_schema ?? question.valueSchema) || question.defaultValue !== undefined)
     return {
       ...current,
       [question.id]: exclusive
@@ -462,9 +489,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
   const setCustomText = (questionId: string, customText: string) => {
     if (interaction.submission().submitting) return
     const question = parsed.questions.find((item) => item.id === questionId)
-    const exclusive = Boolean(question)
-      && !allowMultiple(question!)
-      && (!(question!.value_schema ?? question!.valueSchema) || question!.defaultValue !== undefined)
+    const exclusive = question && !allowMultiple(question)
     const next = {
       ...draftRef.current.answers,
       [questionId]: {
@@ -518,9 +543,10 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
           ?? replies.map((reply) => `${reply.question}\n${reply.answer}`).join('\n\n')
         await asyncQuestions.reply(toolCall.id, skipped ? null : text)
       } else if (interactionId) {
-        await api.chatSubmitUserChoice(interactionId, answers, skipped)
+        await api.chatSubmitUserChoice(interactionId, skipped ? {} : answers, skipped)
       }
       // 答复成功后立即通知宿主收起面板；失败则保留面板供用户重试。
+      if (parsed.questions.some((question) => question.isSecret)) updateDraft({}, 0)
       onResolved?.()
     })
   }
@@ -541,9 +567,9 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
           {awaiting && currentQuestion?.required === false && (
             <span className="ml-1.5 text-[11px] font-normal text-neutral-400 dark:text-neutral-500">{t.chatAskOptional}</span>
           )}
-          {awaiting && multiSelect && (
+          {awaiting && currentQuestion && multiSelect && (
             <span className="ml-1.5 align-[1px] text-[11px] font-normal text-neutral-400 dark:text-neutral-500">
-              {t.chatAskMultiple}
+              {multipleChoiceHint(currentQuestion, t)}
             </span>
           )}
         </div>
@@ -567,7 +593,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                 label={t.chatAskNext}
                 size="xs"
                 variant="ghost"
-                disabled={(!currentAnswered && currentQuestion?.required !== false) || isLastQuestion || submitting}
+                disabled={!currentAnswered || isLastQuestion || submitting}
                 onMouseDown={preventMouseFocus}
                 onClick={goNext}
               >
@@ -671,6 +697,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                   </span>
                   <CustomInput
                     ref={(element: HTMLInputElement | HTMLTextAreaElement | null) => { customInputRef.current = element }}
+                    type={currentQuestion.isSecret ? 'password' : undefined}
                     value={currentAnswer.customText}
                     disabled={submitting}
                     rows={multiline ? 4 : undefined}
@@ -740,7 +767,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                   {question.prompt}
                 </div>
                 <div className="mt-0.5 break-words text-[12px] leading-5 text-neutral-500">
-                  {parsed.async ? t.chatAskQuestionCollapsed : readonlySummary(question, parsed.answers[question.id], t)}
+                  {parsed.async ? t.chatAskQuestionCollapsed : readonlySummary(question, parsed.answers[question.id], parsed.phase, t)}
                 </div>
               </div>
             ))}

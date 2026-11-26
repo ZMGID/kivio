@@ -971,6 +971,9 @@ fn emit_thread_item(
                 .flatten()
                 .enumerate()
                 .filter_map(|(index, question)| {
+                    if question.get("isSecret").and_then(Value::as_bool) == Some(true) {
+                        return None;
+                    }
                     let title = json_str(question, "title")?;
                     let options: Vec<Value> = question
                         .get("options")
@@ -1068,6 +1071,13 @@ fn emit_thread_item(
                 None => tool.to_string(),
             };
             let input = item.get("arguments").cloned().unwrap_or(Value::Null);
+            // The host's answered card already contains the public answers. An echoed tool
+            // output can include private answers even when the completed item omits its schema.
+            let result = if crate::external_agents::ask_user::is_codex_question_tool(&name) {
+                String::new()
+            } else {
+                dynamic_tool_result(item)
+            };
             emit_named_tool(
                 item,
                 emitted_tools,
@@ -1075,7 +1085,7 @@ fn emit_thread_item(
                 include_result,
                 &name,
                 input,
-                dynamic_tool_result(item),
+                result,
             );
         }
         Some("imageGeneration") => {
@@ -4323,6 +4333,23 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn echoed_private_input_does_not_become_a_chat_tool_result_or_an_async_message() {
+        let (events, _) = collect(
+            "item/completed",
+            &json!({"item":{
+                "type":"dynamicToolCall", "id":"ask", "tool":"request_user_input",
+                "arguments":{}, "contentItems":[{"type":"inputText","text":"sample-private-answer"}]
+            }})
+            .to_string(),
+        );
+        assert!(events.iter().any(|event| matches!(event, UnifiedAgentEvent::ToolResult {content, ..} if content.is_empty())));
+        let (events, _) = collect("item/completed", &json!({"item":{
+            "type":"agentMessage", "id":"async", "questions":[{"title":"Private code?", "isSecret":true}]
+        }}).to_string());
+        assert!(events.is_empty());
     }
 
     #[test]

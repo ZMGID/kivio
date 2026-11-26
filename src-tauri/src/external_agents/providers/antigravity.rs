@@ -129,10 +129,8 @@ pub const ANTIGRAVITY_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     },
     run: super::super::types::AgentRunPolicy {
         additional_dirs: super::super::types::AdditionalDirsStrategy::Effective,
-        model_selection: super::super::types::ModelSelectionStrategy::Direct,
-        regenerate: super::super::types::RegenerateStrategy::None,
-        approval: super::super::types::ApprovalStrategy::Default,
         retry: super::super::types::RetryStrategy::NeverReplay,
+        ..super::super::types::AgentRunPolicy::STANDARD
     },
     slash_strategy: SlashStrategy::Antigravity,
     env: &[],

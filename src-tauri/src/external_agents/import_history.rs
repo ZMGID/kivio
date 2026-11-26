@@ -516,7 +516,7 @@ fn resolve_tool_result(
     pending: &mut Pending,
     out: &mut [ImportedMessage],
     call_id: &str,
-    text: String,
+    result_preview: impl FnOnce(&ToolCallRecord) -> String,
     is_error: bool,
 ) {
     for record in pending.tool_calls.iter_mut().chain(
@@ -525,6 +525,7 @@ fn resolve_tool_result(
             .flat_map(|m| m.message.tool_calls.iter_mut()),
     ) {
         if record.id == call_id {
+            let text = result_preview(record);
             record.status = if is_error {
                 ToolCallStatus::Error
             } else {
@@ -698,7 +699,7 @@ pub fn parse_grok_history(raw: &str) -> Vec<ImportedMessage> {
                 let text = truncate_tool_result(
                     entry.get("content").and_then(Value::as_str).unwrap_or(""),
                 );
-                resolve_tool_result(&mut pending, &mut out, call_id, text, false);
+                resolve_tool_result(&mut pending, &mut out, call_id, |_| text, false);
             }
             _ => {}
         }
@@ -820,10 +821,25 @@ pub fn parse_codex_history(raw: &str) -> Vec<ImportedMessage> {
                 let Some(call_id) = payload.get("call_id").and_then(Value::as_str) else {
                     continue;
                 };
-                let text = truncate_tool_result(
-                    payload.get("output").and_then(Value::as_str).unwrap_or(""),
+                let output = payload.get("output").and_then(Value::as_str).unwrap_or("");
+                resolve_tool_result(
+                    &mut pending,
+                    &mut out,
+                    call_id,
+                    |record| {
+                        if super::ask_user::is_codex_question_tool(&record.name) {
+                            truncate_tool_result(
+                                &super::ask_user::codex_question_result_for_history(
+                                    &record.arguments,
+                                    output,
+                                ),
+                            )
+                        } else {
+                            truncate_tool_result(output)
+                        }
+                    },
+                    false,
                 );
-                resolve_tool_result(&mut pending, &mut out, call_id, text, false);
             }
             _ => {}
         }
@@ -1032,7 +1048,7 @@ fn apply_acp_tool_status(pending: &mut Pending, out: &mut Vec<ImportedMessage>, 
         }
         return;
     }
-    resolve_tool_result(pending, out, id, truncate_tool_result(&text), is_error);
+    resolve_tool_result(pending, out, id, |_| truncate_tool_result(&text), is_error);
 }
 
 #[cfg(test)]
@@ -1155,6 +1171,30 @@ mod tests {
         assert_eq!(msgs[0].images.len(), 1);
         assert_eq!(msgs[0].images[0].media_type, "image/jpeg");
         assert_eq!(msgs[0].images[0].data_base64, "QUJD");
+    }
+
+    #[test]
+    fn imported_codex_question_drops_private_answers_and_keeps_public_answers() {
+        let input = serde_json::json!({"questions":[
+            {"id":"public","question":"Color?"},{"id":"private","question":"Code?","is_secret":true}
+        ]});
+        let call = serde_json::json!({"type":"response_item","payload":{"type":"function_call",
+            "name":"request_user_input","call_id":"ask","arguments":input.to_string()}});
+        for output in [
+            r#"{"answers":{"public":{"answers":["Blue"]},"private":{"answers":["sample-code"]}}}"#,
+            "an unstructured echo of sample-code",
+        ] {
+            let result = serde_json::json!({"type":"response_item","payload":{
+                "type":"function_call_output","call_id":"ask","output":output}});
+            let history = parse_codex_history(&format!("{call}\n{result}"));
+            let record = &history[0].message.tool_calls[0];
+            assert!(!serde_json::to_string(&record)
+                .unwrap()
+                .contains("sample-code"));
+            if output.starts_with('{') {
+                assert!(record.result_preview.as_ref().unwrap().contains("Blue"));
+            }
+        }
     }
 
     #[test]

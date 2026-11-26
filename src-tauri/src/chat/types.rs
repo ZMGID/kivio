@@ -445,6 +445,17 @@ pub struct TurnModelSelection {
     pub effort: Option<String>,
 }
 
+fn deserialize_tool_history<'de, D>(deserializer: D) -> Result<Vec<ToolCallRecord>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut records = Vec::<ToolCallRecord>::deserialize(deserializer)?;
+    for record in &mut records {
+        crate::external_agents::ask_user::restore_codex_question_privacy(record);
+    }
+    Ok(records)
+}
+
 /// 对话消息
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -461,7 +472,7 @@ pub struct ChatMessage {
     pub reasoning: Option<String>,
     #[serde(default)]
     pub artifacts: Vec<ChatToolArtifact>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tool_history")]
     pub tool_calls: Vec<ToolCallRecord>,
     #[serde(default)]
     pub segments: Vec<ChatMessageSegment>,
@@ -1343,6 +1354,27 @@ impl From<&Conversation> for ConversationListItem {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn loading_legacy_codex_questions_recovers_privacy_from_the_native_arguments() {
+        let input = serde_json::json!({"questions":[
+            {"id":"pin","question":"Private code?","isSecret":true},
+            {"id":"color","question":"Color?"}
+        ]});
+        let msg: super::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id":"m","role":"assistant","content":"","timestamp":1,"tool_calls":[{
+                "id":"t","name":"requestUserInput","status":"success","arguments":input.to_string(),
+                "result_preview":"entered private-example","error":"error with private-example",
+                "structured_content":{"askUser":{"phase":"answered","questions":[{"id":"pin"},{"id":"color"}],
+                    "answers":{"pin":{"custom_text":"private-example"},"color":{"custom_text":"Blue"}}}}
+            }]
+        })).unwrap();
+        let card = &msg.tool_calls[0].structured_content.as_ref().unwrap()["askUser"];
+        assert_eq!(card["questions"][0]["is_secret"], true);
+        assert_eq!(card["answers"]["color"]["custom_text"], "Blue");
+        assert!(!serde_json::to_string(&msg)
+            .unwrap()
+            .contains("private-example"));
+    }
     use super::*;
 
     // 多模型一问多答（任务 06-30 步骤 2）：旧会话 JSON 缺新字段时反序列化不崩（R9/AC6）。

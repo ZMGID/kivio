@@ -109,6 +109,8 @@ export interface AskUserOption {
 }
 
 export interface AskUserQuestion {
+  isSecret?: boolean
+  is_secret?: boolean
   id: string
   prompt: string
   /** Historical prompts without this field remain required. */

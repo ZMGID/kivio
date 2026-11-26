@@ -109,15 +109,12 @@ const CODECS: &[AskUserCodec] = &[
         auto_allow_ordinary_tools: false,
         opens_host: false,
     },
+    acp_form_codec("grok"),
     AskUserCodec {
-        agent_id: "grok",
-        tools: &["elicitation/create"],
-        parse: parse_mcp_elicitation,
-        encode: encode_mcp_elicitation,
-        unknown_shape: UnknownAskShape::Reject,
-        auto_allow_ordinary_tools: false,
-        opens_host: true,
+        parse: |input| parse_elicitation_fields(input, FormSource::Kimi),
+        ..acp_form_codec("kimi")
     },
+    acp_form_codec("hermes"),
     AskUserCodec {
         agent_id: "antigravity",
         tools: &["elicitation/create"],
@@ -128,17 +125,22 @@ const CODECS: &[AskUserCodec] = &[
         opens_host: true,
     },
     AskUserCodec {
-        // OpenCode ACP 的工具审批（`session/request_permission`）与 MCP 表单都要到宿主卡片
-        // （T3 同款：允许一次 / 总是允许 / 拒绝），不再由会话层静默 allow_once。
-        agent_id: "opencode",
+        parse: |input| parse_elicitation_fields(input, FormSource::OpenCode),
+        ..acp_form_codec("opencode")
+    },
+];
+
+const fn acp_form_codec(agent_id: &'static str) -> AskUserCodec {
+    AskUserCodec {
+        agent_id,
         tools: &["elicitation/create"],
-        parse: parse_mcp_elicitation,
+        parse: |input| parse_elicitation_fields(input, FormSource::Acp),
         encode: encode_mcp_elicitation,
         unknown_shape: UnknownAskShape::Reject,
         auto_allow_ordinary_tools: false,
         opens_host: true,
-    },
-];
+    }
+}
 
 pub fn codec_for(agent_id: &str, tool_name: &str) -> Option<&'static AskUserCodec> {
     CODECS.iter().find(|codec| {
@@ -251,20 +253,87 @@ fn elicitation_properties(input: &Value) -> Option<(&serde_json::Map<String, Val
 }
 
 fn parse_mcp_elicitation(input: &Value) -> Option<AskUserPromptPayload> {
+    parse_elicitation_fields(input, FormSource::Mcp)
+}
+
+#[derive(PartialEq, Eq)]
+enum FormSource {
+    Mcp,
+    Acp,
+    OpenCode,
+    Kimi,
+}
+
+fn parse_elicitation_fields(input: &Value, source: FormSource) -> Option<AskUserPromptPayload> {
+    use crate::chat::ask_user::FormChoices;
     let (properties, required) = elicitation_properties(input)?;
-    if properties.len() > 4 {
+    let is_required = |id: &str| required.iter().any(|value| value.as_str() == Some(id));
+    // OpenCode explicitly marks its optional free-text companions. A real form field
+    // with the same suffix, or extra constraints, must remain independently answerable.
+    let mut companions = std::collections::HashSet::new();
+    if source == FormSource::OpenCode {
+        for (name, field) in properties {
+            let Some(owner) = name.strip_suffix("_custom") else {
+                continue;
+            };
+            let Some(primary) = properties.get(owner) else {
+                continue;
+            };
+            let expected = if primary["type"] == "array" {
+                "Add your own answer"
+            } else {
+                "Type your own answer"
+            };
+            if !is_required(name)
+                && !is_required(owner)
+                && FormChoices::parse(primary).is_some()
+                && primary.get("minItems").is_none()
+                && primary.get("maxItems").is_none()
+                && field["type"] == "string"
+                && field["description"] == expected
+                && field.as_object()?.iter().all(|(k, v)| {
+                    matches!(k.as_str(), "type" | "title" | "description") && v.is_string()
+                })
+            {
+                companions.insert(name.as_str());
+            }
+        }
+    }
+    if source == FormSource::Mcp && properties.len() > 4 {
         return None;
     }
-    let is_required = |id: &str| required.iter().any(|value| value.as_str() == Some(id));
-    let mut questions = Vec::with_capacity(properties.len());
+    let message = json_str(input, "message");
+    // Kimi puts the full wording in the message, and only the short header in each qN.
+    let kimi_questions = message
+        .filter(|_| source == FormSource::Kimi)
+        .map(|text| {
+            if properties.len() == 1 {
+                vec![text]
+            } else {
+                text.lines().collect()
+            }
+        })
+        .filter(|lines| lines.len() == properties.len());
+    let mut questions = Vec::new();
     for (id, property) in properties {
-        if !crate::chat::ask_user::supports_value_schema(property) {
+        if companions.contains(id.as_str()) {
+            continue;
+        }
+        let choices = FormChoices::parse(property);
+        if choices.is_none() && !crate::chat::ask_user::supports_value_schema(property) {
             return None;
         }
-        if id.is_empty() || id.len() > 40 {
+        if id.is_empty() || id.trim() != id || (source == FormSource::Mcp && id.len() > 40) {
             return None;
         }
-        let title = json_str(property, "title").unwrap_or(id);
+        let kimi_text = kimi_questions.as_ref().and_then(|lines| {
+            let index: usize = id.strip_prefix('q')?.parse().ok()?;
+            lines.get(index).copied()
+        });
+        let title = kimi_text
+            .or_else(|| json_str(property, "title"))
+            .or(if properties.len() == 1 { message } else { None })
+            .unwrap_or(id);
         let description = json_str(property, "description");
         let mut prompt = match description {
             Some(description) if description != title => format!("{title}\n\n{description}"),
@@ -274,10 +343,9 @@ fn parse_mcp_elicitation(input: &Value) -> Option<AskUserPromptPayload> {
             prompt.push_str("\n\n必填");
         }
 
-        let options = if let Some(values) = property.get("enum").and_then(Value::as_array) {
-            if !(2..=6).contains(&values.len()) {
-                return None;
-            }
+        let options = if let Some(choices) = choices {
+            choices.options()
+        } else if let Some(values) = property.get("enum").and_then(Value::as_array) {
             values
                 .iter()
                 .enumerate()
@@ -306,16 +374,29 @@ fn parse_mcp_elicitation(input: &Value) -> Option<AskUserPromptPayload> {
         } else {
             Vec::new()
         };
+        if source == FormSource::Mcp
+            && (options.len() > 6 || (property.get("enum").is_some() && options.len() < 2))
+        {
+            return None;
+        }
         questions.push(AskUserQuestion {
+            is_secret: false,
             required: is_required(id),
             value_schema: Some(property.clone()),
             default_value: None,
             id: id.clone(),
             prompt,
-            allow_multiple: false,
-            allow_custom: options.is_empty(),
+            allow_multiple: property["type"] == "array",
+            allow_custom: options.is_empty()
+                || companions.contains(format!("{id}_custom").as_str()),
             options,
         });
+    }
+    if questions.iter().all(|q| {
+        q.id.strip_prefix('q')
+            .is_some_and(|id| id.parse::<usize>().is_ok())
+    }) {
+        questions.sort_by_key(|q| q.id[1..].parse::<usize>().unwrap());
     }
     Some(AskUserPromptPayload {
         title: json_str(input, "message").map(str::to_string),
@@ -355,7 +436,17 @@ fn encode_mcp_elicitation(
         let Ok(value) = crate::chat::ask_user::answer_value(question, answer) else {
             return serde_json::json!({"action":"decline"});
         };
-        content.insert(question.id.clone(), value);
+        if let Some(value) = value {
+            content.insert(question.id.clone(), value);
+        }
+        if question.allow_custom && !question.options.is_empty() {
+            if let Some(text) = &answer.custom_text {
+                content.insert(
+                    format!("{}_custom", question.id),
+                    Value::String(text.clone()),
+                );
+            }
+        }
     }
     serde_json::json!({ "action": "accept", "content": content })
 }
@@ -414,6 +505,7 @@ fn parse_antigravity_elicitation(input: &Value) -> Option<AskUserPromptPayload> 
         }
         // agy omits both wire fields from "required" to allow either choice or free text.
         questions.push(AskUserQuestion {
+            is_secret: false,
             id,
             prompt: json_str(choice, "title")?.into(),
             options,
@@ -537,6 +629,7 @@ fn parse_pi_extension_ui(input: &Value) -> Option<AskUserPromptPayload> {
     Some(AskUserPromptPayload {
         title,
         questions: vec![AskUserQuestion {
+            is_secret: false,
             required: true,
             value_schema: matches!(method, "input" | "editor")
                 .then(|| serde_json::json!({ "type": "string" })),
@@ -610,6 +703,7 @@ fn parse_claude(input: &Value) -> Option<AskUserPromptPayload> {
                 return None;
             }
             Some(AskUserQuestion {
+                is_secret: false,
                 id: qi.to_string(),
                 required: true,
                 value_schema: None,
@@ -632,9 +726,7 @@ fn parse_claude(input: &Value) -> Option<AskUserPromptPayload> {
 /// 用户的选择 → claude 要的 `updatedInput`。
 ///
 /// 官方形状：`{"questions": <原样回传>, "answers": {"<问题文本>": "<选中的 label>"}}`。
-/// 多选时把多个 label 用 `, ` 拼起来（官方文档只给了单选的例子，多选的分隔符**未核实**；
-/// 拼串至少保证 claude 拿到的是它认识的字符串类型，而不是一个它可能不接受的数组）。
-/// 用户填的自定义文本优先于预设项 —— 那是他真正想说的话。
+/// 多选把预设项和自填答案拼成一个字符串；单选的自填答案替代预设项。
 ///
 /// **回的是「原入参 + answers」而不是重新拼一个 `{questions, answers}`**（paseo 的写法：
 /// `{...permission.request.input, answers}`）。`updatedInput` 会**整个替换**这次调用的入参，
@@ -659,16 +751,12 @@ fn encode_claude(
         let Some(answer) = answered.answers.get(&qi.to_string()) else {
             continue;
         };
-        if let Some(custom) = answer
+        let custom = answer
             .custom_text
             .as_deref()
             .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            answers.insert(text.to_string(), Value::String(custom.to_string()));
-            continue;
-        }
-        let labels: Vec<String> = answer
+            .filter(|s| !s.is_empty());
+        let mut labels: Vec<&str> = answer
             .selected_option_ids
             .iter()
             .filter_map(|id| {
@@ -679,9 +767,14 @@ fn encode_claude(
                     .get(index)?
                     .get("label")?
                     .as_str()
-                    .map(str::to_string)
             })
             .collect();
+        if let Some(custom) = custom {
+            if !json_bool(question, &["multiSelect"]) {
+                labels.clear();
+            }
+            labels.push(custom);
+        }
         if !labels.is_empty() {
             answers.insert(text.to_string(), Value::String(labels.join(", ")));
         }
@@ -719,6 +812,7 @@ fn parse_dsh(input: &Value) -> Option<AskUserPromptPayload> {
                 title = json_str(question, "header").map(str::to_string);
             }
             Some(AskUserQuestion {
+                is_secret: false,
                 id,
                 prompt,
                 options: parse_label_options(question),
@@ -797,17 +891,22 @@ fn encode_dsh(
 fn parse_codex(input: &Value) -> Option<AskUserPromptPayload> {
     let raw = input.get("questions")?.as_array()?;
     let mut title = None;
+    let mut ids = std::collections::HashSet::new();
     let questions: Vec<AskUserQuestion> = raw
         .iter()
-        .filter_map(|question| {
-            let id = json_str(question, "id")?.to_string();
+        .map(|question| {
+            let id = json_str(question, "id")?;
+            if !ids.insert(id) {
+                return None;
+            }
             let text = json_str(question, "question")?.to_string();
             if title.is_none() {
                 title = json_str(question, "header").map(str::to_string);
             }
             let options = parse_label_options(question);
             Some(AskUserQuestion {
-                id,
+                is_secret: json_bool(question, &["isSecret", "is_secret"]),
+                id: id.to_string(),
                 prompt: text,
                 required: true,
                 value_schema: None,
@@ -822,8 +921,83 @@ fn parse_codex(input: &Value) -> Option<AskUserPromptPayload> {
                         .unwrap_or(true),
             })
         })
-        .collect();
+        .collect::<Option<_>>()?;
     (!questions.is_empty()).then_some(AskUserPromptPayload { title, questions })
+}
+
+pub(super) fn is_codex_question_tool(name: &str) -> bool {
+    matches!(name, "request_user_input" | "requestUserInput")
+}
+
+pub(super) fn codex_question_result_for_history(arguments: &str, output: &str) -> String {
+    let Ok(input) = serde_json::from_str::<Value>(arguments) else {
+        return String::new();
+    };
+    let Some(prompt) = parse_codex(&input) else {
+        return String::new();
+    };
+    if !prompt.questions.iter().any(|question| question.is_secret) {
+        return output.to_string();
+    }
+    public_codex_question_result(&prompt, output)
+}
+
+fn public_codex_question_result(prompt: &AskUserPromptPayload, output: &str) -> String {
+    let Ok(result) = serde_json::from_str::<Value>(output) else {
+        return String::new();
+    };
+    let mut answers = serde_json::Map::new();
+    for question in prompt
+        .questions
+        .iter()
+        .filter(|question| !question.is_secret)
+    {
+        if let Some(answer) = result["answers"].get(&question.id) {
+            answers.insert(question.id.clone(), answer.clone());
+        }
+    }
+    serde_json::json!({"answers": answers}).to_string()
+}
+
+pub(crate) fn restore_codex_question_privacy(record: &mut crate::chat::ToolCallRecord) {
+    if !is_codex_question_tool(&record.name) {
+        return;
+    }
+    let Some(prompt) = serde_json::from_str(&record.arguments)
+        .ok()
+        .and_then(|input| parse_codex(&input))
+    else {
+        return;
+    };
+    if !prompt.questions.iter().any(|question| question.is_secret) {
+        return;
+    }
+    record.error = None;
+    if let Some(output) = record.result_preview.take() {
+        let public = public_codex_question_result(&prompt, &output);
+        record.result_preview = (!public.is_empty()).then_some(public);
+    }
+    let Some(card) = record
+        .structured_content
+        .as_mut()
+        .and_then(|v| v.get_mut("askUser"))
+    else {
+        return;
+    };
+    if let Some(questions) = card.get_mut("questions").and_then(Value::as_array_mut) {
+        for question in questions {
+            if prompt
+                .questions
+                .iter()
+                .any(|q| q.is_secret && question["id"].as_str() == Some(q.id.as_str()))
+            {
+                question["is_secret"] = Value::Bool(true);
+            }
+        }
+    }
+    if let Some(answers) = card.get_mut("answers").and_then(Value::as_object_mut) {
+        answers.retain(|id, _| prompt.questions.iter().any(|q| !q.is_secret && &q.id == id));
+    }
 }
 
 /// 用户的选择 → Codex `ToolRequestUserInputResponse`。
@@ -843,7 +1017,13 @@ fn encode_codex(
         let custom = answer
             .custom_text
             .as_deref()
-            .map(str::trim)
+            .map(|value| {
+                if question.is_secret {
+                    value
+                } else {
+                    value.trim()
+                }
+            })
             .filter(|s| !s.is_empty());
         let mut labels: Vec<String> = answer
             .selected_option_ids
@@ -899,6 +1079,149 @@ mod tests {
         assert!(auto_allow_ordinary_tools("dsh"));
         assert!(!auto_allow_ordinary_tools("codex"));
         assert!(!auto_allow_ordinary_tools("claude"));
+    }
+
+    #[test]
+    fn acp_selection_forms_keep_wire_values_and_selection_bounds() {
+        use serde_json::json;
+        let form = json!({"message":"What color?\nWhich drinks?","requestedSchema":{"type":"object","properties":{
+            "q0":{"type":"string","oneOf":[{"const":"r","title":"Red"},{"const":"b","title":"Blue"}]},
+            "q1":{"type":"array","minItems":2,"maxItems":2,"items":{"anyOf":[
+                {"const":"c","title":"Coffee"},{"const":"j","title":"Juice"},{"const":"t","title":"Tea"}]}}
+        },"required":["q0","q1"]}});
+        for agent in ["opencode", "kimi", "grok"] {
+            assert!(needs_host(agent));
+            let codec = codec_for(agent, "elicitation/create").unwrap();
+            let prompt = (codec.parse)(&form).expect("native selection card");
+            if agent == "kimi" {
+                assert!(prompt.questions[0].prompt.contains("What color?"));
+                assert!(prompt.questions[1].prompt.contains("Which drinks?"));
+            }
+            assert_eq!(prompt.questions[0].options[1].label, "Blue");
+            let mut answer: AskUserResponseResult =
+                serde_json::from_value(json!({"phase":"answered","answers":{
+                "q0":{"selected_option_ids":["1"]},"q1":{"selected_option_ids":["0","1"]}}}))
+                .unwrap();
+            assert_eq!(
+                (codec.encode)(&form, &prompt, &answer),
+                json!({"action":"accept","content":{"q0":"b","q1":["c","j"]}})
+            );
+            for ids in [vec!["1".into()], vec!["0".into(), "1".into(), "2".into()]] {
+                answer.answers.get_mut("q1").unwrap().selected_option_ids = ids;
+                assert!(crate::chat::ask_user::validate_response(&prompt, answer.clone()).is_err());
+            }
+        }
+        let codec = codec_for("hermes", "elicitation/create").unwrap();
+        assert!(needs_host("hermes"));
+        let form = json!({"message":"Choose drinks","requestedSchema":{"type":"object","properties":{
+            "answer":{"type":"array","items":{"type":"string","enum":["Coffee","Juice"]}}
+        },"required":["answer"]}});
+        let prompt = (codec.parse)(&form).unwrap();
+        assert!(prompt.questions[0].prompt.contains("Choose drinks"));
+        let answer = serde_json::from_value(
+            json!({"phase":"answered","answers":{"answer":{"selected_option_ids":["1"]}}}),
+        )
+        .unwrap();
+        assert_eq!(
+            (codec.encode)(&form, &prompt, &answer),
+            json!({"action":"accept","content":{"answer":["Juice"]}})
+        );
+    }
+
+    #[test]
+    fn opencode_companion_belongs_to_its_choice_and_optional_answers_can_be_omitted() {
+        use serde_json::json;
+        let form = json!({"mode":"form","requestedSchema":{"type":"object","properties":{
+            "drink":{"type":"array","title":"Drinks","items":{"anyOf":[{"const":"c","title":"Coffee"}]}},
+            "drink_custom":{"type":"string","title":"Drinks (other)","description":"Add your own answer"},
+            "snack":{"type":"string","oneOf":[{"const":"p","title":"Pie"}]},
+            "snack_custom":{"type":"string","description":"Type your own answer"}
+        },"required":[]}});
+        let codec = codec_for("opencode", "elicitation/create").unwrap();
+        let prompt = (codec.parse)(&form).unwrap();
+        assert_eq!(prompt.questions.len(), 2);
+        assert!(prompt
+            .questions
+            .iter()
+            .all(|q| q.allow_custom && !q.required));
+        let answer = serde_json::from_value(json!({"phase":"answered","answers":{
+            "drink":{"selected_option_ids":["0"],"custom_text":"Soda"},
+            "snack":{"custom_text":"Crackers"}
+        }}))
+        .unwrap();
+        assert_eq!(
+            (codec.encode)(&form, &prompt, &answer),
+            json!({"action":"accept","content":{
+                "drink":["c"],"drink_custom":"Soda","snack_custom":"Crackers"
+            }})
+        );
+        let omitted = serde_json::from_value(json!({"phase":"answered","answers":{}})).unwrap();
+        assert_eq!(
+            (codec.encode)(&form, &prompt, &omitted),
+            json!({"action":"accept","content":{}})
+        );
+    }
+
+    #[test]
+    fn acp_declines_a_whole_form_with_a_malformed_selection() {
+        use serde_json::json;
+        let codec = codec_for("grok", "elicitation/create").unwrap();
+        let valid = json!({"type":"array","items":{"type":"string","enum":["A","B"]}});
+        for (key, value) in [
+            ("minItems", json!(-1)),
+            ("maxItems", json!(0)),
+            ("minItems", json!(3)),
+            ("minItems", json!("1")),
+            ("maxItems", json!(1.5)),
+            ("contains", json!({"const":"A"})),
+            ("items", json!({"type":"string","enum":["A","A"]})),
+            (
+                "items",
+                json!({"anyOf":[{"const":"R","title":"Red","pattern":"."}]}),
+            ),
+            (
+                "items",
+                json!({"type":"string","enum":["A"],"format":"uri"}),
+            ),
+        ] {
+            let mut field = valid.clone();
+            field[key] = value;
+            let form = json!({"requestedSchema":{"type":"object","properties":{"incomplete":field,"text":{"type":"string"}}}});
+            assert!((codec.parse)(&form).is_none(), "{form}");
+        }
+        let form = json!({"requestedSchema":{"type":"object","properties":{"a":valid,"b":{"type":"string","enum":["only"]}},"required":["a"]}});
+        let prompt = (codec.parse)(&form).unwrap();
+        let submitted = serde_json::from_value(
+            json!({"phase":"answered","answers":{"a":{"selected_option_ids":[]}}}),
+        )
+        .unwrap();
+        assert_eq!(
+            (codec.encode)(&form, &prompt, &submitted),
+            json!({"action":"accept","content":{"a":[]}})
+        );
+        let missing = serde_json::from_value(json!({"phase":"answered","answers":{}})).unwrap();
+        assert_eq!(
+            (codec.encode)(&form, &prompt, &missing),
+            json!({"action":"decline"})
+        );
+    }
+
+    #[test]
+    fn native_acp_forms_show_every_question_and_option_in_numeric_question_order() {
+        use serde_json::json;
+        let options: Vec<_> = (0..8)
+            .map(|n| json!({"const":n.to_string(),"title":format!("Option {n}")}))
+            .collect();
+        let fields: serde_json::Map<_, _> = (0..12)
+            .map(|n| (format!("q{n}"), json!({"type":"string","oneOf":options})))
+            .collect();
+        let form = json!({"requestedSchema":{"type":"object","properties":fields}});
+        let codec = codec_for("opencode", "elicitation/create").unwrap();
+        let prompt = (codec.parse)(&form).unwrap();
+        assert_eq!(prompt.questions.len(), 12);
+        assert_eq!(prompt.questions[10].id, "q10");
+        assert_eq!(prompt.questions[10].options[7].label, "Option 7");
+        assert!((codec_for("codex", "openai/elicitation").unwrap().parse)(&form).is_none());
     }
 
     #[test]
@@ -1204,13 +1527,18 @@ mod tests {
         let prompt = parse_claude(&input).unwrap();
         let answered = AskUserResponseResult {
             phase: ASK_USER_PHASE_ANSWERED.into(),
-            answers: HashMap::from([("0".into(), AskUserAnswer {
-                selected_option_ids: vec!["0".into(), "1".into()],
-                custom_text: Some("Soda".into()),
-            })]),
+            answers: HashMap::from([(
+                "0".into(),
+                AskUserAnswer {
+                    selected_option_ids: vec!["0".into(), "1".into()],
+                    custom_text: Some("Soda".into()),
+                },
+            )]),
         };
-        assert_eq!(encode_claude(&input, &prompt, &answered)["answers"]["Drinks?"],
-            "Coffee, Juice, Soda");
+        assert_eq!(
+            encode_claude(&input, &prompt, &answered)["answers"]["Drinks?"],
+            "Coffee, Juice, Soda"
+        );
     }
 
     /// `updatedInput` **整个替换**这次调用的入参，所以原入参里我们不认识的字段必须原样带回。
@@ -1287,6 +1615,7 @@ mod tests {
             title: None,
             questions: vec![
                 AskUserQuestion {
+                    is_secret: false,
                     id: "drink".to_string(),
                     required: true,
                     value_schema: None,
@@ -1308,6 +1637,7 @@ mod tests {
                     allow_custom: true,
                 },
                 AskUserQuestion {
+                    is_secret: false,
                     id: "langs".to_string(),
                     required: true,
                     value_schema: None,
@@ -1362,6 +1692,43 @@ mod tests {
                 "custom": "也写 TS"
             })
         );
+    }
+
+    #[test]
+    fn codex_private_answers_reach_only_the_provider() {
+        let input = serde_json::json!({"questions":[
+            {"id":"private", "question":"Code?", "isSecret":true},
+            {"id":"public", "question":"Color?"}
+        ]});
+        let codec = codec_for("codex", "requestUserInput").unwrap();
+        let prompt = (codec.parse)(&input).unwrap();
+        let submitted = serde_json::from_value(serde_json::json!({
+            "phase":"answered", "answers":{
+                "private":{"custom_text":"  sample  code  "}, "public":{"custom_text":"Blue"}
+            }
+        }))
+        .unwrap();
+        let reply = crate::chat::ask_user::validate_response(&prompt, submitted).unwrap();
+        let host_event =
+            crate::chat::ask_user::structured_content(&prompt, &reply.phase, &reply.answers);
+        assert_eq!(
+            host_event["askUser"]["answers"]["public"]["custom_text"],
+            "Blue"
+        );
+        assert!(host_event["askUser"]["answers"].get("private").is_none());
+        assert!(!host_event.to_string().contains("sample"));
+        let wire = serde_json::to_value(crate::chat::protocol::ChatAskUserPromptPayload::from(
+            &prompt,
+        ))
+        .unwrap();
+        assert_eq!(wire["questions"][0]["isSecret"], true);
+        assert!(wire["questions"][1].get("isSecret").is_none());
+        let result = (codec.encode)(&input, &prompt, &reply);
+        assert_eq!(
+            result["answers"]["private"]["answers"][0],
+            "  sample  code  "
+        );
+        assert_eq!(result["answers"]["public"]["answers"][0], "Blue");
     }
 
     #[test]

@@ -242,6 +242,7 @@ mod tests {
         AskUserPromptPayload {
             title: None,
             questions: vec![AskUserQuestion {
+                is_secret: false,
                 id: "choice".into(),
                 prompt: "Choose".into(),
                 options: vec![

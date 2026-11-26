@@ -1,5 +1,5 @@
 use super::super::types::{
-    AgentErrorPolicy, AgentInstallSpec, LatestVersionStrategy, PostInstallStrategy,
+    AgentErrorPolicy, AgentInstallSpec, AgentRunPolicy, LatestVersionStrategy, PostInstallStrategy,
     RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, UpdateStrategy,
 };
 use super::acp::acp_def;
@@ -42,6 +42,10 @@ const GEMINI_INSTALL: AgentInstallSpec = AgentInstallSpec {
 };
 
 pub const GEMINI_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
+    run: AgentRunPolicy {
+        chat_mcp_questions: true,
+        ..AgentRunPolicy::STANDARD
+    },
     env: GEMINI_ENV,
     error_policy: AgentErrorPolicy::login("gemini"),
     ..acp_def(

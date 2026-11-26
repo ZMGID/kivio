@@ -1802,6 +1802,7 @@ pub struct AcpSession {
     reader: Lines<BufReader<AgentStdout>>,
     session_id: String,
     trailing_usage_update: bool,
+    permission_fallback: Option<PermissionFallback>,
     pub(crate) supports_load: bool,
     next_id: u64,
     /// Ring-buffered stderr tail (N1): drained for the process lifetime, joined on close / error
@@ -2267,6 +2268,7 @@ impl AcpSession {
                     reader,
                     session_id,
                     trailing_usage_update,
+                    permission_fallback: PermissionFallback::for_agent(agent_id),
                     supports_load,
                     next_id,
                     stderr_tail,
@@ -2404,6 +2406,7 @@ impl AcpSession {
             prompt_id,
             &self.session_id,
             self.trailing_usage_update,
+            self.permission_fallback,
             &mut self.model_catalog,
             events,
             control,
@@ -2432,6 +2435,7 @@ async fn acp_read_prompt(
     prompt_id: u64,
     session_id: &str,
     trailing_usage_update: bool,
+    permission_fallback: Option<PermissionFallback>,
     model_catalog: &mut AcpModelCatalog,
     events: &mpsc::Sender<UnifiedAgentEvent>,
     control: &mut mpsc::Receiver<SessionCommand>,
@@ -2471,7 +2475,36 @@ async fn acp_read_prompt(
         };
         match next {
             AcpNext::Frame(AcpFrame::Request { id, method, params }) => {
-                if method.starts_with("cursor/")
+                let question = if let Some(fallback) =
+                    permission_fallback.filter(|_| method == "session/request_permission")
+                {
+                    if params["sessionId"].as_str() != Some(session_id) {
+                        write_rpc_result(stdin, &id, cursor_cancelled_result()).await?;
+                        continue;
+                    }
+                    match fallback.question_form(&params) {
+                        Ok(Some(form)) => Some(form),
+                        Ok(None) => {
+                            handle_agent_to_client_request(
+                                stdin,
+                                terminals.as_deref_mut(),
+                                &id,
+                                &method,
+                                &params,
+                            )
+                            .await?;
+                            continue;
+                        }
+                        Err(()) => {
+                            write_rpc_result(stdin, &id, cursor_cancelled_result()).await?;
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                if question.is_some()
+                    || method.starts_with("cursor/")
                     || (approvals.is_some() && cursor_extension_is_blocking(&method))
                 {
                     handle_cursor_extension(
@@ -2483,6 +2516,7 @@ async fn acp_read_prompt(
                         control,
                         approvals.as_deref_mut(),
                         session_id,
+                        question,
                     )
                     .await?;
                 } else {
@@ -2948,6 +2982,111 @@ fn acp_permission_result(params: &Value, approved: bool, always: bool) -> Value 
     }
 }
 
+#[derive(Clone, Copy)]
+enum PermissionFallback {
+    Kimi,
+    Hermes,
+}
+
+impl PermissionFallback {
+    fn for_agent(id: &str) -> Option<Self> {
+        match id {
+            "kimi" => Some(Self::Kimi),
+            "hermes" => Some(Self::Hermes),
+            _ => None,
+        }
+    }
+
+    fn marks_question(self, tool: &Value) -> bool {
+        match self {
+            Self::Kimi => tool["title"] == "AskUserQuestion",
+            Self::Hermes => tool["toolCallId"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("clarify-")),
+        }
+    }
+
+    /// Some ACP clients encode a single-choice question as several allow-once options.
+    /// An unfamiliar question must never fall through to the ordinary first-allow policy.
+    fn question_form(self, params: &Value) -> Result<Option<Value>, ()> {
+        let tool = &params["toolCall"];
+        let options = params["options"].as_array().ok_or(())?;
+        let (prefix, skip) = match self {
+            Self::Kimi => ("q0_opt_", "q0_skip"),
+            Self::Hermes => ("choice-", "skip"),
+        };
+        if !self.marks_question(tool) {
+            if options.iter().any(|o| {
+                o["optionId"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with(prefix))
+            }) || options.iter().filter(|o| o["kind"] == "allow_once").count() > 1
+            {
+                return Err(());
+            }
+            return Ok(None);
+        }
+        let prompt = match self {
+            Self::Kimi => tool["content"].as_array().and_then(|blocks| {
+                blocks.iter().find_map(|b| {
+                    if b["type"] == "content" && b["content"]["type"] == "text" {
+                        b["content"]["text"].as_str()
+                    } else {
+                        None
+                    }
+                })
+            }),
+            Self::Hermes => tool.pointer("/rawInput/question").and_then(Value::as_str),
+        }
+        .filter(|text| !text.trim().is_empty())
+        .ok_or(())?;
+        let mut choices = Vec::new();
+        let mut has_skip = false;
+        for opt in options {
+            let id = opt["optionId"].as_str().ok_or(())?;
+            if id == skip && opt["kind"] == "reject_once" && !has_skip {
+                has_skip = true;
+                continue;
+            }
+            let label = opt["name"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or(())?;
+            if opt["kind"] != "allow_once" || id != format!("{prefix}{}", choices.len()) {
+                return Err(());
+            }
+            choices.push(json!({"const":id,"title":label}));
+        }
+        if choices.is_empty() || !has_skip {
+            return Err(());
+        }
+        Ok(Some(json!({
+            "mode":"form", "message":prompt, "toolCallId":tool["toolCallId"],
+            "requestedSchema":{"type":"object","properties":{"answer":{"type":"string",
+                "title":prompt,"oneOf":choices}},"required":["answer"]}
+        })))
+    }
+}
+
+fn permission_question_result(params: &Value, decision: &ApprovalDecision) -> Value {
+    let selected = decision
+        .updated_input
+        .as_ref()
+        .filter(|result| decision.approved && result["action"] == "accept")
+        .and_then(|result| result.pointer("/content/answer")?.as_str());
+    if let Some(id) = selected.filter(|id| {
+        params["options"].as_array().is_some_and(|options| {
+            options
+                .iter()
+                .any(|o| o["kind"] == "allow_once" && o["optionId"].as_str() == Some(*id))
+        })
+    }) {
+        json!({"outcome":{"outcome":"selected","optionId":id}})
+    } else {
+        cursor_cancelled_result()
+    }
+}
+
 async fn handle_cursor_extension(
     stdin: &mut (impl AsyncWrite + Unpin),
     id: &Value,
@@ -2957,6 +3096,7 @@ async fn handle_cursor_extension(
     control: &mut mpsc::Receiver<SessionCommand>,
     approvals: Option<&mut ApprovalBridge>,
     session_id: &str,
+    question: Option<Value>,
 ) -> Result<(), String> {
     if cursor_extension_is_blocking(method)
         && params
@@ -2983,7 +3123,8 @@ async fn handle_cursor_extension(
         .or_else(|| acp_json_str(params, "elicitation_id"))
         .map(str::to_string)
         .unwrap_or_else(|| format!("cursor-{}", jsonrpc_id_key(id)));
-    let tool_name = if method == "elicitation/create" {
+    let is_question = question.is_some();
+    let tool_name = if method == "elicitation/create" || is_question {
         "elicitation/create"
     } else if permission {
         acp_json_str(tool, "title").unwrap_or("ACP tool")
@@ -2996,12 +3137,15 @@ async fn handle_cursor_extension(
         interaction_id: interaction_id.clone(),
         tool_call_id,
         tool_name: tool_name.to_string(),
-        input: if permission {
+        input: if let Some(form) = question {
+            form
+        } else if permission {
             tool.clone()
         } else {
             params.clone()
         },
-        requires_user_interaction: method == "cursor/ask_question"
+        requires_user_interaction: is_question
+            || method == "cursor/ask_question"
             || method == "elicitation/create",
         requires_manual_approval: false,
         permission_suggestions: None,
@@ -3035,7 +3179,9 @@ async fn handle_cursor_extension(
         }
         match timeout(Duration::from_millis(200), bridge.decisions.recv()).await {
             Ok(Some(decision)) if decision.interaction_id == interaction_id => {
-                let result = if permission {
+                let result = if is_question {
+                    permission_question_result(params, &decision)
+                } else if permission {
                     acp_permission_result(params, decision.approved, decision.always)
                 } else {
                     cursor_decision_result(method, &decision)
@@ -3071,6 +3217,14 @@ async fn handle_agent_to_client_request(
         return flush_terminal_side_effects(stdin, terminals).await;
     }
     let result = match method {
+        // Handshake and replay have no active turn that can answer these questions.
+        "session/request_permission"
+            if [PermissionFallback::Kimi, PermissionFallback::Hermes]
+                .iter()
+                .any(|provider| provider.marks_question(&params["toolCall"])) =>
+        {
+            cursor_cancelled_result()
+        }
         "session/request_permission" if terminals.is_some() => {
             match choose_permission_outcome(params.get("options")) {
                 Some(option_id) => {
@@ -3414,6 +3568,7 @@ mod tests {
                 3,
                 "ours",
                 false,
+                None,
                 &mut catalog,
                 &events,
                 &mut control,
@@ -3454,6 +3609,7 @@ mod tests {
             7,
             "ours",
             true,
+            None,
             &mut catalog,
             &events,
             &mut control,
@@ -3660,6 +3816,7 @@ mod tests {
                     7,
                     "ours",
                     false,
+                    None,
                     &mut AcpModelCatalog::default(),
                     &events,
                     &mut control,
@@ -3691,6 +3848,7 @@ mod tests {
                 7,
                 "ours",
                 false,
+                None,
                 &mut AcpModelCatalog::default(),
                 &events,
                 &mut control,
@@ -3883,6 +4041,7 @@ mod tests {
                     &mut control,
                     cancel.then_some(&mut bridge),
                     "session-1",
+                    None,
                 ),
             )
             .await
@@ -3903,6 +4062,115 @@ mod tests {
                     })
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn native_question_permissions_round_trip_choices_without_changing_ordinary_permissions()
+    {
+        for (agent, tool, prefix, skip) in [
+            (
+                "kimi",
+                json!({"toolCallId":"ask-1","title":"AskUserQuestion",
+                "content":[{"type":"content","content":{"type":"text","text":"Which drink?"}}]}),
+                "q0_opt_",
+                "q0_skip",
+            ),
+            (
+                "hermes",
+                json!({"toolCallId":"clarify-test","title":"Which drink?","kind":"other",
+                "rawInput":{"question":"Which drink?","choices":["Water","Tea"]}}),
+                "choice-",
+                "skip",
+            ),
+        ] {
+            let (host, peer) = tokio::io::duplex(8192);
+            let (read, mut write) = tokio::io::split(host);
+            let mut reader = BufReader::new(read).lines();
+            let (read, mut out) = tokio::io::split(peer);
+            let mut replies = BufReader::new(read).lines();
+            let (requests, mut asks) = mpsc::channel(1);
+            let (decisions, decision_rx) = mpsc::channel(1);
+            let mut bridge = ApprovalBridge {
+                requests,
+                decisions: decision_rx,
+            };
+            let (_commands, mut control) = mpsc::channel(1);
+            let (events, _output) = mpsc::channel(8);
+            let mut catalog = AcpModelCatalog::default();
+            let mut terminal = AcpTerminalHost::new(std::env::temp_dir());
+            let live = acp_read_prompt(
+                &mut reader,
+                &mut write,
+                Some(&mut terminal),
+                7,
+                "ours",
+                false,
+                PermissionFallback::for_agent(agent),
+                &mut catalog,
+                &events,
+                &mut control,
+                Some(&mut bridge),
+            );
+            let peer = async {
+                let second = format!("{prefix}1");
+                let params = json!({"sessionId":"ours","toolCall":tool,"options":[
+                    {"optionId":format!("{prefix}0"),"kind":"allow_once","name":"Water"},
+                    {"optionId":second,"kind":"allow_once","name":"Tea"},
+                    {"optionId":skip,"kind":"reject_once","name":"Skip"}
+                ]});
+                for (id, session, ordinary, choice) in [
+                    (1, "foreign", false, None),
+                    (2, "foreign", true, None),
+                    (3, "ours", true, None),
+                    (4, "ours", false, Some(second.as_str())),
+                    (5, "ours", false, Some("forged")),
+                    (6, "ours", false, Some(skip)),
+                ] {
+                    let mut request = if ordinary {
+                        json!({"toolCall":{"title":"Run test"},
+                        "options":[{"optionId":"once","kind":"allow_once"}]})
+                    } else {
+                        params.clone()
+                    };
+                    request["sessionId"] = json!(session);
+                    write_rpc_line(
+                        &mut out,
+                        json!({"jsonrpc":"2.0","id":id,
+                        "method":"session/request_permission","params":request}),
+                    )
+                    .await
+                    .unwrap();
+                    if let Some(choice) = choice {
+                        let ask = asks.recv().await.unwrap();
+                        let codec =
+                            crate::external_agents::ask_user::codec_for(agent, &ask.tool_name)
+                                .unwrap();
+                        let card = (codec.parse)(&ask.input).unwrap();
+                        assert!(card.questions[0].prompt.contains("Which drink?"));
+                        assert_eq!(card.questions[0].options[1].label, "Tea");
+                        let mut decision = permission_decision(ask.interaction_id, true);
+                        decision.updated_input =
+                            Some(json!({"action":"accept","content":{"answer":choice}}));
+                        decisions.send(decision).await.unwrap();
+                    }
+                    let result = read_peer_frame(&mut replies).await;
+                    let expected = match id {
+                        3 => json!({"outcome":{"outcome":"selected","optionId":"once"}}),
+                        4 => json!({"outcome":{"outcome":"selected","optionId":second}}),
+                        _ => cursor_cancelled_result(),
+                    };
+                    assert_eq!(result["result"], expected, "{agent} request {id}");
+                    assert!(asks.try_recv().is_err());
+                }
+                write_rpc_result(&mut out, &json!(7), json!({"stopReason":"end_turn"}))
+                    .await
+                    .unwrap();
+            };
+            let (result, ()) = timeout(Duration::from_secs(3), async { tokio::join!(live, peer) })
+                .await
+                .unwrap();
+            result.unwrap();
         }
     }
 
