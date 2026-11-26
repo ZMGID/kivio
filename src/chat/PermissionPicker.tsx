@@ -1,15 +1,15 @@
 import { memo, useMemo, useRef, useState } from 'react'
 import { Check } from 'lucide-react'
 import { useT } from '../components/i18n'
-import { derivePermissionModes, useDetectedExternalAgents } from './permissionModes'
+import { derivePermissionModes } from './permissionModes'
 import { chatTitlebarIconButtonClass } from './platform'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
-import type { AgentRuntimeConfig } from './types'
+import type { AgentRuntimeConfig, DetectedExternalAgent } from './types'
 import { usePopoverMenu } from './usePopoverMenu'
 
 interface PermissionPickerProps {
   agentRuntime: AgentRuntimeConfig
-  conversationId?: string | null
+  externalAgent?: DetectedExternalAgent
   /** Built-in agent tool-approval policy. */
   approvalPolicy?: string
   onApprovalPolicyChange?: (policy: string) => void
@@ -25,7 +25,7 @@ interface PermissionPickerProps {
  */
 function PermissionPickerBase({
   agentRuntime,
-  conversationId,
+  externalAgent,
   approvalPolicy,
   onApprovalPolicyChange,
   onSandboxChange,
@@ -38,10 +38,9 @@ function PermissionPickerBase({
   usePopoverMenu(open, () => setOpen(false), menuRef)
   const maxH = usePopoverMaxHeight(open, menuRef, 'down', 320)
 
-  const agents = useDetectedExternalAgents(usesExternal ? conversationId : null)
   const { options, current } = useMemo(
-    () => derivePermissionModes({ target: 'titlebar', agentRuntime, agents, approvalPolicy }),
-    [agentRuntime, agents, approvalPolicy],
+    () => derivePermissionModes({ target: 'titlebar', agentRuntime, agents: externalAgent ? [externalAgent] : [], approvalPolicy }),
+    [agentRuntime, externalAgent, approvalPolicy],
   )
 
   if (options.length === 0) return null

@@ -2614,6 +2614,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   // 会话页顶栏控件。非 mac 渲染进全宽标题栏带（单行 chrome），mac 仍留在主区 52px 顶栏。
   const conversationTitlebarControls = useMemo(() => (
     <ConversationTitlebarControls
+      readOnly={resuming}
       activeAgentRuntime={activeAgentRuntime}
       externalAgent={activeExternalAgent}
       draftProjectId={selectedProject?.id}
@@ -2700,6 +2701,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     draftWorktree,
     composerDraftSetters,
     contextState,
+    resuming,
     selectedProject?.id,
     selectedProject?.name,
     streamCoarse.streaming,
@@ -2933,9 +2935,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     resolvePendingSessionConsent, resolvePendingToolConfirm,
   ])
 
-  const visibleTitlebarControls = resuming && currentConversation
-    ? <span className="truncate text-sm">{currentConversation.title}</span>
-    : conversationTitlebarControls
   const showConversationDock = chatView === 'conversation' && !conversationOccupied
     && (!usesChatRuntime || Boolean(dock.subagent.selection) || (dockOpen && dock.preview?.kind === 'file'))
   // 侧栏 / 右侧面板开合时，主区内容平移到新位置（只动 transform，不逐帧重排）。
@@ -2968,7 +2967,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           dockToolbarRef={setDockToolbarHost}
           onToggleDock={showConversationDock ? handleToggleDock : undefined}
         >
-          {chatView === 'conversation' ? visibleTitlebarControls : null}
+          {chatView === 'conversation' ? conversationTitlebarControls : null}
         </ChatTitlebar>
       )}
       {/* relative：收起中的侧面板以绝对定位浮在这一行上层淡出。 */}
@@ -3160,7 +3159,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           />
         ) : (
           <ChatConversationPane
-            titlebarControls={visibleTitlebarControls}
+            titlebarControls={conversationTitlebarControls}
             usesNativeTitlebar={usesNativeTitlebar}
             sidebarCollapsed={sidebarCollapsed}
             titlebarRowClass={chatTitlebarRowClass}
