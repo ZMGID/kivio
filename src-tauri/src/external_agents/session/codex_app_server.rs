@@ -5580,6 +5580,7 @@ mod tests {
             UnifiedAgentEvent::TextItemDelta { .. } => "TextItemDelta",
             UnifiedAgentEvent::TextItemCompleted { .. } => "TextItemCompleted",
             UnifiedAgentEvent::InteractionResolved { .. } => "InteractionResolved",
+            UnifiedAgentEvent::QuestionResolved { .. } => "QuestionResolved",
             UnifiedAgentEvent::ThinkingDelta { .. } => "ThinkingDelta",
             UnifiedAgentEvent::ToolUse { .. } => "ToolUse",
             UnifiedAgentEvent::ToolInputUpdated { .. } => "ToolInputUpdated",
