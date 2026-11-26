@@ -21,6 +21,9 @@ use crate::proc::NoConsoleWindow;
 
 const ACP_PROTOCOL_VERSION: i64 = 1;
 
+#[path = "acp_hermes_questions.rs"]
+mod hermes_questions;
+
 fn cli_protocol_cwd(bin: &Path, cwd: &Path) -> PathBuf {
     crate::external_agents::wsl::path_for_cli(bin, cwd)
 }
@@ -2442,6 +2445,8 @@ async fn acp_read_prompt(
     mut approvals: Option<&mut ApprovalBridge>,
 ) -> Result<(), String> {
     let mut update_state = AcpUpdateState::default();
+    let mut hermes_questions = matches!(permission_fallback, Some(PermissionFallback::Hermes))
+        .then(hermes_questions::PendingClarifications::default);
     let mut usage_deadline = None;
     loop {
         match control.try_recv() {
@@ -2474,7 +2479,18 @@ async fn acp_read_prompt(
             acp_next_message(reader).await?
         };
         match next {
-            AcpNext::Frame(AcpFrame::Request { id, method, params }) => {
+            AcpNext::Frame(AcpFrame::Request {
+                id,
+                method,
+                mut params,
+            }) => {
+                if method == "elicitation/create"
+                    && params["sessionId"].as_str() == Some(session_id)
+                {
+                    if let Some(pending) = &mut hermes_questions {
+                        pending.bind(&mut params);
+                    }
+                }
                 let question = if let Some(fallback) =
                     permission_fallback.filter(|_| method == "session/request_permission")
                 {
@@ -2551,6 +2567,9 @@ async fn acp_read_prompt(
                                 &mut |event| buffer.push(event),
                             );
                             for mut event in buffer {
+                                if let Some(pending) = &mut hermes_questions {
+                                    pending.observe(&event);
+                                }
                                 if let UnifiedAgentEvent::Usage { usage } = &mut event {
                                     usage.context_window_tokens = update_state
                                         .context_window
