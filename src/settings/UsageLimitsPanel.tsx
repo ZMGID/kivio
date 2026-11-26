@@ -8,12 +8,16 @@ import {
   type ExternalCliAccount,
 } from '../api/externalCliSettings'
 import { refreshCliAccount, useCliAccounts } from '../api/useCliAccount'
+import type { ModelProvider } from '../api/tauri'
 import { AgentIcon } from '../components/AgentIcon'
+import { ProviderIcon } from '../components/ModelIcon'
 import { Button, IconButton } from '../components/Button'
 import { notifyError } from '../components/appNoticeStore'
 import { confirmDialog } from '../components/dialogQueue'
 import { i18n, type Lang } from '../components/i18n'
 import { cliPlanTone } from './cliPlanTone'
+import { accountUsageKey, accountUsageLabel, accountWindowMinutes, isApiKeyPlanUsage, useAccountUsage } from './providerAccountUsage'
+import { isProviderEnabled } from './utils'
 import './UsageLimitsPanel.css'
 
 type QuotaWindow = ExternalCliAccount['windows'][number]
@@ -324,10 +328,72 @@ function AgentLimits({ agent, account, error, lang, now }: {
   )
 }
 
-export function UsageLimitsPanel({ lang }: { lang: Lang }) {
+/** API Key 套餐的额度（如 GLM Coding Plan），与供应商详情共用同一份读取和缓存。 */
+function ProviderLimits({ usageKey, provider, iconKey, refreshSignal, lang, now }: {
+  usageKey: string
+  provider: ModelProvider
+  iconKey?: string
+  refreshSignal: number
+  lang: Lang
+  now: number
+}) {
+  const t = i18n[lang]
+  const zh = lang === 'zh'
+  const { data, status } = useAccountUsage(usageKey, provider, refreshSignal)
+  const headingId = `limits-heading-provider-${provider.id}`
+  const windows = data?.windows.flatMap(window => window.usedPercent === null ? [] : [{
+    reading: {
+      // 与 CLI 行同一写法：“5 小时 / 每周”，不带“额度”后缀。
+      name: accountUsageLabel(window.label, zh, false),
+      usedPercent: window.usedPercent,
+      resetsAt: window.resetsAt,
+      windowDurationMins: accountWindowMinutes(window.label),
+    },
+    count: window.used !== null && window.limit !== null
+      ? `${zh ? '已用 ' : 'Used '}${window.used.toLocaleString(lang)} / ${window.limit.toLocaleString(lang)}` : null,
+  }]) ?? []
+  const updatedAt = data ? new Date(data.fetchedAt * 1000) : null
+  return (
+    <section className="cli-limits-agent" aria-labelledby={headingId}>
+      <header className="cli-limits-agent-header">
+        <div className="cli-limits-identity">
+          <ProviderIcon name={provider.name} baseUrl={provider.baseUrl} iconKey={iconKey} size={22} />
+          <div>
+            <div className="cli-limits-title">
+              <h2 id={headingId}>{provider.name}</h2>
+              {data?.plan && <span className="cli-limits-plan">{data.plan}</span>}
+            </div>
+          </div>
+        </div>
+        {updatedAt && <time dateTime={updatedAt.toISOString()}>
+          {t.cliLimitsCheckedAt.replace('{time}', updatedAt.toLocaleString())}
+        </time>}
+      </header>
+      {status === 'error' && (data
+        ? <p className="cli-limits-stale" role="status"><CircleAlert size={14} aria-hidden="true" />{t.cliLimitsStale}</p>
+        : <p className="cli-limits-message" role="status">{zh ? '暂时无法获取额度，请检查网络或 API Key。' : 'Could not fetch usage. Check your connection or API key.'}</p>)}
+      {!data && status === 'loading' && <p className="cli-limits-message" role="status">{t.cliLimitsChecking}</p>}
+      {data && windows.length === 0 && <p className="cli-limits-message">{t.cliLimitsNoReadings}</p>}
+      {windows.length > 0 && <div className="cli-limits-windows">
+        {windows.map(({ reading, count }, index) => (
+          <LimitRow key={`${reading.name}-${index}`} window={reading} now={now} lang={lang} stale={status === 'error'}>
+            {count && <span className="tabular-nums">{count}</span>}
+          </LimitRow>
+        ))}
+      </div>}
+    </section>
+  )
+}
+
+export function UsageLimitsPanel({ lang, providers = [], providerIcons }: {
+  lang: Lang
+  providers?: ModelProvider[]
+  providerIcons?: Record<string, string>
+}) {
   const t = i18n[lang]
   const { agents, failed: scanFailed } = useSyncExternalStore(subscribeRoster, getRoster, getRoster)
   const [refreshing, setRefreshing] = useState(false)
+  const [providerRefresh, setProviderRefresh] = useState(0)
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -346,8 +412,16 @@ export function UsageLimitsPanel({ lang }: { lang: Lang }) {
       : []
   })
   const checking = accounts.some(account => account.checking)
+  const providerReadings = providers.flatMap(provider => {
+    const usageKey = isProviderEnabled(provider) && isApiKeyPlanUsage(provider) ? accountUsageKey(provider) : null
+    return usageKey
+      ? [<ProviderLimits key={usageKey} usageKey={usageKey} provider={provider} iconKey={providerIcons?.[provider.id]}
+          refreshSignal={providerRefresh} lang={lang} now={now} />]
+      : []
+  })
   const refresh = async () => {
     setRefreshing(true)
+    setProviderRefresh(n => n + 1)
     try {
       if (available.length === 0) {
         await detectAgents(true)
@@ -365,17 +439,18 @@ export function UsageLimitsPanel({ lang }: { lang: Lang }) {
   return (
     <div className="cli-limits-page" aria-label={t.cliLimitsTitle}>
       <div className="cli-limits-toolbar">
-        <Button size="sm" variant="ghost" aria-label={t.cliLimitsRefresh} disabled={refreshing || (!agents && !scanFailed)} onClick={() => void refresh()}>
+        <Button size="sm" variant="ghost" aria-label={t.cliLimitsRefresh} disabled={refreshing || (!agents && !scanFailed && !providerReadings.length)} onClick={() => void refresh()}>
           <RefreshCw size={14} aria-hidden="true" className={refreshing ? 'animate-spin' : ''} />
           {lang === 'zh' ? '刷新' : 'Refresh'}
         </Button>
       </div>
-      {available.length
+      {available.length || providerReadings.length
         ? <div className="cli-limits-list">
             {readings}
-            {!readings.length && <p className="cli-limits-message" role="status">
+            {available.length > 0 && !readings.length && <p className="cli-limits-message" role="status">
               {checking ? t.cliLimitsChecking : t.cliLimitsNoReadings}
             </p>}
+            {providerReadings}
           </div>
         : <p className="cli-limits-message" role="status">{scanFailed ? t.cliLimitsScanFailed : agents ? t.cliLimitsEmpty : t.cliLimitsScanning}</p>}
     </div>

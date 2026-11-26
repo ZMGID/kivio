@@ -52,7 +52,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
   {
     name: 'OpenCode Go',
-    baseUrl: 'https://opencode.ai/zen/go/v1',
+    baseUrl: 'https://opencode.ai/inference/go/v1',
     apiKeyUrl: 'https://opencode.ai/auth',
   },
   {

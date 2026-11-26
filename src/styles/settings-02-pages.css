@@ -1672,9 +1672,39 @@ html[data-focus-source="keyboard"] .kv-provider-card:focus-visible {
   gap: 6px;
 }
 .kv-provider-card-actions { gap: 4px; }
+.kv-provider-card-usage {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.kv-provider-card-usage-track {
+  inline-size: 64px;
+  block-size: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-active);
+}
+.kv-provider-card-usage-track > span {
+  display: block;
+  block-size: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+.kv-provider-card-usage[data-level="warning"] .kv-provider-card-usage-track > span { background: var(--warn); }
+.kv-provider-card-usage[data-level="critical"] .kv-provider-card-usage-track > span { background: var(--danger); }
+.kv-provider-card-usage[data-level="critical"] .tabular-nums { color: var(--danger); }
+.kv-provider-card-usage[data-state="error"] { color: var(--text-faint); }
+.kv-provider-card.is-off .kv-provider-card-usage { opacity: 0.55; }
 .kv-provider-card-actions > .kv-toggle { margin-right: 6px; }
 @container settings-shell (max-width: 560px) {
   .kv-provider-card-tags { display: none; }
+  .kv-provider-card-usage-label,
+  .kv-provider-card-usage-track { display: none; }
 }
 
 /* 供应商顶栏：图标 + 名称 + 状态 + 测试 + 启用 + 删除，一行说清「是谁、通不通、开没开」。 */

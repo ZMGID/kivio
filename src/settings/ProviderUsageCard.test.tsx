@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type ProviderOAuthUsage } from '../api/tauri'
-import { ProviderUsageCard } from './ProviderUsageCard'
+import { ProviderUsageCard, ProviderUsageSummary } from './ProviderUsageCard'
 import { makeProvider } from './tabs/testFixtures'
 vi.mock('../api/tauri', async () => {
   const actual = await vi.importActual<typeof import('../api/tauri')>('../api/tauri')
@@ -84,6 +84,31 @@ describe('ProviderUsageCard', () => {
     view.rerender(<ProviderUsageCard provider={direct} lang="zh" />)
     expect(screen.getByText('剩余 40%')).toBeInTheDocument()
     expect(api.providerOAuthUsage).toHaveBeenCalledTimes(3)
+  })
+  it('reads GLM Coding Plan quota with the selected API key', async () => {
+    vi.mocked(api.providerOAuthUsage).mockResolvedValue({ plan: 'Lite', fetchedAt: 1700000000, windows: [
+      { label: '5h', usedPercent: 20, used: null, limit: null, resetsAt: null },
+      { label: 'MCP · Monthly', usedPercent: 4, used: 4, limit: 100, resetsAt: null },
+    ] })
+    const glm = { ...baseProvider, baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeys: ['first', 'second'], activeKeyIndex: 1 }
+    const view = render(<ProviderUsageCard provider={glm} lang="zh" />)
+    expect(await screen.findByText('5 小时额度')).toBeInTheDocument()
+    expect(screen.getByText('MCP 每月额度')).toBeInTheDocument()
+    expect(screen.getByText('Lite')).toBeInTheDocument()
+    view.rerender(<ProviderUsageCard provider={{ ...glm, activeKeyIndex: 0 }} lang="zh" />)
+    await screen.findByText('5 小时额度')
+    expect(api.providerOAuthUsage).toHaveBeenCalledTimes(2)
+    view.unmount()
+    render(<ProviderUsageSummary provider={{ ...glm, activeKeyIndex: 0 }} lang="zh" />)
+    expect(screen.getByText('剩余 80%')).toBeInTheDocument()
+    expect(api.providerOAuthUsage).toHaveBeenCalledTimes(2)
+  })
+  it('skips pay-as-you-go GLM endpoints and providers without a key', () => {
+    render(<>
+      <ProviderUsageCard provider={{ ...baseProvider, baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKeys: ['key'] }} lang="zh" />
+      <ProviderUsageSummary provider={{ ...baseProvider, baseUrl: 'https://api.z.ai/api/coding/paas/v4', apiKeys: [' '] }} lang="zh" />
+    </>)
+    expect(api.providerOAuthUsage).not.toHaveBeenCalled()
   })
   it('never fetches unsupported or disconnected accounts and ignores stale responses', async () => {
     let finish!: (result: ProviderOAuthUsage) => void

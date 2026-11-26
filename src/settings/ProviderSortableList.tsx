@@ -8,6 +8,7 @@ import type { I18n, Lang } from '../components/i18n'
 import { usePointerReorder } from '../utils/pointerReorder'
 import { Toggle } from './components'
 import { ProviderAccountIdentity, ProviderAccountSummary } from './ProviderAccountIdentity'
+import { ProviderUsageSummary } from './ProviderUsageCard'
 import { isProviderEnabled } from './utils'
 
 /** 卡片之间的间距（px）；拖拽落点按「行高 + 间距」换算，必须与 CSS 的 gap 一致。 */
@@ -150,6 +151,7 @@ export function ProviderSortableList({
                   </span>
                 </>}
             </span>
+            <ProviderUsageSummary provider={provider} lang={lang} />
             <span className="kv-provider-card-tags">
               <span className="kv-tag tabular-nums">
                 {zh ? `${modelCount} 个模型` : `${modelCount} model${modelCount === 1 ? '' : 's'}`}

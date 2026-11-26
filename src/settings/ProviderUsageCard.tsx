@@ -1,84 +1,37 @@
-import { useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
-import { api, type ModelProvider, type ProviderOAuthUsage } from '../api/tauri'
+import type { ModelProvider } from '../api/tauri'
 import { Button } from '../components/Button'
 import type { Lang } from '../components/i18n'
+import { accountBalanceText, accountUsageKey, accountUsageLabel, isApiKeyPlanUsage, useAccountUsage } from './providerAccountUsage'
 
 type UsageCardProps = { provider: ModelProvider; lang: Lang }
 
-const USAGE_FRESHNESS_MS = 60_000
-const USAGE_CACHE_LIMIT = 32
-const usageByAccount = new Map<string, { data: ProviderOAuthUsage; expiresAt: number }>()
-const pendingUsage = new Map<string, Promise<ProviderOAuthUsage>>()
-
-function fetchUsage({ provider, usageKey }: { provider: ModelProvider; usageKey: string }) {
-  const pending = pendingUsage.get(usageKey)
-  if (pending) return pending
-  const result = api.providerOAuthUsage(provider).then(data => {
-    usageByAccount.delete(usageKey)
-    usageByAccount.set(usageKey, { data, expiresAt: Date.now() + USAGE_FRESHNESS_MS })
-    if (usageByAccount.size > USAGE_CACHE_LIMIT) {
-      const oldest = usageByAccount.keys().next()
-      if (!oldest.done) usageByAccount.delete(oldest.value)
-    }
-    return data
-  }).finally(() => {
-    pendingUsage.delete(usageKey)
-  })
-  pendingUsage.set(usageKey, result)
-  return result
-}
-
 export function ProviderUsageCard({ provider, lang }: UsageCardProps) {
-  const auth = provider.request.oauth
-  const supported = auth?.provider === 'kimi' || auth?.provider === 'codex' || auth?.provider === 'antigravity'
-  if (!supported || !auth.credentialId) return null
-
-  const usageKey = JSON.stringify([
-    auth.provider, auth.credentialId, provider.baseUrl, provider.apiFormat,
-  ])
+  const usageKey = accountUsageKey(provider)
+  if (!usageKey) return null
   return <AccountUsageCard key={usageKey} usageKey={usageKey} provider={provider} lang={lang} />
 }
 
 function AccountUsageCard({ usageKey, provider, lang }: UsageCardProps & { usageKey: string }) {
-  const [data, setData] = useState(() => usageByAccount.get(usageKey)?.data)
-  const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle')
-  const [refresh, setRefresh] = useState(0)
-  const current = useRef(provider)
-  current.current = provider
+  const { data, status, refresh } = useAccountUsage(usageKey, provider)
   const zh = lang === 'zh'
-  useEffect(() => {
-    const cached = usageByAccount.get(usageKey)
-    if (cached) setData(cached.data)
-    if (!refresh && cached && cached.expiresAt > Date.now() && !pendingUsage.has(usageKey)) return
-
-    let cancelled = false
-    setStatus('loading')
-    void fetchUsage({ provider: current.current, usageKey }).then(result => {
-      if (cancelled) return
-      setData(result)
-      setStatus('idle')
-    }).catch(() => {
-      if (!cancelled) setStatus('error')
-    })
-    return () => { cancelled = true }
-  }, [usageKey, refresh])
-
   const busy = status === 'loading'
-  const label = (value: string) => zh ? ({ Weekly: '每周额度', Session: '会话额度' }[value] ?? value.replace('Code review · ', '代码审查 · ').replace(/^(\d+)h$/, '$1 小时额度')) : value
-  return <section aria-label={zh ? '账户用量' : 'Account usage'} className="kv-provider-usage">
+  const label = (value: string) => accountUsageLabel(value, zh)
+  const balanceOnly = !!data && data.windows.length === 0 && !!data.balances?.length
+  const title = balanceOnly ? (zh ? '账户余额' : 'Account balance') : (zh ? '账户用量' : 'Account usage')
+  return <section aria-label={title} className="kv-provider-usage">
     <div className="flex items-center justify-between gap-3">
       <div className="flex items-center gap-2">
-        <h3 className="text-sm font-medium">{zh ? '账户用量' : 'Account usage'}</h3>
+        <h3 className="text-sm font-medium">{title}</h3>
         {data?.plan && <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs opacity-70">{data.plan}</span>}
       </div>
-      <Button size="sm" disabled={busy} onClick={() => setRefresh(n => n + 1)}>
+      <Button size="sm" disabled={busy} onClick={refresh}>
         <RefreshCw size={12} className={busy ? 'animate-spin' : ''} />{zh ? '刷新' : 'Refresh'}
       </Button>
     </div>
     {busy && <p className="mt-3 text-xs opacity-60" role="status">{zh ? '正在获取账户额度…' : 'Fetching account limits…'}</p>}
     {status === 'error' && <p className="mt-3 text-xs text-[var(--danger)]" role="alert">{zh ? '暂时无法获取用量，请检查网络或授权后重试。' : 'Could not fetch usage. Check your connection or authorization and retry.'}</p>}
-    {data && data.windows.length === 0 && <p className="mt-3 text-xs opacity-60">{zh ? '供应商暂未返回额度数据' : 'No quota data returned by the provider'}</p>}
+    {data && data.windows.length === 0 && !data.balances?.length && <p className="mt-3 text-xs opacity-60">{zh ? '供应商暂未返回额度数据' : 'No quota data returned by the provider'}</p>}
     {provider.request.oauth?.provider === 'antigravity' && data && data.windows.length > 0 && <p className="mt-2 text-xs opacity-60">{zh ? '显示接口返回的额度组；部分账号可能不提供完整周额度。' : 'Reported quota groups; full weekly limits may not be available for every account.'}</p>}
     {data?.windows.map((window, i) => {
       const remaining = window.usedPercent === null ? null : Math.max(0, Math.min(100, 100 - window.usedPercent))
@@ -97,6 +50,45 @@ function AccountUsageCard({ usageKey, provider, lang }: UsageCardProps & { usage
         </div>
       </div>
     })}
-    {data && <p className="mt-3 text-[11px] opacity-50">{zh ? '账户共享额度 · 更新于 ' : 'Shared account limits · Updated '}{new Date(data.fetchedAt * 1000).toLocaleTimeString()}</p>}
+    {data?.balances?.map((balance, i) => <p key={`${balance.label}-${i}`} className="mt-3 text-sm tabular-nums">{accountBalanceText(balance, zh, zh ? 'zh-CN' : 'en-US')}</p>)}
+    {data && <p className="mt-3 text-[11px] opacity-50">{balanceOnly
+      ? (zh ? '账户余额 · 更新于 ' : 'Account balance · Updated ')
+      : (zh ? '账户共享额度 · 更新于 ' : 'Shared account limits · Updated ')}{new Date(data.fetchedAt * 1000).toLocaleTimeString()}</p>}
   </section>
+}
+
+/** 供应商列表行内的额度摘要：只显示最紧的模型额度窗口，完整读数在供应商详情。 */
+export function ProviderUsageSummary({ provider, lang }: UsageCardProps) {
+  const usageKey = isApiKeyPlanUsage(provider) ? accountUsageKey(provider) : null
+  if (!usageKey) return null
+  return <UsageSummary key={usageKey} usageKey={usageKey} provider={provider} lang={lang} />
+}
+
+function UsageSummary({ usageKey, provider, lang }: UsageCardProps & { usageKey: string }) {
+  const { data, status } = useAccountUsage(usageKey, provider)
+  const zh = lang === 'zh'
+  const readings = data?.windows.flatMap(window => window.usedPercent === null ? [] : [{
+    label: accountUsageLabel(window.label, zh),
+    remaining: Math.max(0, Math.min(100, 100 - window.usedPercent)),
+    // 分组窗口（MCP、MiniMax 视频等）单独计量，不代表模型额度。
+    model: !window.label.includes(' · '),
+  }]) ?? []
+  const tightest = readings.filter(item => item.model).sort((a, b) => a.remaining - b.remaining)[0]
+  const detail = readings.map(item => `${item.label} ${zh ? '剩余 ' : ''}${Math.round(item.remaining)}%${zh ? '' : ' left'}`).join(' · ')
+  if (!tightest) {
+    if (status !== 'error') return null
+    return <span className="kv-provider-card-usage" data-state="error" title={zh ? '暂时无法获取额度' : 'Could not fetch usage'}>
+      {zh ? '额度未知' : 'Usage unavailable'}
+    </span>
+  }
+  const remaining = Math.round(tightest.remaining)
+  const level = remaining <= 10 ? 'critical' : remaining <= 30 ? 'warning' : 'normal'
+  return <span className="kv-provider-card-usage" data-level={level} title={[data?.plan, detail].filter(Boolean).join(' · ')}>
+    <span className="kv-provider-card-usage-label">{tightest.label}</span>
+    <span className="kv-provider-card-usage-track" role="progressbar" aria-label={tightest.label}
+      aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining}>
+      <span style={{ width: `${remaining}%` }} />
+    </span>
+    <span className="tabular-nums">{zh ? `剩余 ${remaining}%` : `${remaining}% left`}</span>
+  </span>
 }

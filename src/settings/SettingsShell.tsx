@@ -1295,7 +1295,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   onToggleEnabled={(v) => updateChatTools({ requestDebugEnabled: v })}
                 />
               ) : usageView === 'limits' ? (
-                <UsageLimitsPanel lang={lang} />
+                <UsageLimitsPanel lang={lang} providers={settings.providers} providerIcons={settings.providerIcons} />
               ) : (
                 <UsageStatsPanel
                   lang={lang}

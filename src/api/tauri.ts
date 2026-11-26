@@ -1020,7 +1020,7 @@ export type ProviderOAuthConfig = { provider: 'chatgpt' | 'codex' | 'kimi' | 'an
 export type ChatGPTAccount = { credentialId: string; clientId: string; subject: string | null; email?: string | null; connected: boolean; planEnabled: boolean }
 export const CHATGPT_USAGE_URL = 'https://chatgpt.com/settings/usage'
 export type ProviderOAuthAccount = { email: string | null; name: string | null; accountId: string | null }
-export type ProviderOAuthUsage = { plan: string | null; fetchedAt: number; windows: { label: string; usedPercent: number | null; used: number | null; limit: number | null; resetsAt: number | null; resetHint?: string | null }[] }
+export type ProviderOAuthUsage = { plan: string | null; fetchedAt: number; balances?: { label: string; amount: number; currency: string }[]; windows: { label: string; usedPercent: number | null; used: number | null; limit: number | null; resetsAt: number | null; resetHint?: string | null }[] }
 export type ProviderOAuthLogin = { loginId: string; userCode: string; verificationUrl: string; interval: number; expiresAt: number }
 export type ProviderOAuthPoll = { status: 'pending' | 'authorized'; interval: number; auth: ProviderOAuthConfig | null }
 
