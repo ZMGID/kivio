@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { chatApi, type DetectedExternalAgent } from './api'
 import { useT } from '../components/i18n'
 import { modelIncludesEffort, type ExternalModelChange } from './externalModelEffort'
 import type { AgentRuntimeConfig } from './types'
 import type { ExternalAgentModels } from '../api/externalCliSettings'
 import { concreteCliModelId } from '../api/cliModelId'
+import { matchModelExact } from '../data/modelMatching'
 
 type ExternalModel = DetectedExternalAgent['models'][number]
 type ReasoningOption = NonNullable<DetectedExternalAgent['reasoningOptions']>[number]
@@ -57,23 +58,23 @@ export function formatEffortLabel(id: string, label: string): string {
 }
 
 /** 本机 CLI 探测：每个会话一份结果，挂载与换会话时自动检测。 */
-export function useExternalAgents(conversationId?: string | null) {
+export function useExternalAgents(conversationId?: string | null, enabled = true) {
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
-  // 请求代际：conversationId 切换时并发发起检测，只让最新一次的结果落地。
-  const agentsReqIdRef = useRef(0)
 
   useEffect(() => {
-    const reqId = ++agentsReqIdRef.current
+    if (!enabled) return
+    let active = true
     chatApi
       .detectExternalAgents(false, conversationId)
       .then((list) => {
-        if (agentsReqIdRef.current === reqId) setAgents(list)
+        if (active) setAgents(list)
       })
       .catch((err) => {
         console.error('Failed to detect external agents:', err)
-        if (agentsReqIdRef.current === reqId) setAgents([])
+        if (active) setAgents([])
       })
-  }, [conversationId])
+    return () => { active = false }
+  }, [conversationId, enabled])
 
   // 设置页停用的不出现在列表里；已经绑定它的旧会话照常（当前代理按全量 agents 查名字）。
   const availableAgents = useMemo(
@@ -94,10 +95,9 @@ export interface ExternalModelCatalog {
   /** 列表里视为当前的模型 id。 */
   activeModelId: string | null
   reasoningOptions: ReasoningOption[]
-  reasoningValue: string
   /** 实际生效的档位：显式选择优先，否则是 CLI 当前配置；都没有为 null（Auto）。 */
   reasoningDisplayId: string | null
-  reasoningLabel: string
+  reasoningLabel: string | null
   fastTier: { id: string; label: string } | undefined
   fastOn: boolean
   reload: (force?: boolean) => void
@@ -109,6 +109,17 @@ export interface ExternalModelCatalog {
   toggleFast: () => void
 }
 
+type CatalogProbe = {
+  scope: string
+  result: ExternalAgentModels | null
+  loading: boolean
+  error: string | null
+}
+
+const EMPTY_MODELS: ExternalModel[] = []
+const EMPTY_REASONING_OPTIONS: ReasoningOption[] = []
+const EMPTY_REASONING_BY_MODEL: Record<string, ReasoningOption[]> = {}
+
 /**
  * 外部 CLI 的模型与思考档目录。懒查当前代理（cwd-scoped），用户未显式选择时把 CLI 当前配置
  * 同步回会话。必须常驻挂载：胶囊名字和自动同步都不依赖菜单是否打开。
@@ -116,50 +127,44 @@ export interface ExternalModelCatalog {
 export function useExternalModelCatalog({
   agentRuntime,
   conversationId,
+  readOnly = false,
   onModelChange,
 }: {
   agentRuntime: AgentRuntimeConfig
   conversationId?: string | null
+  readOnly?: boolean
   onModelChange: ExternalModelChange
 }): ExternalModelCatalog {
   const t = useT()
   const agentId = agentRuntime.kind === 'external' ? agentRuntime.externalAgentId ?? null : null
-  const [models, setModels] = useState<ExternalModel[]>([])
-  const [reasoningOptions, setReasoningOptions] = useState<ReasoningOption[]>([])
-  // kimi 等：档位随模型变（K3=low/high/max，K2.7 always_thinking=无）。按所选模型取。
-  const [reasoningByModel, setReasoningByModel] = useState<Record<string, ReasoningOption[]>>({})
-  const [loading, setLoading] = useState(false)
-  // source: probed=真实探测 / fallback=探测失败降级静态表（显示提示 + 重试）。
-  const [source, setSource] = useState<'probed' | 'fallback'>('probed')
-  const [probeError, setProbeError] = useState<string | null>(null)
-  // CLI 自己当前配置的模型（codex config.toml / ACP currentModelId / claude resolved）。
-  const [currentModel, setCurrentModel] = useState<string | null>(null)
-  const [currentReasoning, setCurrentReasoning] = useState<string | null>(null)
-  // 请求代际：agent 切换/卸载时使在途请求失效，防止旧结果覆盖新 agent 或卸载后 setState。
+  const scope = agentId ? JSON.stringify([agentId, conversationId ?? null, agentRuntime.externalAgentPreset ?? null]) : null
+  const [probe, setProbe] = useState<CatalogProbe | null>(null)
+  const activeProbe = probe?.scope === scope ? probe : null
+  const result = activeProbe?.result
+  const models = result?.models ?? EMPTY_MODELS
+  const reasoningOptions = result?.reasoningOptions ?? EMPTY_REASONING_OPTIONS
+  const reasoningByModel = result?.reasoningByModel ?? EMPTY_REASONING_BY_MODEL
+  const loading = !!scope && !readOnly && (activeProbe?.loading ?? true)
+  const probeError = activeProbe?.error ?? result?.probeError ?? null
+  const source = activeProbe?.error != null ? 'fallback' : result?.source ?? 'probed'
   const modelsReqIdRef = useRef(0)
   const modelSelectionRef = useRef(0)
-  // Only retain the displayed catalog while refreshing the same CLI and conversation.
-  const lastScopeRef = useRef<string | null>(null)
-  // 用 ref 读最新 runtime / onModelChange，避免把它们塞进 loadModels 依赖导致每次选模型重探。
   const runtimeRef = useRef(agentRuntime)
-  runtimeRef.current = agentRuntime
   const onModelChangeRef = useRef(onModelChange)
-  onModelChangeRef.current = onModelChange
+  useLayoutEffect(() => {
+    runtimeRef.current = agentRuntime
+    onModelChangeRef.current = onModelChange
+  }, [agentRuntime, onModelChange])
 
   const loadModels = useCallback(
-    (id: string, force?: boolean) => {
+    (force?: boolean) => {
+      if (!agentId || !scope || readOnly) return
       const reqId = ++modelsReqIdRef.current
       const selection = modelSelectionRef.current
-      setLoading(true)
+      setProbe((prev) => ({ scope, result: prev?.scope === scope ? prev.result : null, loading: true, error: null }))
       const applyResult = (result: ExternalAgentModels) => {
         if (modelsReqIdRef.current !== reqId) return
-        setModels(result.models)
-        setReasoningOptions(result.reasoningOptions)
-        setReasoningByModel(result.reasoningByModel ?? {})
-        setSource(result.source)
-        setProbeError(result.probeError ?? null)
-        setCurrentModel(result.currentModel ?? null)
-        setCurrentReasoning(result.currentReasoning ?? null)
+        setProbe({ scope, result, loading: !!result.refreshing, error: null })
         // A saved catalog may be displayed, but cannot change the conversation's configuration.
         if (result.refreshing || result.source === 'fallback' || selection !== modelSelectionRef.current) return
         // 自动同步 CLI 当前配置：仅当用户未显式选择（externalModel 空 / 'default'）时。
@@ -167,7 +172,7 @@ export function useExternalModelCatalog({
         const explicitModel = !!concreteCliModelId(rt.externalModel)
         const effectiveModel = explicitModel ? rt.externalModel : result.currentModel
         const effectiveLabel = result.models.find((m) => m.id === effectiveModel)?.label
-        if (modelIncludesEffort(id, effectiveModel, effectiveLabel)) {
+        if (modelIncludesEffort(agentId, effectiveModel, effectiveLabel)) {
           const nextModel = explicitModel ? rt.externalModel! : result.models.some((m) => m.id === effectiveModel)
             ? effectiveModel! : rt.externalModel ?? 'default'
           if (nextModel !== (rt.externalModel ?? 'default') || rt.externalReasoning != null) {
@@ -194,104 +199,71 @@ export function useExternalModelCatalog({
         }
       }
       return chatApi
-        .detectExternalAgentModels(id, conversationId, force, applyResult)
+        .detectExternalAgentModels(agentId, conversationId, force, applyResult)
         .then(applyResult)
         .catch((error: unknown) => {
           if (modelsReqIdRef.current !== reqId) return
-          // 不再静默吞错：置为降级态，展示重试。保留上次模型列表不清空。
-          setSource('fallback')
-          setProbeError(error instanceof Error ? error.message : String(error))
-        })
-        .finally(() => {
-          if (modelsReqIdRef.current === reqId) setLoading(false)
+          setProbe((prev) => ({
+            scope, result: prev?.scope === scope ? prev.result : null, loading: false,
+            error: error instanceof Error ? error.message : String(error),
+          }))
         })
     },
-    [conversationId],
+    [agentId, conversationId, readOnly, scope],
   )
 
-  useEffect(() => {
-    const scope = `${agentId}:${conversationId ?? ''}`
-    if (lastScopeRef.current !== scope) {
-      lastScopeRef.current = scope
-      // 换 agent：旧 CLI 的 currentModel 立刻失效（探测中显示「获取中…」而非上个 CLI 的模型名）。
-      setCurrentModel(null)
-      setProbeError(null)
-      setCurrentReasoning(null)
-      setReasoningByModel({})
-      setModels([])
-      setReasoningOptions([])
-    }
-    if (!agentId) {
-      // 失效在途请求，防止旧结果落到已清空的状态上。
-      modelsReqIdRef.current++
-      setSource('probed')
-      setLoading(false)
-      return
-    }
-    void loadModels(agentId)
+  useLayoutEffect(() => {
+    void loadModels()
     const pendingRequests = modelsReqIdRef
     return () => { pendingRequests.current++ }
-  }, [agentId, conversationId, loadModels])
+  }, [loadModels])
 
   const explicitModelId = concreteCliModelId(agentRuntime.externalModel)
-  const activeModelId = explicitModelId ?? currentModel
+  const activeModelId = explicitModelId ?? result?.currentModel ?? null
+  const selectedModel = models.find(model => model.id === activeModelId)
+  const effortInModel = modelIncludesEffort(agentId, activeModelId, selectedModel?.label)
 
   // 当前展示用的 effort 列表：优先按所选/当前模型从 reasoningByModel 取（kimi 按模型变档）。
   const activeReasoningOptions = useMemo(() => {
-    if (modelIncludesEffort(agentId, activeModelId, models.find((m) => m.id === activeModelId)?.label)) return []
+    if (effortInModel) return EMPTY_REASONING_OPTIONS
     if (activeModelId && Object.prototype.hasOwnProperty.call(reasoningByModel, activeModelId)) {
-      return reasoningByModel[activeModelId] ?? []
+      return reasoningByModel[activeModelId] ?? EMPTY_REASONING_OPTIONS
     }
     // 整表都是 ACP 开关才藏档位。不要从混有 high/max 的表里单独抠掉 off——dsh 的 off 是真档位。
-    if (isAcpSwitchOnlyList(reasoningOptions)) return []
+    if (isAcpSwitchOnlyList(reasoningOptions)) return EMPTY_REASONING_OPTIONS
     return reasoningOptions
-  }, [agentId, activeModelId, models, reasoningByModel, reasoningOptions])
+  }, [activeModelId, effortInModel, reasoningByModel, reasoningOptions])
 
-  const selectedModel = models.find(model => model.id === activeModelId)
   const fastTier = (selectedModel?.capabilities?.serviceTiers ?? []).find(tier => tier.id !== 'default')
   const fastOn = !!fastTier && agentRuntime.externalServiceTier === fastTier.id
 
-  const reasoningValue = agentRuntime.externalReasoning ?? 'default'
-  const explicitReasoning = !!agentRuntime.externalReasoning && agentRuntime.externalReasoning !== 'default'
-  // 未显式选择时跟模型胶囊同一口径：优先展示 CLI 实际在用的档位，而不是「Auto」。
-  const displayId = explicitReasoning
-    ? reasoningValue
-    : currentReasoning && currentReasoning !== 'default' ? currentReasoning : reasoningValue
-  const reasoningDisplayId = displayId !== 'default' && activeReasoningOptions.some((o) => o.id === displayId)
-    ? displayId
-    : null
-  const reasoningLabel = useMemo(() => {
-    const opt = activeReasoningOptions.find((o) => o.id === displayId)
-    if (opt) {
-      const label = formatEffortLabel(opt.id, opt.label || displayId)
-      return label === 'Default' ? 'Auto' : label
-    }
-    // 未显式选择且探测也没有档位时显示「自动」；残留的 ACP on/off 开关也当自动。
-    if (displayId === 'Default' || displayId === 'default' || isAcpSwitchId(String(displayId))) return 'Auto'
-    return displayId
-  }, [activeReasoningOptions, displayId])
+  const reasoningValue = agentRuntime.externalReasoning
+  const explicitReasoning = reasoningValue && reasoningValue.toLowerCase() !== 'default' ? reasoningValue : null
+  const effortId = explicitReasoning ?? result?.currentReasoning ?? 'default'
+  const effortOption = activeReasoningOptions.find((option) => option.id === effortId)
+  const reasoningDisplayId = effortId !== 'default' ? effortOption?.id ?? null : null
+  const resolved = source === 'probed' && !!result && !result.refreshing
+  const pendingEffort = !resolved && explicitReasoning && !effortInModel
+    && (!isAcpSwitchId(explicitReasoning) || (agentId === 'dsh' && explicitReasoning === 'off'))
+  const effortLabel = effortOption
+    ? formatEffortLabel(effortOption.id, effortOption.label)
+    : pendingEffort ? formatEffortLabel(effortId, effortId)
+      : activeReasoningOptions.length ? (isAcpSwitchId(effortId) ? 'Auto' : effortId) : null
+  const reasoningLabel = effortLabel?.toLowerCase() === 'default' ? 'Auto' : effortLabel
 
-  const displayName = useMemo(() => {
-    const formatLabel = (label: string) => agentId === 'antigravity'
-      ? label
-      : stripProviderPrefix(stripParenthetical(label))
-    // 显式选择：显示所选模型 label（探测中列表未到时退回原始 id）。
-    if (explicitModelId) {
-      return formatLabel(models.find((item) => item.id === explicitModelId)?.label ?? explicitModelId)
-    }
-    // 旧会话可能把模型交给 CLI。显示已知的实际模型，未知时提示选择。
-    if (currentModel) return formatLabel(models.find((item) => item.id === currentModel)?.label ?? currentModel)
-    if (loading && models.length === 0) return t.chatRuntimeFetching
-    return t.chatSelectModel
-  }, [agentId, explicitModelId, models, currentModel, loading, t])
-
-  const reload = useCallback((force?: boolean) => {
-    if (agentId) void loadModels(agentId, force)
-  }, [agentId, loadModels])
+  const catalogModelLabel = selectedModel?.label
+  const modelLabel = activeModelId && (
+    catalogModelLabel && (resolved || catalogModelLabel !== activeModelId)
+      ? catalogModelLabel
+      : matchModelExact(activeModelId)?.displayName ?? activeModelId
+  )
+  const displayName = modelLabel
+    ? agentId === 'antigravity' ? modelLabel : stripProviderPrefix(stripParenthetical(modelLabel))
+    : loading && models.length === 0 ? t.chatRuntimeFetching : t.chatSelectModel
 
   const refreshOnOpen = useCallback(() => {
-    if (!loading && source === 'probed' && agentId) void loadModels(agentId)
-  }, [agentId, loadModels, loading, source])
+    if (!loading && source === 'probed') void loadModels()
+  }, [loadModels, loading, source])
 
   const selectModel = useCallback((model: ExternalModel) => {
     // 换模型时 effort 可能变（kimi K3 有 low/high/max，K2.7 无）。旧值不在新列表里 → 清掉或落到 high。
@@ -328,12 +300,11 @@ export function useExternalModelCatalog({
     displayName,
     activeModelId,
     reasoningOptions: activeReasoningOptions,
-    reasoningValue,
     reasoningDisplayId,
     reasoningLabel,
     fastTier,
     fastOn,
-    reload,
+    reload: loadModels,
     refreshOnOpen,
     selectModel,
     selectReasoning,

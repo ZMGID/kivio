@@ -79,7 +79,7 @@ function TitlebarPills({
         <div className="shrink-0" data-tauri-drag-region="false">
           <PermissionPicker
             agentRuntime={runtime}
-            conversationId={conversation?.id}
+            externalAgent={externalAgent}
             approvalPolicy={approvalPolicy}
             onApprovalPolicyChange={onApprovalPolicyChange}
             onSandboxChange={onSandboxChange}

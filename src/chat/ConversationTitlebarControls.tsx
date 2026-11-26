@@ -15,6 +15,7 @@ import type { WorkspaceUsageSource } from './dock/WorkspaceUsageSection'
 import type { AgentRuntimeConfig, ConversationContextState, DetectedExternalAgent, ThinkingLevel } from './types'
 
 export interface ConversationTitlebarControlsProps {
+  readOnly?: boolean
   activeAgentRuntime: AgentRuntimeConfig
   externalAgent?: DetectedExternalAgent
   conversation: CliAccountConversation | null
@@ -53,6 +54,7 @@ export interface ConversationTitlebarControlsProps {
 
 /** 会话页顶栏控件。非 mac 渲染进全宽标题栏带，mac 仍留在主区 52px 顶栏。 */
 export const ConversationTitlebarControls = memo(function ConversationTitlebarControls({
+  readOnly = false,
   activeAgentRuntime,
   externalAgent,
   conversation,
@@ -88,7 +90,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   const conversationId = conversation?.id ?? null
   const showWorkspace = !usesChatRuntime
   return (
-    <>
+    <fieldset key={conversationId} className="contents" disabled={readOnly}>
       <div className="flex min-w-0 items-center gap-1">
         <div className="min-w-0 max-w-full shrink" data-tauri-drag-region="false">
           <AgentModelPicker
@@ -96,6 +98,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
             conversationId={conversationId}
             locked={runtimeLocked}
             busy={busy}
+            readOnly={readOnly}
             providerId={activeProviderId}
             model={activeModel}
             thinkingLevel={thinkingLevel}
@@ -108,7 +111,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
         <div className="shrink-0" data-tauri-drag-region="false">
           <PermissionPicker
             agentRuntime={activeAgentRuntime}
-            conversationId={conversationId}
+            externalAgent={externalAgent}
             approvalPolicy={approvalPolicy}
             onApprovalPolicyChange={onApprovalPolicyChange}
             onSandboxChange={onSandboxChange}
@@ -139,7 +142,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
           <ConversationHistoryBranches conversationId={conversationId} lang={uiLang} {...historyBranches} />
         )}
         {showWorkspace && (
-          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} environment={environment} usage={usage} contextState={contextState} />
+          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} inlineAllowed={!readOnly} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} environment={environment} usage={usage} contextState={contextState} />
         )}
         {usesNativeTitlebar && !usesChatRuntime && !dockOpen && (
           <div className="shrink-0" data-tauri-drag-region="false">
@@ -156,6 +159,6 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
           </div>
         )}
       </div>
-    </>
+    </fieldset>
   )
 })
