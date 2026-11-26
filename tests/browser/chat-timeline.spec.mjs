@@ -3,6 +3,64 @@ import { expect, test } from '@playwright/test'
 const fixture = '/scripts/fixtures/chat-timeline.html'
 const viewport = '.chat-scroll-viewport'
 
+test('keeps the target model and effort visible throughout a conversation switch', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('kivio-chat-dev-conversations', JSON.stringify(['alpha', 'bravo'].map(id => ({
+      id, title: id, revision: 1, created_at: 1, updated_at: 2, provider_id: '', model: '',
+      agent_runtime: { kind: 'external', externalAgentId: 'codex', externalModel: id, externalReasoning: 'high' },
+      messages: [{ id: id + '-question', role: 'user', content: id + ' question', timestamp: 1 }],
+    }))))
+  })
+  await page.goto('/#chat')
+  await page.getByRole('button', { name: 'alpha', exact: true }).waitFor()
+  await page.evaluate(async () => {
+    const { chatApi } = await import('/src/chat/api.ts')
+    const { externalCliSettingsApi } = await import('/src/api/externalCliSettings.ts')
+    const ready = new Promise(resolve => { window.finishDetection = resolve })
+    chatApi.detectExternalAgents = async () => {
+      if (window.pauseReturn) await ready
+      return [{
+        id: 'codex', name: 'Codex', available: true, models: [], capabilities: { account: 'native' },
+        sandboxOptions: [{ id: 'workspace-write', label: 'Workspace write' }],
+      }]
+    }
+    externalCliSettingsApi.getExternalCliAccount = async () => ({
+      agentId: 'codex', checkedAt: 1, windows: [{ name: 'five_hour', usedPercent: 25 }],
+    })
+    const sync = chatApi.syncConversation
+    chatApi.syncConversation = async (...args) => {
+      if (window.pauseReturn && args[0] === 'alpha') await new Promise(resolve => { window.finishReplay = resolve })
+      return sync(...args)
+    }
+    chatApi.detectExternalAgentModels = async (_agent, id) => {
+      if (window.pauseReturn && id === 'alpha') await new Promise(resolve => { window.finishCatalog = resolve })
+      return { models: [{ id, label: 'Model ' + id }], reasoningOptions: [{ id: 'high', label: 'High' }], source: 'probed' }
+    }
+  })
+  const pill = page.locator('.kv-agent-picker > button')
+  const select = id => page.getByRole('button', { name: id, exact: true }).click()
+  for (const id of ['alpha', 'bravo']) {
+    await select(id)
+    await expect(pill).toContainText('Model ' + id)
+    await expect(pill).toContainText('High')
+  }
+  await page.evaluate(() => { window.pauseReturn = true })
+  await select('alpha')
+  await page.waitForFunction(() => window.finishReplay)
+  await expect(page.getByText('alpha question', { exact: true })).toBeVisible()
+  await expect(pill).toContainText('Model alpha')
+  await expect(pill).toContainText('High')
+  await expect(page.locator('button[title*="Workspace write"]')).toBeVisible()
+  await expect(page.locator('button[title="剩余 75%"]')).toBeVisible()
+  await page.evaluate(() => window.finishReplay())
+  await page.waitForFunction(() => window.finishCatalog)
+  await expect(pill).toContainText('Model alpha')
+  await expect(pill).toContainText('High')
+  await expect(pill.locator('.reasoning-shimmer-text')).toHaveCount(0)
+  await page.evaluate(() => { window.finishCatalog(); window.finishDetection() })
+  await expect(pill).toContainText('Model alpha')
+})
+
 async function open(page) {
   await page.goto(fixture)
   await page.waitForFunction(() => window.chatTimeline)

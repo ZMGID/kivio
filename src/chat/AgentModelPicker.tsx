@@ -30,6 +30,16 @@ import './agentModelPicker.css'
 
 const KIVIO_LOGO_SRC = '/logo-mark.png'
 
+interface ModelPresentation {
+  modelLabel: string
+  modelId: string | null
+  effortLabel: string | null
+  fastOn: boolean
+}
+
+const recentModelPresentations = new Map<string, ModelPresentation>()
+const MAX_MODEL_PRESENTATIONS = 32
+
 const BUILTIN: AgentRuntimeConfig = {
   kind: 'builtin',
   externalAgentId: null,
@@ -78,6 +88,8 @@ export interface AgentModelPickerProps {
   /** Imported native sessions remain bound to their original CLI. */
   locked?: boolean
   busy?: boolean
+  /** Keeps the titlebar visible while the conversation replay is being verified. */
+  readOnly?: boolean
   /** 内置运行时的服务商与模型。 */
   providerId: string
   model: string
@@ -98,6 +110,7 @@ function AgentModelPickerBase({
   conversationId,
   locked = false,
   busy = false,
+  readOnly = false,
   providerId,
   model,
   thinkingLevel,
@@ -110,9 +123,12 @@ function AgentModelPickerBase({
   const lang = useLang()
   const triggerRef = useRef<HTMLButtonElement>(null)
   const [position, setPosition] = useState<ReturnType<typeof pickerPosition> | null>(null)
-  const open = position !== null
+  const open = !readOnly && position !== null
   const menuRef = useRef<HTMLDivElement>(null)
   const close = useCallback(() => setPosition(null), [])
+  useLayoutEffect(() => {
+    if (readOnly) close()
+  }, [readOnly, close])
   usePopoverMenu(open, close, menuRef)
   useLayoutEffect(() => {
     const trigger = triggerRef.current
@@ -133,15 +149,16 @@ function AgentModelPickerBase({
   const usesChat = agentRuntime.kind === 'chat'
   const usesBuiltinAgent = !usesExternal && !usesChat
 
-  const { agents, availableAgents } = useExternalAgents(conversationId)
+  const { agents, availableAgents } = useExternalAgents(conversationId, !readOnly)
   const builtinCatalog = useBuiltinModelCatalog(providerId, model)
   const external = useExternalModelCatalog({
     agentRuntime,
     conversationId,
+    readOnly,
     onModelChange: onExternalModelChange,
   })
   const thinking = useThinkingLevel({
-    enabled: !usesExternal,
+    enabled: !usesExternal && !readOnly,
     value: thinkingLevel,
     currentProviderId: providerId,
     currentModel: model,
@@ -153,18 +170,40 @@ function AgentModelPickerBase({
   const agentLabel = usesExternal
     ? currentAgent?.name ?? agentRuntime.externalAgentId ?? t.chatRuntimeLocalCli
     : usesChat ? 'Kivio Chat' : 'Kivio Agent'
-  const modelLabel = usesExternal
+  const liveModelLabel = usesExternal
     ? external.displayName
     : providerModelLabel(model || builtinCatalog.currentProvider?.enabledModels[0] || t.chatSelectModel, builtinCatalog.currentProvider)
-  const effortLabel = usesExternal
-    ? (external.reasoningOptions.length > 0 ? external.reasoningLabel : null)
-    : (thinking.hidden ? null : thinking.effectiveLabel)
-  const fastOn = usesExternal && external.fastOn
-  const pillModelCandidate = usesExternal
+  const liveEffortLabel = usesExternal
+    ? external.reasoningLabel
+    : !thinking.loaded && thinkingLevel ? formatEffortLabel(thinkingLevel, thinkingLevel)
+      : thinking.hidden ? null : thinking.effectiveLabel
+  const liveFastOn = usesExternal && external.fastOn
+  const liveModelId = usesExternal
     ? external.activeModelId
     : model || null
+  const presentationKey = conversationId ? JSON.stringify(usesExternal
+    ? [conversationId, 'external', agentRuntime.externalAgentId, agentRuntime.externalAgentPreset ?? null,
+        agentRuntime.externalModel ?? null, agentRuntime.externalReasoning ?? null, agentRuntime.externalServiceTier ?? null]
+    : [conversationId, agentRuntime.kind, providerId, model, thinkingLevel, lang]) : null
+  const presentationReady = !readOnly && (usesExternal ? !external.loading : thinking.loaded)
+  const remembered = presentationKey && !presentationReady ? recentModelPresentations.get(presentationKey) : undefined
+  const { modelLabel, modelId, effortLabel, fastOn } = remembered ?? {
+    modelLabel: liveModelLabel, modelId: liveModelId, effortLabel: liveEffortLabel, fastOn: liveFastOn,
+  }
+  useLayoutEffect(() => {
+    if (!presentationKey || !presentationReady) return
+    recentModelPresentations.delete(presentationKey)
+    recentModelPresentations.set(presentationKey, {
+      modelLabel: liveModelLabel, modelId: liveModelId, effortLabel: liveEffortLabel, fastOn: liveFastOn,
+    })
+    const oldest = recentModelPresentations.keys().next().value
+    if (recentModelPresentations.size > MAX_MODEL_PRESENTATIONS && oldest !== undefined) {
+      recentModelPresentations.delete(oldest)
+    }
+  }, [presentationKey, presentationReady, liveModelLabel, liveModelId, liveEffortLabel, liveFastOn])
+
   // 认不出品牌的模型不画首字母方块，也不带「/」。
-  const pillModelId = pillModelCandidate && hasModelIcon(pillModelCandidate) ? pillModelCandidate : null
+  const pillModelId = modelId && hasModelIcon(modelId) ? modelId : null
   const providerName = !usesExternal && model ? builtinCatalog.currentProvider?.name : undefined
   const summary = [
     agentLabel,
@@ -236,6 +275,7 @@ function AgentModelPickerBase({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={summary}
+        disabled={readOnly}
         title={summary}
         className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
       >
@@ -252,7 +292,7 @@ function AgentModelPickerBase({
         )}
         <span
           className={`chat-model-selector-label max-w-[200px] truncate font-medium ${
-            usesExternal && external.initialLoading ? 'reasoning-shimmer-text' : 'text-neutral-800'
+            usesExternal && external.initialLoading && !remembered && !modelId ? 'reasoning-shimmer-text' : 'text-neutral-800'
           }`}
         >
           {modelLabel}
@@ -263,7 +303,7 @@ function AgentModelPickerBase({
         {fastOn && <Zap size={13} fill="currentColor" className="shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       </button>
 
-      {position && createPortal(
+      {open && position && createPortal(
         <>
           <div className="fixed inset-0 z-[1000]" onClick={close} aria-hidden />
           <div
@@ -339,7 +379,7 @@ function AgentModelPickerBase({
               <EffortSlider
                 steps={effortSteps}
                 value={usesExternal ? external.reasoningDisplayId : thinking.effective}
-                title={effortLabel ?? ''}
+                title={liveEffortLabel ?? ''}
                 disabled={!usesExternal && !thinking.loaded}
                 onSelect={(value) => {
                   if (usesExternal) external.selectReasoning(value)
@@ -347,7 +387,7 @@ function AgentModelPickerBase({
                 }}
                 pending={usesExternal && external.initialLoading}
                 fastTier={usesExternal ? external.fastTier : undefined}
-                fastOn={fastOn}
+                fastOn={liveFastOn}
                 onToggleFast={external.toggleFast}
               />
             </div>

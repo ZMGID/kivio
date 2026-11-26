@@ -177,12 +177,77 @@ describe('AgentModelPicker · external CLI models and effort', () => {
     expect(onExternalModelChange).not.toHaveBeenCalled()
   })
 
+  it('shows the selected model and effort before the new conversation catalog arrives', async () => {
+    let snapshot!: (value: ExternalAgentModels) => void
+    detectModels.mockImplementation((_agent, _conversation, _force, onSnapshot) => {
+      snapshot = onSnapshot
+      return new Promise<ExternalAgentModels>(() => {})
+    })
+    const view = renderPicker({ agentRuntime: runtime, conversationId: 'pending-old' })
+    view.rerenderWith({
+      agentRuntime: { ...runtime, externalAgentId: 'codex', externalModel: 'gpt-6.2-astra', externalReasoning: 'high' },
+      conversationId: 'pending-explicit',
+    })
+    expect(trigger()).toHaveTextContent('GPT-6.2 Astra')
+    expect(trigger()).toHaveAccessibleName(/思考等级：High/)
+    expect(trigger().querySelector('.reasoning-shimmer-text')).toBeNull()
+    act(() => snapshot({
+      models: [{ id: 'gpt-6.2-astra', label: 'gpt-6.2-astra' }],
+      reasoningOptions: [], reasoningByModel: {}, source: 'fallback', refreshing: true,
+    }))
+    expect(trigger()).toHaveTextContent('GPT-6.2 Astra')
+    expect(trigger()).toHaveAccessibleName(/思考等级：High/)
+  })
+
+  it.each(['probed', 'fallback'] as const)('keeps the last Auto model and effort until the %s catalog arrives', async source => {
+    const onExternalModelChange = vi.fn()
+    const selected: AgentRuntimeConfig = { ...runtime, externalAgentId: 'codex' }
+    const result: ExternalAgentModels = {
+      models: [{ id: 'project-model', label: 'Project model' }],
+      reasoningOptions: [{ id: 'custom-budget', label: 'Project budget' }],
+      reasoningByModel: {}, source: 'probed', currentModel: 'project-model', currentReasoning: 'custom-budget',
+    }
+    detectModels.mockResolvedValueOnce(result)
+    let finish!: (value: ExternalAgentModels) => void
+    detectModels.mockImplementationOnce((_agent, _conversation, _force, onSnapshot) => {
+      onSnapshot({ ...result, models: [], currentModel: null, currentReasoning: null, refreshing: true })
+      return new Promise<ExternalAgentModels>((resolve) => { finish = resolve })
+    })
+    const conversationId = 'revisit-auto-' + source
+    const view = renderPicker({ agentRuntime: selected, conversationId })
+    await waitFor(() => expect(trigger()).toHaveAccessibleName(/Project model.*Project budget/))
+    view.unmount()
+
+    const revisit = renderPicker({
+      agentRuntime: selected, conversationId, readOnly: true, onExternalModelChange,
+    })
+    expect(trigger()).toHaveAccessibleName(/Project model.*Project budget/)
+    expect(trigger()).toBeDisabled()
+    expect(detectModels).toHaveBeenCalledTimes(1)
+    openPicker()
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    revisit.rerenderWith({ readOnly: false })
+    expect(trigger()).toHaveAccessibleName(/Project model.*Project budget/)
+    expect(onExternalModelChange).not.toHaveBeenCalled()
+    openPicker()
+    expect(within(panel()).queryByRole('button', { name: 'Project model' })).toBeNull()
+
+    await act(async () => finish({
+      ...result, source, models: [{ id: 'new-model', label: 'New model' }],
+      currentModel: 'new-model', currentReasoning: null,
+    }))
+    expect(trigger()).toHaveAccessibleName(/New model/)
+    if (source === 'probed') expect(onExternalModelChange).toHaveBeenLastCalledWith('new-model', null, undefined, 'catalog')
+    else expect(onExternalModelChange).not.toHaveBeenCalled()
+  })
+
   it('toggles the catalog fast tier without changing model or effort', async () => {
     const onExternalModelChange = vi.fn()
     detectModels.mockResolvedValue({ models: [{ id: 'gpt-test', label: 'Test model', capabilities: { serviceTiers: [{ id: 'priority', label: 'Fast' }] } }],
       reasoningOptions: [], source: 'probed' })
     const codex: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'codex', externalModel: 'gpt-test', externalReasoning: 'high' }
-    const view = renderPicker({ agentRuntime: codex, onExternalModelChange })
+    const view = renderPicker({ agentRuntime: codex, onExternalModelChange, conversationId: 'fast-catalog' })
     await waitFor(() => expect(trigger()).toHaveTextContent('Test model'))
     openPicker()
     fireEvent.click(await screen.findByRole('button', { name: '快速模式' }))
@@ -191,6 +256,11 @@ describe('AgentModelPicker · external CLI models and effort', () => {
     expect(trigger()).toHaveAccessibleName(/快速模式/)
     fireEvent.click(screen.getByRole('button', { name: '快速模式' }))
     expect(onExternalModelChange).toHaveBeenLastCalledWith('gpt-test', undefined, null)
+    view.unmount()
+    renderPicker({
+      agentRuntime: { ...codex, externalServiceTier: 'priority' }, conversationId: 'fast-catalog', readOnly: true,
+    })
+    expect(trigger()).toHaveAccessibleName(/Test model.*快速模式/)
   })
 
   it('Antigravity 保留档位名称，清除旧覆盖，切换变体时不携带 effort', async () => {
@@ -457,6 +527,37 @@ describe('AgentModelPicker · 切换代理', () => {
 })
 
 describe('AgentModelPicker · built-in models and thinking level', () => {
+  it.each([
+    { model: 'adjustable', levels: ['low', 'high'], expected: 'High' },
+    { model: 'nonadjustable', levels: [], expected: null },
+  ])('remembers the default effort presentation for $model across replay', async ({ model, levels, expected }) => {
+    thinkingCapabilitiesForModel.mockResolvedValueOnce({ levels, offMode: 'unsupported' })
+    const effort = () => trigger().querySelector('.chat-thinking-level-label')?.textContent ?? null
+    let view!: ReturnType<typeof renderPicker>
+    const conversationId = 'builtin-' + model
+    await act(async () => { view = renderPicker({ model, conversationId }) })
+    expect(effort()).toBe(expected)
+    view.unmount()
+
+    thinkingCapabilitiesForModel.mockReturnValueOnce(new Promise(() => {}))
+    const revisit = renderPicker({ model, conversationId, readOnly: true })
+    expect(effort()).toBe(expected)
+    revisit.rerenderWith({ readOnly: false })
+    expect(effort()).toBe(expected)
+  })
+
+  it('keeps the selected built-in effort visible during replay and normalizes after verification', async () => {
+    const onThinkingLevelChange = vi.fn()
+    const view = renderPicker({ thinkingLevel: 'xhigh', readOnly: true, onThinkingLevelChange })
+    expect(trigger()).toHaveTextContent('XHigh')
+    expect(trigger()).toBeDisabled()
+    expect(thinkingCapabilitiesForModel).not.toHaveBeenCalled()
+    expect(onThinkingLevelChange).not.toHaveBeenCalled()
+    view.rerenderWith({ readOnly: false })
+    await waitFor(() => expect(onThinkingLevelChange).toHaveBeenCalledWith('high'))
+    expect(trigger()).toHaveTextContent('High')
+  })
+
   it('lists provider models in the panel and closes after picking one', async () => {
     const onModelChange = vi.fn()
     renderPicker({ onModelChange })

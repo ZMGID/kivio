@@ -89,14 +89,18 @@ it.each(['sonnet', 'default'])('keeps the picked model for new chats after visit
   }
 })
 
-it('opens the retained draft immediately and enables sends after replaying a missed title', async () => {
+it('opens the retained draft and its controls immediately, then enables changes after replay', async () => {
   const { conversations, windowReads } = mockConversationPair()
+  conversations[0].agent_runtime = { kind: 'external', externalAgentId: 'codex', externalModel: 'gpt-retained' }
+  conversations[1].agent_runtime = { kind: 'external', externalAgentId: 'claude', externalModel: 'sonnet' }
   window.history.replaceState(null, '', '#chat/switch-a')
   const view = render(<Chat onSettingsChange={() => {}} />)
   await act(async () => { await vi.dynamicImportSettled() })
   await screen.findByText('switch-a question')
   fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
   await screen.findByText('switch-b question')
+  fireEvent.click(screen.getByRole('button', { name: /claude.*sonnet/i }))
+  expect(screen.getByRole('dialog', { name: /claude.*sonnet/i })).toBeVisible()
   const send = vi.spyOn(chatApi, 'sendMessage')
   const replay = vi.mocked(chatApi.syncConversation)
   replay.mockClear()
@@ -112,6 +116,11 @@ it('opens the retained draft immediately and enables sends after replaying a mis
   const retained = await screen.findByText('switch-a question')
   expect(window.location.hash).toBe('#chat/switch-a')
   expect(retained.closest('[inert]')).toBeNull()
+  const model = screen.getByRole('button', { name: /codex.*gpt-retained/i })
+  expect(model).toBeVisible()
+  expect(model).toBeDisabled()
+  expect(screen.getByRole('button', { name: /^(open in new window|在新窗口打开)$/i })).toBeDisabled()
+  expect(screen.queryByRole('dialog', { name: /claude.*sonnet/i })).toBeNull()
   const editor = screen.getByRole('textbox')
   expect(editor).toHaveAttribute('contenteditable', 'true')
   fireEvent.paste(editor, { clipboardData: { files: [], getData: (type: string) => type === 'text/plain' ? 'Draft while catching up' : '' } })
@@ -125,6 +134,7 @@ it('opens the retained draft immediately and enables sends after replaying a mis
   vi.mocked(chatApi.getConversations).mockResolvedValue(summaries)
   await act(async () => finish())
   expect(await screen.findByRole('button', { name: '新标题' })).toBeVisible()
+  expect(model).toBeEnabled()
   expect(screen.getByRole('button', { name: /^(Send|发送)$/ })).toBeEnabled()
   expect(screen.getByText('switch-a question')).toBe(retained)
   expect(screen.getByRole('textbox').textContent).toBe('Draft while catching up')
