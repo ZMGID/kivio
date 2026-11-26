@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-#[cfg(target_os = "macos")]
-use flate2::read::GzDecoder;
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, RANGE, USER_AGENT};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -52,37 +50,45 @@ enum ModelSource {
         sha256: &'static str,
     },
     Archive {
-        cache_key: &'static str,
-        url: &'static str,
-        size: u64,
-        sha256: &'static str,
-        entry_suffix: &'static str,
+        package: NativePackage,
+        entry: &'static str,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativePackage {
+    cache_key: &'static str,
+    url: &'static str,
+    size: u64,
+    sha256: &'static str,
 }
 
 impl ModelSource {
     fn key(self) -> &'static str {
         match self {
             Self::Direct { url, .. } => url,
-            Self::Archive { cache_key, .. } => cache_key,
+            Self::Archive { package, .. } => package.cache_key,
         }
     }
 
     fn url(self) -> &'static str {
         match self {
-            Self::Direct { url, .. } | Self::Archive { url, .. } => url,
+            Self::Direct { url, .. } => url,
+            Self::Archive { package, .. } => package.url,
         }
     }
 
     fn size(self) -> u64 {
         match self {
-            Self::Direct { size, .. } | Self::Archive { size, .. } => size,
+            Self::Direct { size, .. } => size,
+            Self::Archive { package, .. } => package.size,
         }
     }
 
     fn sha256(self) -> &'static str {
         match self {
-            Self::Direct { sha256, .. } | Self::Archive { sha256, .. } => sha256,
+            Self::Direct { sha256, .. } => sha256,
+            Self::Archive { package, .. } => package.sha256,
         }
     }
 }
@@ -191,32 +197,37 @@ const HIGH_KEYS: ModelFile = ModelFile {
         sha256: "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d",
     },
 };
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const RUNTIME_SOURCE: ModelSource = ModelSource::Archive {
-    cache_key: "onnxruntime-osx-arm64-1.24.4.tgz",
-    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-osx-arm64-1.24.4.tgz",
-    size: 30_937_282,
-    sha256: "93787795f47e1eee369182e43ed51b9e5da0878ab0346aecf4258979b8bba989",
-    entry_suffix: "lib/libonnxruntime.dylib",
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+const RUNTIME_PACKAGE: NativePackage = NativePackage {
+    cache_key: "microsoft.ml.onnxruntime.1.24.4.nupkg",
+    url: "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.24.4/microsoft.ml.onnxruntime.1.24.4.nupkg",
+    size: 125_194_303,
+    sha256: "4b978d5065b85e7004b6c6f60ca494bd978fbe6836cbf0a0b52d82b61ab99638",
 };
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const RUNTIME: ModelFile = ModelFile {
     component_id: "onnx-runtime",
     relative_path: ONNX_RUNTIME_FILE_NAME,
-    installed_size: 35_418_600,
-    installed_sha256: "872533f130f1839a5bc01788ddb4f75c83a189763441ba1178788ed965449289",
-    source: RUNTIME_SOURCE,
+    installed_size: 35_451_632,
+    installed_sha256: "0db33e160224e480c17932799d1dfaea59853b8e722b57bf61932c87e03586f0",
+    source: ModelSource::Archive {
+        package: RUNTIME_PACKAGE,
+        entry: "runtimes/osx-arm64/native/libonnxruntime.dylib",
+    },
 };
 
 // ONNX Runtime stopped publishing Intel macOS packages after 1.23.x. The Rust
 // binding uses API 23, which remains compatible with 1.24 runtimes on arm64/Windows.
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-const RUNTIME_SOURCE: ModelSource = ModelSource::Archive {
-    cache_key: "onnxruntime-osx-x86_64-1.23.2.tgz",
-    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz",
-    size: 11_676_322,
-    sha256: "d10359e16347b57d9959f7e80a225a5b4a66ed7d7e007274a15cae86836485a6",
-    entry_suffix: "lib/libonnxruntime.1.23.2.dylib",
+const RUNTIME_PACKAGE: NativePackage = NativePackage {
+    cache_key: "microsoft.ml.onnxruntime.1.23.2.nupkg",
+    url: "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg",
+    size: 123_371_574,
+    sha256: "25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a",
 };
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const RUNTIME: ModelFile = ModelFile {
@@ -224,24 +235,22 @@ const RUNTIME: ModelFile = ModelFile {
     relative_path: ONNX_RUNTIME_FILE_NAME,
     installed_size: 39_742_608,
     installed_sha256: "8c9c78de65ea3786f987c0d980e9c1b13a3a5fbc6b3e2965ba05b450e6e4c054",
-    source: RUNTIME_SOURCE,
+    source: ModelSource::Archive {
+        package: RUNTIME_PACKAGE,
+        entry: "runtimes/osx-x64/native/libonnxruntime.dylib",
+    },
 };
 
-#[cfg(target_os = "windows")]
-const RUNTIME_SOURCE: ModelSource = ModelSource::Archive {
-    cache_key: "onnxruntime-win-x64-1.24.4.zip",
-    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip",
-    size: 74_442_783,
-    sha256: "d2319fddfb6ea4db99ccc4b60c85c517bcd855721f5daa6a06d40d7cb2ee2357",
-    entry_suffix: "lib/onnxruntime.dll",
-};
 #[cfg(target_os = "windows")]
 const RUNTIME: ModelFile = ModelFile {
     component_id: "onnx-runtime",
     relative_path: ONNX_RUNTIME_FILE_NAME,
     installed_size: 14_203_464,
     installed_sha256: "b95efb2113b603bbbf3f191061c5516a871ed546893c820e4f3b7b6c358dbf2a",
-    source: RUNTIME_SOURCE,
+    source: ModelSource::Archive {
+        package: RUNTIME_PACKAGE,
+        entry: "runtimes/win-x64/native/onnxruntime.dll",
+    },
 };
 #[cfg(target_os = "windows")]
 const PROVIDERS_SHARED: ModelFile = ModelFile {
@@ -250,11 +259,8 @@ const PROVIDERS_SHARED: ModelFile = ModelFile {
     installed_size: 22_088,
     installed_sha256: "f2540b89707b47895c2a732bfd04e34a695c580d22301ef44c0f01f09b001673",
     source: ModelSource::Archive {
-        cache_key: "onnxruntime-win-x64-1.24.4.zip",
-        url: "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip",
-        size: 74_442_783,
-        sha256: "d2319fddfb6ea4db99ccc4b60c85c517bcd855721f5daa6a06d40d7cb2ee2357",
-        entry_suffix: "lib/onnxruntime_providers_shared.dll",
+        package: RUNTIME_PACKAGE,
+        entry: "runtimes/win-x64/native/onnxruntime_providers_shared.dll",
     },
 };
 
@@ -589,16 +595,9 @@ impl OfflineModelManager {
                     self.download_direct(pack, file, &final_path, overall_base, total_bytes)
                         .await
                 }
-                ModelSource::Archive { cache_key, .. } => {
-                    self.install_archive_file(
-                        pack,
-                        file,
-                        &dir,
-                        cache_key,
-                        overall_base,
-                        total_bytes,
-                    )
-                    .await
+                ModelSource::Archive { .. } => {
+                    self.install_archive_file(pack, file, &dir, overall_base, total_bytes)
+                        .await
                 }
             };
 
@@ -688,16 +687,18 @@ impl OfflineModelManager {
         pack: OfflineModelPack,
         file: &ModelFile,
         dir: &Path,
-        cache_key: &str,
         overall_base: u64,
         overall_total: u64,
     ) -> Result<(), String> {
+        let ModelSource::Archive { package, entry } = file.source else {
+            return Err("not an archive source".into());
+        };
         let download_dir = dir.join(".downloads");
         tokio::fs::create_dir_all(&download_dir)
             .await
             .map_err(|e| format!("mkdir download cache: {e}"))?;
-        let archive_path = download_dir.join(cache_key);
-        if verify_path_async(&archive_path, file.source.size(), file.source.sha256())
+        let archive_path = download_dir.join(package.cache_key);
+        if verify_path_async(&archive_path, package.size, package.sha256)
             .await
             .is_err()
         {
@@ -721,13 +722,10 @@ impl OfflineModelManager {
                 OfflineModelProgressState::Verifying,
                 None,
             );
-            verify_path_async(&part_path, file.source.size(), file.source.sha256()).await?;
+            verify_path_async(&part_path, package.size, package.sha256).await?;
             replace_file(&part_path, &archive_path).await?;
         }
 
-        let ModelSource::Archive { entry_suffix, .. } = file.source else {
-            return Err("not an archive source".into());
-        };
         self.emit_progress(
             pack,
             file,
@@ -741,10 +739,9 @@ impl OfflineModelManager {
         let output = dir.join(file.relative_path);
         let output_part = part_path(&output);
         let archive = archive_path.clone();
-        let suffix = entry_suffix.to_string();
         let output_for_extract = output_part.clone();
         tokio::task::spawn_blocking(move || {
-            extract_archive_entry(&archive, &suffix, &output_for_extract)
+            extract_archive_entry(&archive, entry, &output_for_extract)
         })
         .await
         .map_err(|e| format!("extract {} task failed: {e}", file.relative_path))??;
@@ -966,8 +963,8 @@ impl OfflineModelManager {
     async fn cleanup_archive_cache(&self, dir: &Path, files: &[ModelFile]) {
         let mut cache_keys = HashSet::new();
         for file in files {
-            if let ModelSource::Archive { cache_key, .. } = file.source {
-                cache_keys.insert(cache_key);
+            if let ModelSource::Archive { package, .. } = file.source {
+                cache_keys.insert(package.cache_key);
             }
         }
         for key in cache_keys {
@@ -979,9 +976,18 @@ impl OfflineModelManager {
         let Ok(metadata) = path.metadata() else {
             return ValidationState::Missing;
         };
-        if !metadata.is_file() || metadata.len() != file.installed_size {
+        if !metadata.is_file() {
             return ValidationState::Invalid;
         }
+        let expected_sha256 = match metadata.len() {
+            size if size == file.installed_size => file.installed_sha256,
+            // Already installed from the Apple Silicon GitHub archive.
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            35_418_600 if file.relative_path == ONNX_RUNTIME_FILE_NAME => {
+                "872533f130f1839a5bc01788ddb4f75c83a189763441ba1178788ed965449289"
+            }
+            _ => return ValidationState::Invalid,
+        };
         let modified = metadata.modified().ok();
         if self
             .verified_files
@@ -993,7 +999,7 @@ impl OfflineModelManager {
             return ValidationState::Ready;
         }
         match sha256_file(path) {
-            Ok(hash) if hash == file.installed_sha256 => {
+            Ok(hash) if hash == expected_sha256 => {
                 self.verified_files
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1164,52 +1170,15 @@ fn retry_delay(attempt: u8) -> Duration {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn extract_archive_entry(
-    archive_path: &Path,
-    entry_suffix: &str,
-    output: &Path,
-) -> Result<(), String> {
-    let archive_file = std::fs::File::open(archive_path).map_err(|e| e.to_string())?;
-    let reader = GzDecoder::new(archive_file);
-    let mut archive = tar::Archive::new(reader);
-    for entry in archive.entries().map_err(|e| e.to_string())? {
-        let mut entry = entry.map_err(|e| e.to_string())?;
-        if entry
-            .path()
-            .map_err(|e| e.to_string())?
-            .to_string_lossy()
-            .ends_with(entry_suffix)
-        {
-            let mut file = std::fs::File::create(output).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-    }
-    Err(format!("{entry_suffix} not found in archive"))
-}
-
-#[cfg(target_os = "windows")]
-fn extract_archive_entry(
-    archive_path: &Path,
-    entry_suffix: &str,
-    output: &Path,
-) -> Result<(), String> {
+fn extract_archive_entry(archive_path: &Path, entry: &str, output: &Path) -> Result<(), String> {
     let archive_file = std::fs::File::open(archive_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(archive_file).map_err(|e| e.to_string())?;
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
-        if entry
-            .name()
-            .map_err(|e| e.to_string())?
-            .ends_with(entry_suffix)
-        {
-            let mut file = std::fs::File::create(output).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-    }
-    Err(format!("{entry_suffix} not found in archive"))
+    let mut entry = archive
+        .by_name(entry)
+        .map_err(|e| format!("{entry}: {e}"))?;
+    let mut file = std::fs::File::create(output).map_err(|e| e.to_string())?;
+    std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 static ORT_INIT: OnceCell<()> = OnceCell::const_new();
@@ -1343,7 +1312,7 @@ mod tests {
     #[test]
     fn pack_size_deduplicates_shared_archives() {
         let files = rapidocr_pack(OcrModelTier::High);
-        let expected = RUNTIME_SOURCE.size()
+        let expected = RUNTIME_PACKAGE.size
             + HIGH_DET.source.size()
             + HIGH_REC.source.size()
             + HIGH_KEYS.source.size();

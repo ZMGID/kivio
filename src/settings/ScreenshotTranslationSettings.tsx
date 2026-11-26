@@ -377,7 +377,7 @@ function ReplaceTranslationPackPanel({
           {status && ` (${formatBytes(status.missingBytes)})`}
         </Button>
       )}
-      {downloadState === 'failed' && downloadError && (
+      {!status?.ready && downloadState === 'failed' && downloadError && (
         <div className="kv-inline-error break-words">{t.rapidOcrDownloadFailed}: {downloadError}</div>
       )}
       <div className="kv-panel-body">{t.replaceTranslatePackHint}</div>
