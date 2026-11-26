@@ -766,6 +766,61 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_asks_each_question_once_and_returns_wire_values() {
+        let input = serde_json::json!({
+            "mode":"form","message":"The agent has a question.","requestedSchema":{
+                "type":"object","properties":{
+                    "q1":{"type":"array","title":"Colors","items":{"anyOf":[
+                        {"const":"1","title":"Red"},{"const":"2","title":"Green"},
+                        {"const":"3","title":"Blue"}]}},
+                    "q1_other":{"type":"string","title":"Other","description":"Optional free-form answer to: Colors"},
+                    "q2":{"type":"string","title":"Fruit","oneOf":[
+                        {"const":"1","title":"Apple"},{"const":"2","title":"Orange"}]},
+                    "q2_other":{"type":"string","title":"Other","description":"Optional free-form answer to: Fruit"}
+                }
+            }
+        });
+        let codec = codec_for("antigravity", "elicitation/create").unwrap();
+        let prompt = (codec.parse)(&input).unwrap();
+        assert_eq!(prompt.questions.len(), 2);
+        let colors = &prompt.questions[0];
+        assert_eq!((colors.id.as_str(), colors.prompt.as_str()), ("q1", "Colors"));
+        assert!(colors.required && colors.allow_multiple && colors.allow_custom);
+        assert_eq!(colors.options[2].label, "Blue");
+        let fruit = &prompt.questions[1];
+        assert!(fruit.required && !fruit.allow_multiple && fruit.allow_custom);
+
+        let mut response = AskUserResponseResult {
+            phase: ASK_USER_PHASE_ANSWERED.into(),
+            answers: serde_json::from_value(serde_json::json!({
+                "q1":{"selectedOptionIds":["3","1"],"customText":"Mint"},
+                "q2":{"selectedOptionIds":["2"]}
+            })).unwrap(),
+        };
+        assert_eq!((codec.encode)(&input, &prompt, &response), serde_json::json!({
+            "action":"accept","content":{"q1":["3","1"],"q1_other":"Mint","q2":"2"}
+        }));
+        let fruit = response.answers.get_mut("q2").unwrap();
+        fruit.selected_option_ids.clear();
+        fruit.custom_text = Some("Cherry".into());
+        assert_eq!((codec.encode)(&input, &prompt, &response), serde_json::json!({
+            "action":"accept","content":{"q1":["3","1"],"q1_other":"Mint","q2_other":"Cherry"}
+        }));
+        response.answers.remove("q2");
+        assert!(crate::chat::ask_user::validate_response(&prompt, response.clone()).is_err());
+        assert_eq!((codec.encode)(&input, &prompt, &response)["action"], "decline");
+        for (response, expected) in [
+            (crate::chat::ask_user::skipped_response(), "decline"),
+            (crate::chat::ask_user::cancelled_response(), "cancel"),
+        ] {
+            assert_eq!((codec.encode)(&input, &prompt, &response), serde_json::json!({"action":expected}));
+        }
+        let mut constrained = input;
+        constrained["requestedSchema"]["properties"]["q1"]["minItems"] = serde_json::json!(2);
+        assert!((codec.parse)(&constrained).is_none());
+    }
+
+    #[test]
     fn unknown_shape_policy_differs_by_codec() {
         assert_eq!(
             codec_for("claude", "AskUserQuestion")
