@@ -119,6 +119,66 @@ test('turn navigation fits beside the text at the fractional container breakpoin
   }
 })
 
+test('turn navigation shows 25 compact ticks and can still jump to older turns', async ({ page }) => {
+  await page.goto(fixture)
+  const rail = page.getByRole('complementary', { name: '对话轮次导航' })
+    .locator('.chat-message-navigator-viewport')
+  const before = await readingPosition(page)
+  const bounds = await rail.boundingBox()
+  expect(bounds.height).toBe(275)
+  await expect(rail.locator('[aria-current="location"] .chat-message-navigator-tick')).toHaveCSS('width', '14px')
+
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+  await page.mouse.wheel(0, -2000)
+  const first = rail.getByRole('button', { name: /^第 1 轮：Question 0:/ })
+  await expect(first).toBeInViewport({ ratio: 0.7 })
+  const ticks = await rail.evaluate(element => {
+    const { top, bottom } = element.getBoundingClientRect()
+    return [...element.querySelectorAll('button')].filter(button => {
+      const rect = button.getBoundingClientRect()
+      return rect.top >= top && rect.bottom <= bottom
+    }).map(button => button.getBoundingClientRect().top)
+  })
+  expect(ticks).toHaveLength(25)
+  expect(ticks[1] - ticks[0]).toBe(11)
+
+  const visibleMarks = await rail.evaluate(element => {
+    element.scrollTop = 5
+    const viewport = element.getBoundingClientRect()
+    return [...element.querySelectorAll('.chat-message-navigator-tick')].filter(mark => {
+      const rect = mark.getBoundingClientRect()
+      const top = Math.max(rect.top, viewport.top)
+      const bottom = Math.min(rect.bottom, viewport.bottom)
+      return top < bottom && document.elementFromPoint((rect.left + rect.right) / 2, (top + bottom) / 2) === mark
+    }).length
+  })
+  expect(visibleMarks).toBeLessThanOrEqual(25)
+
+  await page.mouse.wheel(0, -2000)
+  expect((await readingPosition(page)).top).toBe(before.top)
+  await first.hover()
+  await expect(page.getByRole('tooltip')).toContainText('Question 0:')
+  await first.click()
+  await expect(page.locator('[data-message-id="f-msg-0-user"]')).toBeInViewport()
+})
+
+test('turn navigation highlights the final turn on returning to the bottom', async ({ page }) => {
+  await readHistory(page, 'F1')
+  const rail = page.getByRole('complementary', { name: '对话轮次导航' })
+  const current = rail.locator('button[aria-current="location"]')
+  await expect(current).not.toHaveAccessibleName(/^第 100 轮：/)
+
+  await page.getByRole('button', { name: '回到底部' }).click()
+  expect((await readingPosition(page)).gap).toBeLessThanOrEqual(2)
+  await expect(current).toHaveAccessibleName(/^第 100 轮：Question 99:/)
+
+  await page.mouse.move(12, 350)
+  await page.mouse.wheel(0, -500)
+  await expect(current).not.toHaveAccessibleName(/^第 100 轮：/)
+  await page.mouse.wheel(0, 1000)
+  await expect(current).toHaveAccessibleName(/^第 100 轮：Question 99:/)
+})
+
 test('the workspace button has breathing room beside the open dock divider', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.goto('/scripts/fixtures/chat-titlebar.html')

@@ -2443,9 +2443,10 @@ function MessageListBase({
   const syncNavigatorFromDom = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
+    const { clientHeight } = el
     const viewportTop = el.getBoundingClientRect().top
-    const viewportBottom = viewportTop + el.clientHeight
-    const readingY = viewportTop + el.clientHeight * 0.3
+    const viewportBottom = viewportTop + clientHeight
+    const readingY = viewportTop + clientHeight * 0.3
     syncHeadingOutlineFromDom(readingY, viewportTop, viewportBottom)
     const rows = el.querySelectorAll<HTMLElement>('[data-chat-row-index]')
     let activeIndex: number | null = null
@@ -2466,14 +2467,16 @@ function MessageListBase({
       }
     }
     if (activeIndex == null && lastVisible >= 0) activeIndex = lastVisible
-    if (activeIndex != null) {
-      updateActiveNavigatorNode(
-        activeMessageNavigatorNodeId(navigatorNodesRef.current, activeIndex),
-      )
+    const loadedNodes = navigatorNodesRef.current
+    const isAtBottom = el.scrollHeight - el.scrollTop - clientHeight <= 1
+    if (isAtBottom) {
+      updateActiveNavigatorNode(loadedNodes.at(-1)?.id ?? null)
+    } else if (activeIndex != null) {
+      updateActiveNavigatorNode(activeMessageNavigatorNodeId(loadedNodes, activeIndex))
     }
     if (lastVisible >= 0) {
       updateVisibleNavigatorNodes(visibleMessageNavigatorNodeIds(
-        navigatorNodesRef.current,
+        loadedNodes,
         firstVisible,
         lastVisible,
       ))
