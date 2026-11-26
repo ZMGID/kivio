@@ -162,6 +162,23 @@ test('turn navigation shows 25 compact ticks and can still jump to older turns',
   await expect(page.locator('[data-message-id="f-msg-0-user"]')).toBeInViewport()
 })
 
+test('turn navigation highlights the final turn on returning to the bottom', async ({ page }) => {
+  await readHistory(page, 'F1')
+  const rail = page.getByRole('complementary', { name: '对话轮次导航' })
+  const current = rail.locator('button[aria-current="location"]')
+  await expect(current).not.toHaveAccessibleName(/^第 100 轮：/)
+
+  await page.getByRole('button', { name: '回到底部' }).click()
+  expect((await readingPosition(page)).gap).toBeLessThanOrEqual(2)
+  await expect(current).toHaveAccessibleName(/^第 100 轮：Question 99:/)
+
+  await page.mouse.move(12, 350)
+  await page.mouse.wheel(0, -500)
+  await expect(current).not.toHaveAccessibleName(/^第 100 轮：/)
+  await page.mouse.wheel(0, 1000)
+  await expect(current).toHaveAccessibleName(/^第 100 轮：Question 99:/)
+})
+
 test('the workspace button has breathing room beside the open dock divider', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.goto('/scripts/fixtures/chat-titlebar.html')
