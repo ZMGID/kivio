@@ -70,7 +70,7 @@ Text on screen, a captured region, and coding CLIs you already installed do not 
 
 ## Features
 
-Full history in [Releases](https://github.com/ZMGID/kivio/releases) · [v4.0.3 release notes](docs/releases/v4.0.3.md)
+Full history in [Releases](https://github.com/ZMGID/kivio/releases) · [v4.0.4 release notes](docs/releases/v4.0.4.md)
 
 ### Chat & agent
 

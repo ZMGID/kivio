@@ -70,7 +70,7 @@
 
 ## 功能
 
-完整记录见 [Releases](https://github.com/ZMGID/kivio/releases) · [v4.0.3 发行说明](docs/releases/v4.0.3.md)
+完整记录见 [Releases](https://github.com/ZMGID/kivio/releases) · [v4.0.4 发行说明](docs/releases/v4.0.4.md)
 
 ### 聊天与 Agent
 
