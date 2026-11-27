@@ -277,6 +277,7 @@ pub fn provider_label(provider: WebSearchProvider) -> &'static str {
         WebSearchProvider::Kimi => "Kimi",
         WebSearchProvider::Keenable => "Keenable",
         WebSearchProvider::Specstream => "SpecStream",
+        WebSearchProvider::Sofya => "Sofya",
         WebSearchProvider::Unknown => "Web",
     }
 }
@@ -344,6 +345,7 @@ pub async fn search_web(
         WebSearchProvider::Specstream => {
             search_specstream(state, config, query, retry_attempts).await
         }
+        WebSearchProvider::Sofya => search_sofya(state, config, query, retry_attempts).await,
         WebSearchProvider::Unknown => {
             Err("Selected web search provider is not supported yet".to_string())
         }
@@ -810,6 +812,82 @@ async fn search_specstream(
     .await?;
     let parsed: SpecstreamSearchResponse = read_search_json("SpecStream search", response).await?;
     Ok(specstream_web_results(parsed, max_results as usize))
+}
+
+#[derive(Debug, Deserialize)]
+struct SofyaSearchResponse {
+    #[serde(default)]
+    results: Vec<SofyaSearchResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SofyaSearchResult {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    published_date: Option<String>,
+}
+
+fn sofya_web_results(parsed: SofyaSearchResponse, max_results: usize) -> Vec<WebSearchResult> {
+    parsed
+        .results
+        .into_iter()
+        .filter(|result| !result.url.trim().is_empty())
+        .take(max_results)
+        .map(|result| {
+            let content = if result.content.trim().is_empty() {
+                result.description
+            } else {
+                result.content
+            };
+            WebSearchResult {
+                title: result.title.trim().to_string(),
+                url: result.url.trim().to_string(),
+                content: content.trim().to_string(),
+                published_date: result.published_date.filter(|d| !d.trim().is_empty()),
+                score: None,
+            }
+        })
+        .collect()
+}
+
+fn sofya_search_body(query: &str, max_results: u8) -> serde_json::Value {
+    serde_json::json!({
+        "query": query,
+        "search_depth": "snippets",
+        "max_results": max_results,
+    })
+}
+
+/// Sofya Search API：`POST {base}/v1/search`，Bearer key，body
+/// `{query, search_depth: "snippets", max_results}`，结果在 `results[]`
+/// （title / url / content / description / published_date）。
+async fn search_sofya(
+    state: &AppState,
+    config: &LensWebSearchConfig,
+    query: &str,
+    retry_attempts: usize,
+) -> Result<Vec<WebSearchResult>, String> {
+    let api_key = config.sofya_api_key.trim();
+    if api_key.is_empty() {
+        return Err("Sofya API key is not configured".to_string());
+    }
+    let max_results = config.max_results.clamp(1, 10);
+    let body = sofya_search_body(query, max_results);
+    let base = normalized_base_url(&config.sofya_base_url, "https://sofya.co");
+    let url = format!("{base}/v1/search");
+    let response = send_with_retry("Sofya search", retry_attempts, || {
+        with_standard_request_timeout(state.http.post(&url).bearer_auth(api_key).json(&body)).send()
+    })
+    .await?;
+    let parsed: SofyaSearchResponse = read_search_json("Sofya search", response).await?;
+    Ok(sofya_web_results(parsed, max_results as usize))
 }
 
 /// TinyFish Search：`GET {base}?query=`，头 `X-API-Key`，结果在 `results[]`。
@@ -2381,6 +2459,42 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&crate::settings::WebSearchProvider::Specstream).unwrap(),
             "\"specstream\""
+        );
+    }
+
+    #[test]
+    fn sofya_builds_body_and_parses_results() {
+        assert_eq!(
+            super::sofya_search_body("hello world", 5),
+            serde_json::json!({
+                "query": "hello world",
+                "search_depth": "snippets",
+                "max_results": 5,
+            })
+        );
+        let raw = r#"{"query":"q","answer":null,"results":[
+            {"title":" A ","url":"https://a.example","content":" snip a ","description":"snip a","fetched":false,"content_fetched_at":null,"published_date":"2026-10-01","sublinks":[],"table":{}},
+            {"title":"skip","url":"","content":"","description":"","fetched":false,"published_date":null},
+            {"title":"B","url":"https://b.example","content":"","description":"desc b","fetched":false,"published_date":null},
+            {"title":"C","url":"https://c.example","content":"snip c","description":"snip c","fetched":false}
+        ],"search_depth":"snippets","topic":"general","elapsed_ms":900,"credits_used":1,
+        "credits_remaining":10,"altered_query":null,"relaxed_query":null}"#;
+        let parsed: super::SofyaSearchResponse = serde_json::from_str(raw).expect("sofya json");
+        let results = super::sofya_web_results(parsed, 2);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "A");
+        assert_eq!(results[0].url, "https://a.example");
+        assert_eq!(results[0].content, "snip a");
+        assert_eq!(results[0].published_date.as_deref(), Some("2026-10-01"));
+        assert_eq!(results[1].title, "B");
+        assert_eq!(results[1].content, "desc b");
+        assert_eq!(results[1].published_date, None);
+        let empty: super::SofyaSearchResponse =
+            serde_json::from_str(r#"{"detail":"Invalid API key"}"#).expect("error json");
+        assert!(super::sofya_web_results(empty, 5).is_empty());
+        assert_eq!(
+            serde_json::to_string(&crate::settings::WebSearchProvider::Sofya).unwrap(),
+            "\"sofya\""
         );
     }
 

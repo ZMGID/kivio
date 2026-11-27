@@ -606,6 +606,7 @@ pub enum WebSearchProvider {
     Kimi,
     Keenable,
     Specstream,
+    Sofya,
     /// 前端可能列出尚未接入后端的占位服务商；持久化时兜底为未知，避免旧值导致整份设置解析失败。
     #[serde(other)]
     Unknown,
@@ -698,6 +699,10 @@ pub struct LensWebSearchConfig {
     pub specstream_api_key: String,
     #[serde(default = "default_specstream_base_url")]
     pub specstream_base_url: String,
+    #[serde(default)]
+    pub sofya_api_key: String,
+    #[serde(default = "default_sofya_base_url")]
+    pub sofya_base_url: String,
     #[serde(default = "default_web_search_max_results")]
     pub max_results: u8,
     #[serde(default = "default_web_search_depth")]
@@ -742,6 +747,8 @@ impl Default for LensWebSearchConfig {
             keenable_base_url: default_keenable_base_url(),
             specstream_api_key: String::new(),
             specstream_base_url: default_specstream_base_url(),
+            sofya_api_key: String::new(),
+            sofya_base_url: default_sofya_base_url(),
             max_results: default_web_search_max_results(),
             search_depth: default_web_search_depth(),
         }
@@ -806,6 +813,10 @@ fn default_keenable_base_url() -> String {
 
 fn default_specstream_base_url() -> String {
     "https://api.specstream.ai".to_string()
+}
+
+fn default_sofya_base_url() -> String {
+    "https://sofya.co".to_string()
 }
 
 fn default_kimi_base_url() -> String {

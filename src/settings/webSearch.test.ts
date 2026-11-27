@@ -32,6 +32,7 @@ describe('isWebSearchConfigured', () => {
     expect(isWebSearchConfigured(config({ provider: 'kimi', kimiApiKey: 'sk' }))).toBe(true)
     expect(isWebSearchConfigured(config({ provider: 'tinyfish', tinyfishApiKey: 'tf' }))).toBe(true)
     expect(isWebSearchConfigured(config({ provider: 'specstream', specstreamApiKey: 'ss' }))).toBe(true)
+    expect(isWebSearchConfigured(config({ provider: 'sofya', sofyaApiKey: 'sk' }))).toBe(true)
     expect(isWebSearchConfigured(config({
       provider: 'tinyfish_mcp',
       tinyfishMcpUrl: 'https://agent.tinyfish.ai/mcp',
@@ -43,6 +44,7 @@ describe('isWebSearchConfigured', () => {
     }))).toBe(false)
     expect(isWebSearchConfigured(config({ provider: 'brave' }))).toBe(false)
     expect(isWebSearchConfigured(config({ provider: 'specstream' }))).toBe(false)
+    expect(isWebSearchConfigured(config({ provider: 'sofya' }))).toBe(false)
   })
 
   it('treats SearXNG as configured when the instance URL is set', () => {
@@ -64,6 +66,7 @@ describe('webSearchKeyField', () => {
     expect(webSearchKeyField('deepseek')).toBe('deepseekApiKey')
     expect(webSearchKeyField('grok')).toBe('grokApiKey')
     expect(webSearchKeyField('specstream')).toBe('specstreamApiKey')
+    expect(webSearchKeyField('sofya')).toBe('sofyaApiKey')
     expect(webSearchKeyField('kimi')).toBe('kimiApiKey')
   })
 })

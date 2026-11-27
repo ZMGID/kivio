@@ -65,6 +65,8 @@ export function isProviderConfigured(
       return true
     case 'specstream':
       return (webSearch.specstreamApiKey ?? '').trim() !== ''
+    case 'sofya':
+      return (webSearch.sofyaApiKey ?? '').trim() !== ''
     default:
       return false
   }
@@ -93,6 +95,7 @@ export function webSearchKeyField(
   | 'kimiApiKey'
   | 'keenableApiKey'
   | 'specstreamApiKey'
+  | 'sofyaApiKey'
 > | null {
   switch (provider) {
     case 'tavily':
@@ -121,6 +124,8 @@ export function webSearchKeyField(
       return 'keenableApiKey'
     case 'specstream':
       return 'specstreamApiKey'
+    case 'sofya':
+      return 'sofyaApiKey'
     case 'exa_mcp':
     case 'tinyfish_mcp':
     case 'searxng':
